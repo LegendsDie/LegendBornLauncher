@@ -1,0 +1,101 @@
+name: Release (Velopack)
+
+on:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: write
+
+env:
+  CS_PROJ: LegendBorn.csproj
+
+  # PackId должен быть стабильным и не меняться
+  PACK_ID: LegendBornLauncher
+
+  # Имя exe после publish. Обычно = имя проекта (LegendBorn.exe)
+  MAIN_EXE: LegendBorn.exe
+
+  PACK_TITLE: LegendBorn Launcher
+
+  # Версия vpk как у твоего Velopack пакета
+  VPK_VERSION: 0.0.1369-g1d5c984
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Ставим .NET 10 для сборки проекта, и .NET 8 для dotnet tool (vpk)
+      - name: Install .NET 10 + .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            10.0.x
+            8.0.x
+
+      - name: Read Version from csproj
+        id: ver
+        shell: pwsh
+        run: |
+          [xml]$p = Get-Content "${{ env.CS_PROJ }}"
+          $v = $p.Project.PropertyGroup.Version | Select-Object -First 1
+          if (-not $v) { throw "Version not found in csproj" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Check if tag already exists
+        id: tagcheck
+        shell: pwsh
+        run: |
+          git fetch --tags
+          $tag = "v${{ steps.ver.outputs.version }}"
+          $exists = (git tag -l $tag)
+          if ($exists) { "exists=true" >> $env:GITHUB_OUTPUT } else { "exists=false" >> $env:GITHUB_OUTPUT }
+
+      - name: Publish app
+        shell: pwsh
+        run: |
+          dotnet publish ${{ env.CS_PROJ }} -c Release -r win-x64 --self-contained true -o publish
+
+      - name: Install vpk
+        shell: pwsh
+        run: |
+          dotnet tool install -g vpk --version ${{ env.VPK_VERSION }}
+          echo "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
+
+      - name: Download previous releases (optional)
+        if: steps.tagcheck.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          try {
+            vpk download github --repoUrl https://github.com/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }}
+          } catch {
+            Write-Host "No previous releases found (first release) - continuing..."
+          }
+
+      - name: Create Velopack packages (Releases folder)
+        if: steps.tagcheck.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          vpk pack `
+            --packId ${{ env.PACK_ID }} `
+            --packVersion ${{ steps.ver.outputs.version }} `
+            --packDir publish `
+            --mainExe ${{ env.MAIN_EXE }} `
+            --packTitle "${{ env.PACK_TITLE }}"
+
+      - name: Upload GitHub Release
+        if: steps.tagcheck.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          vpk upload github `
+            --repoUrl https://github.com/${{ github.repository }} `
+            --token ${{ secrets.GITHUB_TOKEN }} `
+            --publish `
+            --releaseName "${{ env.PACK_TITLE }} ${{ steps.ver.outputs.version }}" `
+            --tag "v${{ steps.ver.outputs.version }}"

@@ -29,5 +29,8 @@
         <ApplicationDefinition Remove="App.xaml" />
         <Page Include="App.xaml" />
     </ItemGroup>
+    <ItemGroup>
+      <Content Include=".github\workflows\release.yml" />
+    </ItemGroup>
 
 </Project>
