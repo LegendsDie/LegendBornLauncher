@@ -1,4 +1,6 @@
-﻿using System.Windows;
+﻿using System;
+using System.Threading.Tasks;
+using System.Windows;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -8,25 +10,43 @@ namespace LegendBorn;
 public partial class MainWindow : Window
 {
     private bool _updatesChecked;
+    private bool _isClosing;
 
     public MainWindow()
     {
         InitializeComponent();
         DataContext = new MainViewModel();
 
-        // Запускаем проверку обновлений после загрузки окна
         Loaded += MainWindow_OnLoaded;
+        Closing += (_, __) => _isClosing = true;
     }
 
-    private async void MainWindow_OnLoaded(object sender, RoutedEventArgs e)
+    private void MainWindow_OnLoaded(object sender, RoutedEventArgs e)
     {
         if (_updatesChecked)
             return;
 
         _updatesChecked = true;
 
-        // Тихая проверка обновлений (без MessageBox)
-        await UpdateService.CheckAndUpdateAsync(silent: true);
+        // ВАЖНО: запуск в фоне, чтобы не подвисал UI на старте.
+        _ = RunUpdateCheckSafeAsync();
+    }
+
+    private async Task RunUpdateCheckSafeAsync()
+    {
+        try
+        {
+            if (_isClosing)
+                return;
+
+            // Тихая проверка обновлений (без MessageBox)
+            await UpdateService.CheckAndUpdateAsync(silent: true);
+        }
+        catch
+        {
+            // Любая ошибка апдейта не должна ломать запуск лаунчера.
+            // Логи при желании можно писать в файл/LogLines, но сейчас просто молчим.
+        }
     }
 
     private void Close_OnClick(object sender, RoutedEventArgs e) => Close();
@@ -59,6 +79,7 @@ public partial class MainWindow : Window
             if (d is ButtonBase) return true;
             d = VisualTreeHelper.GetParent(d);
         }
+
         return false;
     }
 }

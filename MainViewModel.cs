@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows;
 using LegendBorn.Mvvm;
 using LegendBorn.Models;
 using LegendBorn.Properties;
@@ -271,6 +272,25 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    // ===== Login URL (NEW) =====
+    private string? _loginUrl;
+    public string? LoginUrl
+    {
+        get => _loginUrl;
+        set
+        {
+            if (Set(ref _loginUrl, value))
+            {
+                Raise(nameof(HasLoginUrl));
+                Raise(nameof(LoginUrlVisibility));
+                RefreshCanStates();
+            }
+        }
+    }
+
+    public bool HasLoginUrl => !string.IsNullOrWhiteSpace(LoginUrl);
+    public Visibility LoginUrlVisibility => HasLoginUrl ? Visibility.Visible : Visibility.Collapsed;
+
     private Process? _runningProcess;
     public bool CanStop => _runningProcess is { HasExited: false };
 
@@ -299,6 +319,10 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand OpenSettingsCommand { get; private set; } = null!;
     public RelayCommand OpenStartCommand { get; private set; } = null!;
     public RelayCommand OpenProfileCommand { get; private set; } = null!;
+
+    // NEW: user actions for login link
+    public RelayCommand OpenLoginUrlCommand { get; private set; } = null!;
+    public RelayCommand CopyLoginUrlCommand { get; private set; } = null!;
 
     private readonly string _gameDir;
     private bool _commandsReady;
@@ -349,6 +373,10 @@ public sealed class MainViewModel : ObservableObject
         {
             if (IsLoggedIn) SelectedMenuIndex = 2;
         }, () => IsLoggedIn);
+
+        // NEW: commands for login URL
+        OpenLoginUrlCommand = new RelayCommand(OpenLoginUrl, () => HasLoginUrl);
+        CopyLoginUrlCommand = new RelayCommand(CopyLoginUrl, () => HasLoginUrl);
 
         _commandsReady = true;
 
@@ -534,10 +562,21 @@ public sealed class MainViewModel : ObservableObject
                 fullUrl += (fullUrl.Contains("?") ? "&" : "?") + "deviceId=" + Uri.EscapeDataString(deviceId);
             }
 
-            AppendLog($"Открываю: {fullUrl}");
-            Process.Start(new ProcessStartInfo { FileName = fullUrl, UseShellExecute = true });
+            // NEW: сохраняем ссылку, чтобы пользователь мог открыть/скопировать вручную
+            LoginUrl = fullUrl;
 
-            StatusText = "Открой сайт и нажми «В путь».";
+            AppendLog($"Ссылка для входа: {fullUrl}");
+
+            // NEW: пытаемся открыть более надёжно (несколько fallback-методов)
+            if (!TryOpenUrlInBrowser(fullUrl, out var openError))
+            {
+                AppendLog(openError);
+                StatusText = "Не удалось открыть браузер автоматически. Нажми «Открыть ссылку» или «Копировать ссылку».";
+            }
+            else
+            {
+                StatusText = "Открой сайт и нажми «В путь». Если сайт не открылся — нажми «Открыть ссылку» или «Копировать ссылку».";
+            }
 
             var hardDeadline = expiresAtUnix > 0
                 ? DateTimeOffset.FromUnixTimeSeconds(expiresAtUnix)
@@ -600,7 +639,103 @@ public sealed class MainViewModel : ObservableObject
         {
             IsBusy = false;
             IsWaitingSiteConfirm = false;
+
+            // NEW: очищаем ссылку, когда ожидание закончилось
+            LoginUrl = null;
+
             RefreshCanStates();
+        }
+    }
+
+    private void OpenLoginUrl()
+    {
+        var url = LoginUrl;
+        if (string.IsNullOrWhiteSpace(url))
+            return;
+
+        if (!TryOpenUrlInBrowser(url, out var err))
+        {
+            AppendLog(err);
+            StatusText = "Не удалось открыть ссылку. Скопируй её и открой вручную (например через VPN/другой браузер).";
+        }
+        else
+        {
+            StatusText = "Открыл ссылку в браузере. Если сайт блокируется — открой через VPN.";
+        }
+    }
+
+    private void CopyLoginUrl()
+    {
+        var url = LoginUrl;
+        if (string.IsNullOrWhiteSpace(url))
+            return;
+
+        try
+        {
+            App.Current?.Dispatcher.Invoke(() => Clipboard.SetText(url));
+            StatusText = "Ссылка скопирована в буфер обмена.";
+            AppendLog("Ссылка скопирована.");
+        }
+        catch (Exception ex)
+        {
+            AppendLog(ex.ToString());
+            StatusText = "Не удалось скопировать ссылку.";
+        }
+    }
+
+    private static bool TryOpenUrlInBrowser(string url, out string error)
+    {
+        // 1) самый стандартный путь
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = url,
+                UseShellExecute = true
+            });
+            error = "";
+            return true;
+        }
+        catch (Exception ex1)
+        {
+            // 2) через explorer.exe (часто работает, когда default browser сломан)
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = url,
+                    UseShellExecute = true
+                });
+                error = "";
+                return true;
+            }
+            catch (Exception ex2)
+            {
+                // 3) через cmd start (очень надёжный fallback)
+                try
+                {
+                    var escaped = url.Replace("\"", "\\\"");
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = "cmd.exe",
+                        Arguments = $"/c start \"\" \"{escaped}\"",
+                        CreateNoWindow = true,
+                        UseShellExecute = false
+                    });
+                    error = "";
+                    return true;
+                }
+                catch (Exception ex3)
+                {
+                    error =
+                        "Не удалось открыть браузер автоматически.\n" +
+                        $"1) {ex1.Message}\n" +
+                        $"2) {ex2.Message}\n" +
+                        $"3) {ex3.Message}";
+                    return false;
+                }
+            }
         }
     }
 
@@ -620,6 +755,8 @@ public sealed class MainViewModel : ObservableObject
             IsLoggedIn = false;
             IsWaitingSiteConfirm = false;
             SiteUserName = "Не вошли";
+
+            LoginUrl = null;
 
             AppendLog("Сайт: выход выполнен.");
         }
@@ -742,6 +879,9 @@ public sealed class MainViewModel : ObservableObject
         Raise(nameof(IsProfilePage));
         Raise(nameof(IsSettingsPage));
 
+        Raise(nameof(HasLoginUrl));
+        Raise(nameof(LoginUrlVisibility));
+
         if (!_commandsReady) return;
 
         RefreshVersionsCommand.RaiseCanExecuteChanged();
@@ -752,6 +892,9 @@ public sealed class MainViewModel : ObservableObject
         SiteLogoutCommand.RaiseCanExecuteChanged();
 
         OpenProfileCommand.RaiseCanExecuteChanged();
+
+        OpenLoginUrlCommand.RaiseCanExecuteChanged();
+        CopyLoginUrlCommand.RaiseCanExecuteChanged();
     }
 
     private void UpdateRezoniteFromProfile()
