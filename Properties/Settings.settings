@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<SettingsFile xmlns="http://schemas.microsoft.com/VisualStudio/2004/01/settings"
+              CurrentProfile="(Default)">
+    <Profiles />
+    <Settings>
+        <Setting Name="Username" Type="System.String" Scope="User">
+            <Value Profile="(Default)">Player</Value>
+        </Setting>
+        <Setting Name="ServerIp" Type="System.String" Scope="User">
+            <Value Profile="(Default)">legendcraft.minerent.io</Value>
+        </Setting>
+        <Setting Name="SelectedVersion" Type="System.String" Scope="User">
+            <Value Profile="(Default)"></Value>
+        </Setting>
+
+        <!-- ✅ NEW -->
+        <Setting Name="RamMb" Type="System.Int32" Scope="User">
+            <Value Profile="(Default)">4096</Value>
+        </Setting>
+
+        <!-- (опционально) можно удалить, если не используешь -->
+        <Setting Name="SiteLogin" Type="System.String" Scope="User">
+            <Value Profile="(Default)"></Value>
+        </Setting>
+    </Settings>
+</SettingsFile>

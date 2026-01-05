@@ -1,0 +1,125 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "LegendBorn/0.1.0": {
+        "dependencies": {
+          "CmlLib.Core": "4.0.6",
+          "Velopack": "0.0.1369-g1d5c984"
+        },
+        "runtime": {
+          "LegendBorn.dll": {}
+        }
+      },
+      "CmlLib.Core/4.0.6": {
+        "dependencies": {
+          "CmlLib.Core.Commons": "4.0.0",
+          "LZMA-SDK": "19.0.0",
+          "SharpZipLib": "1.4.2"
+        },
+        "runtime": {
+          "lib/netstandard2.0/CmlLib.Core.dll": {
+            "assemblyVersion": "4.0.6.0",
+            "fileVersion": "4.0.6.0"
+          }
+        }
+      },
+      "CmlLib.Core.Commons/4.0.0": {
+        "runtime": {
+          "lib/netstandard2.0/CmlLib.Core.Commons.dll": {
+            "assemblyVersion": "4.0.0.0",
+            "fileVersion": "4.0.0.0"
+          }
+        }
+      },
+      "LZMA-SDK/19.0.0": {
+        "runtime": {
+          "lib/netstandard2.0/SevenZip.dll": {
+            "assemblyVersion": "19.0.0.0",
+            "fileVersion": "19.0.0.0"
+          }
+        }
+      },
+      "NuGet.Versioning/6.14.0": {
+        "runtime": {
+          "lib/netstandard2.0/NuGet.Versioning.dll": {
+            "assemblyVersion": "6.14.0.116",
+            "fileVersion": "6.14.0.116"
+          }
+        }
+      },
+      "SharpZipLib/1.4.2": {
+        "runtime": {
+          "lib/net6.0/ICSharpCode.SharpZipLib.dll": {
+            "assemblyVersion": "1.4.2.13",
+            "fileVersion": "1.4.2.13"
+          }
+        }
+      },
+      "Velopack/0.0.1369-g1d5c984": {
+        "dependencies": {
+          "NuGet.Versioning": "6.14.0"
+        },
+        "runtime": {
+          "lib/net9.0/Velopack.dll": {
+            "assemblyVersion": "0.0.0.0",
+            "fileVersion": "0.0.1369.7516"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "LegendBorn/0.1.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "CmlLib.Core/4.0.6": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-57aUOFdDxfuD+tI3gigMK8jMuICYyw4CvpUj6d5/emdcl+3PscnOBWzj7SzrGRsTZ5RzgavP0dSmRwLfCiZRMA==",
+      "path": "cmllib.core/4.0.6",
+      "hashPath": "cmllib.core.4.0.6.nupkg.sha512"
+    },
+    "CmlLib.Core.Commons/4.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-8yD43GJA9RyFpqR8PGP9LpUKORBgOVXQVwH0OxwXnNp/gNpVQMIiraKdmHbFO5bhO7jujFOg1FdtUIFYYdlykg==",
+      "path": "cmllib.core.commons/4.0.0",
+      "hashPath": "cmllib.core.commons.4.0.0.nupkg.sha512"
+    },
+    "LZMA-SDK/19.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-/4yPB/YNtttdbxmHifyNUw6rUiBqCCUgeuokXsWvM/X9CDXJq1eQdI9uVgNpJdrzAZhTIAqNzbOP7Z2ogZt+2g==",
+      "path": "lzma-sdk/19.0.0",
+      "hashPath": "lzma-sdk.19.0.0.nupkg.sha512"
+    },
+    "NuGet.Versioning/6.14.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-4v4blkhCv8mpKtfx+z0G/X0daVCzdIaHSC51GkUspugi5JIMn2Bo8xm5PdZYF0U68gOBfz/+aPWMnpRd85Jbow==",
+      "path": "nuget.versioning/6.14.0",
+      "hashPath": "nuget.versioning.6.14.0.nupkg.sha512"
+    },
+    "SharpZipLib/1.4.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-yjj+3zgz8zgXpiiC3ZdF/iyTBbz2fFvMxZFEBPUcwZjIvXOf37Ylm+K58hqMfIBt5JgU/Z2uoUS67JmTLe973A==",
+      "path": "sharpziplib/1.4.2",
+      "hashPath": "sharpziplib.1.4.2.nupkg.sha512"
+    },
+    "Velopack/0.0.1369-g1d5c984": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-Cpc3ywXrng2oKcZvpjq/mdspF6v2bFa4AhZ2OwIgNKD+bnlw1QXRVGKLY5QyNiPz64FcUnPqSG2b2RkDujIl+A==",
+      "path": "velopack/0.0.1369-g1d5c984",
+      "hashPath": "velopack.0.0.1369-g1d5c984.nupkg.sha512"
+    }
+  }
+}
