@@ -11,16 +11,12 @@ public static class UpdateService
     // Repo URL БЕЗ .git
     private const string RepoUrl = "https://github.com/LegendsDie/LegendBornLauncher";
 
-    // Если репо приватный — задай переменную окружения LEGENDBORN_GH_TOKEN
-    // Если репо публичный — токен не нужен, может быть null
-    private static string? GetToken() =>
-        Environment.GetEnvironmentVariable("LEGENDBORN_GH_TOKEN");
-
     private static GithubSource CreateSource()
     {
+        // Публичный репо -> accessToken не нужен
         return new GithubSource(
             repoUrl: RepoUrl,
-            accessToken: GetToken(),
+            accessToken: null,
             prerelease: false
         );
     }
@@ -37,25 +33,6 @@ public static class UpdateService
         // Из Rider обычно приложение не установлено — просто выходим.
         if (!mgr.IsInstalled)
             return;
-
-        // Если репо приватный и токена нет — в silent режиме просто выходим.
-        // (Иначе обычные пользователи увидят ошибки.)
-        if (GetToken() is null)
-        {
-            if (!silent)
-            {
-                MessageBox.Show(
-                    "Репозиторий обновлений приватный, а токен не задан.\n\n" +
-                    "Варианты:\n" +
-                    "1) Сделать репозиторий публичным\n" +
-                    "2) Задать переменную окружения LEGENDBORN_GH_TOKEN\n",
-                    "Обновление",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-            }
-
-            return;
-        }
 
         try
         {
