@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("LegendBorn")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("0.1.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0+27c0eda8baa3a55be759b0af6c9ae6bc1520aad9")]
 [assembly: System.Reflection.AssemblyProductAttribute("LegendBorn")]
 [assembly: System.Reflection.AssemblyTitleAttribute("LegendBorn")]
 [assembly: System.Reflection.AssemblyVersionAttribute("0.1.0.0")]

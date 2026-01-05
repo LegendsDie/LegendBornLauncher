@@ -7,10 +7,26 @@ namespace LegendBorn;
 
 public partial class MainWindow : Window
 {
+    private bool _updatesChecked;
+
     public MainWindow()
     {
         InitializeComponent();
         DataContext = new MainViewModel();
+
+        // Запускаем проверку обновлений после загрузки окна
+        Loaded += MainWindow_OnLoaded;
+    }
+
+    private async void MainWindow_OnLoaded(object sender, RoutedEventArgs e)
+    {
+        if (_updatesChecked)
+            return;
+
+        _updatesChecked = true;
+
+        // Тихая проверка обновлений (без MessageBox)
+        await UpdateService.CheckAndUpdateAsync(silent: true);
     }
 
     private void Close_OnClick(object sender, RoutedEventArgs e) => Close();

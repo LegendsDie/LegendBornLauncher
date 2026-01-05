@@ -26,3 +26,5 @@ C:\Users\Legend\RiderProjects\LegendBorn\LegendBorn\obj\Debug\net10.0-windows\re
 C:\Users\Legend\RiderProjects\LegendBorn\LegendBorn\bin\Debug\net10.0-windows\NuGet.Versioning.dll
 C:\Users\Legend\RiderProjects\LegendBorn\LegendBorn\bin\Debug\net10.0-windows\Velopack.dll
 C:\Users\Legend\RiderProjects\LegendBorn\LegendBorn\obj\Debug\net10.0-windows\App.baml
+C:\Users\Legend\RiderProjects\LegendBorn\LegendBorn\obj\Debug\net10.0-windows\LegendBorn_Content.g.cs
+C:\Users\Legend\RiderProjects\LegendBorn\LegendBorn\obj\Debug\net10.0-windows\LegendBorn.sourcelink.json
