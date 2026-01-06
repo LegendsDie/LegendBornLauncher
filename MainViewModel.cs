@@ -40,7 +40,7 @@ public sealed class MainViewModel : ObservableObject
     public bool IsProfilePage { get => SelectedMenuIndex == 2; set { if (value) SelectedMenuIndex = 2; } }
     public bool IsSettingsPage { get => SelectedMenuIndex == 3; set { if (value) SelectedMenuIndex = 3; } }
 
-    // ===== LAUNCHER VERSION (NEW) =====
+    // ===== LAUNCHER VERSION =====
     public string LauncherVersion
     {
         get
@@ -132,9 +132,7 @@ public sealed class MainViewModel : ObservableObject
         {
             if (Set(ref _profile, value))
             {
-                // ✅ Резонит берём из /api/launcher/me (там он рассчитан из wallet/ledger)
                 UpdateRezoniteFromProfile();
-
                 Raise(nameof(AvatarUrl));
                 Raise(nameof(UserInitial));
                 RefreshCanStates();
@@ -149,10 +147,9 @@ public sealed class MainViewModel : ObservableObject
         set => Set(ref _rezonite, value);
     }
 
-    // База сайта, нужна чтобы корректно собрать абсолютный URL аватарки
     private const string SiteBaseUrl = "https://legendborn.ru";
 
-    // ===== АВАТАРКА: поддержка абсолютных и относительных ссылок =====
+    // ===== Avatar URL =====
     public string? AvatarUrl
     {
         get
@@ -250,6 +247,8 @@ public sealed class MainViewModel : ObservableObject
             if (Set(ref _isWaitingSiteConfirm, value))
             {
                 Raise(nameof(LoginButtonText));
+                // ВАЖНО: блок с кнопками должен появляться уже на этапе ожидания
+                Raise(nameof(LoginUrlVisibility));
                 RefreshCanStates();
             }
         }
@@ -297,7 +296,7 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    // ===== Login URL (NEW) =====
+    // ===== Login URL =====
     private string? _loginUrl;
     public string? LoginUrl
     {
@@ -307,14 +306,16 @@ public sealed class MainViewModel : ObservableObject
             if (Set(ref _loginUrl, value))
             {
                 Raise(nameof(HasLoginUrl));
-                Raise(nameof(LoginUrlVisibility));
                 RefreshCanStates();
             }
         }
     }
 
     public bool HasLoginUrl => !string.IsNullOrWhiteSpace(LoginUrl);
-    public Visibility LoginUrlVisibility => HasLoginUrl ? Visibility.Visible : Visibility.Collapsed;
+
+    // ✅ ВАЖНО: теперь видимость зависит от ОЖИДАНИЯ, а не от наличия ссылки.
+    // Так блок появляется сразу, как только нажали “Войти через сайт”.
+    public Visibility LoginUrlVisibility => IsWaitingSiteConfirm ? Visibility.Visible : Visibility.Collapsed;
 
     private Process? _runningProcess;
     public bool CanStop => _runningProcess is { HasExited: false };
@@ -345,11 +346,11 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand OpenStartCommand { get; private set; } = null!;
     public RelayCommand OpenProfileCommand { get; private set; } = null!;
 
-    // NEW: user actions for login link
+    // buttons (open/copy)
     public RelayCommand OpenLoginUrlCommand { get; private set; } = null!;
     public RelayCommand CopyLoginUrlCommand { get; private set; } = null!;
 
-    // NEW: launcher update check (manual from Settings)
+    // updates
     public AsyncRelayCommand CheckLauncherUpdatesCommand { get; private set; } = null!;
 
     private readonly string _gameDir;
@@ -378,7 +379,6 @@ public sealed class MainViewModel : ObservableObject
             App.Current?.Dispatcher.Invoke(() => ProgressPercent = p);
         };
 
-        // Commands
         RefreshVersionsCommand = new AsyncRelayCommand(RefreshVersionsAsync, () => !IsBusy && !IsWaitingSiteConfirm);
         PlayCommand = new AsyncRelayCommand(PlayAsync, () => CanPlay);
         OpenGameDirCommand = new RelayCommand(OpenGameDir);
@@ -391,7 +391,6 @@ public sealed class MainViewModel : ObservableObject
 
         OpenSettingsCommand = new RelayCommand(() => SelectedMenuIndex = 3);
 
-        // кнопка "LegendBorn Launcher" -> Start/Auth
         OpenStartCommand = new RelayCommand(() =>
         {
             SelectedMenuIndex = IsLoggedIn ? 1 : 0;
@@ -402,18 +401,15 @@ public sealed class MainViewModel : ObservableObject
             if (IsLoggedIn) SelectedMenuIndex = 2;
         }, () => IsLoggedIn);
 
-        // NEW: commands for login URL
         OpenLoginUrlCommand = new RelayCommand(OpenLoginUrl, () => HasLoginUrl);
         CopyLoginUrlCommand = new RelayCommand(CopyLoginUrl, () => HasLoginUrl);
 
-        // NEW: manual update check (show "no updates")
         CheckLauncherUpdatesCommand = new AsyncRelayCommand(
             async () => await UpdateService.CheckAndUpdateAsync(silent: false, showNoUpdates: true),
             () => !IsBusy);
 
         _commandsReady = true;
 
-        // settings
         Username = TryLoadStringSetting("Username", "Player") ?? "Player";
         ServerIp = TryLoadStringSetting("ServerIp", "legendcraft.minerent.io") ?? "legendcraft.minerent.io";
 
@@ -497,7 +493,6 @@ public sealed class MainViewModel : ObservableObject
             if (_tokens is null || string.IsNullOrWhiteSpace(_tokens.AccessToken))
                 return;
 
-            // 1 раз в день на пользователя (идемпотентно)
             var key = "launcher_login";
             var idem = $"launcher_login:{DateTime.UtcNow:yyyy-MM-dd}";
 
@@ -510,7 +505,7 @@ public sealed class MainViewModel : ObservableObject
         }
         catch
         {
-            // не критично
+            // not critical
         }
     }
 
@@ -575,7 +570,12 @@ public sealed class MainViewModel : ObservableObject
 
         try
         {
+            // ✅ сразу включаем “Ожидание...” и показываем блок с кнопками
             IsWaitingSiteConfirm = true;
+
+            // ✅ сброс старой ссылки, чтобы не копировали “прошлую”
+            LoginUrl = null;
+
             StatusText = "Запрос входа...";
             ProgressPercent = 0;
 
@@ -595,18 +595,20 @@ public sealed class MainViewModel : ObservableObject
                 fullUrl += (fullUrl.Contains("?") ? "&" : "?") + "deviceId=" + Uri.EscapeDataString(deviceId);
             }
 
+            // ✅ ссылка готова — можно копировать/открывать
             LoginUrl = fullUrl;
 
             AppendLog($"Ссылка для входа: {fullUrl}");
 
+            // авто-открытие оставляем, но пользователю доступны кнопки независимо от результата
             if (!TryOpenUrlInBrowser(fullUrl, out var openError))
             {
                 AppendLog(openError);
-                StatusText = "Не удалось открыть браузер автоматически. Нажми «Открыть ссылку» или «Копировать ссылку».";
+                StatusText = "Если сайт не открылся — нажми «Открыть принудительно» или «Скопировать ссылку».";
             }
             else
             {
-                StatusText = "Открой сайт и нажми «В путь». Если сайт не открылся — нажми «Открыть ссылку» или «Копировать ссылку».";
+                StatusText = "Открой сайт и нажми «В путь». Если не открылся — используй кнопки ниже.";
             }
 
             var hardDeadline = expiresAtUnix > 0
@@ -670,7 +672,10 @@ public sealed class MainViewModel : ObservableObject
         {
             IsBusy = false;
             IsWaitingSiteConfirm = false;
+
+            // можно чистить ссылку после завершения ожидания
             LoginUrl = null;
+
             RefreshCanStates();
         }
     }
@@ -684,7 +689,7 @@ public sealed class MainViewModel : ObservableObject
         if (!TryOpenUrlInBrowser(url, out var err))
         {
             AppendLog(err);
-            StatusText = "Не удалось открыть ссылку. Скопируй её и открой вручную (например через VPN/другой браузер).";
+            StatusText = "Не удалось открыть ссылку. Скопируй и открой вручную (например через VPN/другой браузер).";
         }
         else
         {
@@ -982,13 +987,7 @@ public sealed class MainViewModel : ObservableObject
         {
             Settings.Default[key] = value;
         }
-        catch (SettingsPropertyNotFoundException)
-        {
-            // ignore
-        }
-        catch
-        {
-            // ignore
-        }
+        catch (SettingsPropertyNotFoundException) { }
+        catch { }
     }
 }

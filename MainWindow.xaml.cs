@@ -3,7 +3,7 @@ using System.Windows;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
-using LegendBorn.Services; // ✅ ВАЖНО: UpdateService теперь здесь
+using LegendBorn.Services; // UpdateService в LegendBorn.Services
 
 namespace LegendBorn;
 
@@ -28,7 +28,7 @@ public partial class MainWindow : Window
 
         _updatesChecked = true;
 
-        // ✅ В фоне, чтобы не подвисал UI
+        // В фоне, чтобы не подвисал UI
         _ = RunUpdateCheckSafeAsync();
     }
 
@@ -39,8 +39,8 @@ public partial class MainWindow : Window
             if (_isClosing)
                 return;
 
-            // Тихая проверка обновлений (без MessageBox)
-            await UpdateService.CheckAndUpdateAsync(silent: true);
+            // ✅ На старте НЕ показываем "обновлений нет", но если обновление есть — спросим
+            await UpdateService.CheckAndUpdateAsync(silent: false, showNoUpdates: false);
         }
         catch
         {
@@ -57,11 +57,9 @@ public partial class MainWindow : Window
         if (e.ChangedButton != MouseButton.Left)
             return;
 
-        // если клик по кнопке/интерактиву — не начинаем DragMove
         if (IsClickOnInteractive(e.OriginalSource as DependencyObject))
             return;
 
-        // double click = maximize/restore
         if (e.ClickCount == 2)
         {
             WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
@@ -78,8 +76,6 @@ public partial class MainWindow : Window
             if (d is ButtonBase) return true;
             d = VisualTreeHelper.GetParent(d);
         }
-
         return false;
     }
 }
-    

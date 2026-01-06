@@ -135,12 +135,14 @@
             </Setter>
         </Style>
 
-        <!-- ===== Profile pill ===== -->
-        <Style x:Key="ProfilePillButton" TargetType="Button">
+        <!-- ===== Profile button (FIXED LOOK) ===== -->
+        <Style x:Key="ProfileButton" TargetType="Button">
+            <Setter Property="Height" Value="34"/>
+            <Setter Property="Padding" Value="10,6"/>
             <Setter Property="Background" Value="#121A2B"/>
             <Setter Property="BorderBrush" Value="{StaticResource Stroke}"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="Foreground" Value="{StaticResource TextStrong}"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
                 <Setter.Value>
@@ -149,7 +151,7 @@
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="999">
+                                CornerRadius="12">
                             <ContentPresenter Margin="{TemplateBinding Padding}"
                                               HorizontalAlignment="Center"
                                               VerticalAlignment="Center"/>
@@ -179,7 +181,7 @@
     <Border CornerRadius="14" Background="{StaticResource Bg0}">
         <Grid>
 
-            <!-- ===== BACKGROUND (общий) ===== -->
+            <!-- ===== BACKGROUND ===== -->
             <Grid>
                 <Rectangle>
                     <Rectangle.Fill>
@@ -229,7 +231,7 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
-                        <!-- LEFT: кнопка "на главную" -->
+                        <!-- LEFT -->
                         <Button Grid.Column="0"
                                 Background="Transparent"
                                 BorderThickness="0"
@@ -254,37 +256,36 @@
                             </StackPanel>
                         </Button>
 
-                        <!-- DRAG зона -->
+                        <!-- DRAG -->
                         <Grid Grid.Column="0"
                               Margin="260,0,0,0"
                               Background="Transparent"
                               MouseLeftButtonDown="TitleBar_OnMouseLeftButtonDown"/>
 
-                        <!-- RIGHT BUTTONS -->
+                        <!-- RIGHT -->
                         <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
 
                             <!-- Profile -->
-                            <Button Style="{StaticResource ProfilePillButton}"
+                            <Button Style="{StaticResource ProfileButton}"
                                     Margin="0,0,10,0"
                                     Visibility="{Binding IsLoggedIn, Converter={StaticResource BoolToVis}}"
                                     Command="{Binding OpenProfileCommand}">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto"/>
-                                        <ColumnDefinition Width="10"/>
+                                        <ColumnDefinition Width="8"/>
                                         <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
 
-                                    <Border Width="24" Height="24" CornerRadius="999" ClipToBounds="True" Background="#24324B">
+                                    <Border Width="24" Height="24" CornerRadius="10" ClipToBounds="True" Background="#24324B">
                                         <Grid>
                                             <TextBlock Text="{Binding UserInitial}"
                                                        FontWeight="Bold"
                                                        FontSize="12"
                                                        HorizontalAlignment="Center"
                                                        VerticalAlignment="Center"/>
-
-                                            <!-- важно: IsAsync=True чтобы не подвисал UI на загрузке -->
+                                            <!-- IsAsync=True чтобы не подвисал UI -->
                                             <Image Source="{Binding AvatarUrl, IsAsync=True}"
                                                    Stretch="UniformToFill"/>
                                         </Grid>
@@ -400,49 +401,30 @@
                                             Padding="18,0"
                                             Visibility="{Binding IsWaitingSiteConfirm, Converter={StaticResource BoolToVis}}"/>
 
-                                    <!-- ===== FALLBACK LOGIN LINK (open/copy) ===== -->
+                                    <!-- ✅ НОВОЕ: без TextBox, только 2 кнопки, показываем СРАЗУ при ожидании -->
                                     <Border Margin="0,14,0,0"
                                             Background="#0F172A"
                                             BorderBrush="{StaticResource Stroke}"
                                             BorderThickness="1"
                                             CornerRadius="14"
                                             Padding="14"
-                                            Visibility="{Binding LoginUrlVisibility}">
+                                            Visibility="{Binding IsWaitingSiteConfirm, Converter={StaticResource BoolToVis}}">
                                         <StackPanel>
                                             <TextBlock Text="Если сайт не открылся автоматически" FontWeight="SemiBold"/>
                                             <TextBlock Margin="0,6,0,0" Foreground="{StaticResource TextDim}" FontSize="12">
-                                                Нажми «Открыть ссылку» (принудительно) или скопируй и открой в браузере.
-                                                При необходимости — через VPN/другой браузер.
+                                                Для РФ часто нужен VPN. Нажми «Открыть принудительно» или «Скопировать ссылку».
                                             </TextBlock>
 
-                                            <Border Margin="0,10,0,0"
-                                                    Background="#0B0F1A"
-                                                    BorderBrush="{StaticResource Stroke}"
-                                                    BorderThickness="1"
-                                                    CornerRadius="12"
-                                                    Padding="10">
-                                                <TextBox Text="{Binding LoginUrl}"
-                                                         IsReadOnly="True"
-                                                         Background="Transparent"
-                                                         BorderThickness="0"
-                                                         Foreground="{StaticResource TextStrong}"
-                                                         FontSize="12"
-                                                         TextWrapping="Wrap"
-                                                         MinHeight="52"
-                                                         VerticalScrollBarVisibility="Disabled"
-                                                         HorizontalScrollBarVisibility="Disabled"/>
-                                            </Border>
-
-                                            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
                                                 <Button Style="{StaticResource PrimaryButton}"
-                                                        Content="Открыть ссылку"
+                                                        Content="Открыть принудительно"
                                                         Command="{Binding OpenLoginUrlCommand}"
                                                         Height="40"
                                                         Padding="18,0"
                                                         Margin="0,0,10,0"/>
 
                                                 <Button Style="{StaticResource GhostButton}"
-                                                        Content="Копировать"
+                                                        Content="Скопировать ссылку"
                                                         Command="{Binding CopyLoginUrlCommand}"
                                                         Height="40"
                                                         Padding="18,0"/>

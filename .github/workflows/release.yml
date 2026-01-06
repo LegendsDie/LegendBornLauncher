@@ -3,9 +3,14 @@ name: Release (Velopack)
 on:
   push:
     branches: [ "main" ]
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: velopack-release-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CS_PROJ: LegendBorn.csproj
@@ -13,12 +18,13 @@ env:
   # PackId должен быть стабильным и не меняться
   PACK_ID: LegendBornLauncher
 
-  # Имя exe после publish. Обычно = имя проекта (LegendBorn.exe)
+  # Имя exe после publish (обычно = имя проекта)
   MAIN_EXE: LegendBorn.exe
 
   PACK_TITLE: LegendBorn Launcher
 
-  # Версия vpk как у твоего Velopack пакета
+  # Версия vpk tool (dotnet tool). Не обязана совпадать 1-в-1 с nuget Velopack,
+  # но если ты закрепил - оставляем как есть.
   VPK_VERSION: 0.0.1369-g1d5c984
 
 jobs:
@@ -44,39 +50,47 @@ jobs:
         shell: pwsh
         run: |
           [xml]$p = Get-Content "${{ env.CS_PROJ }}"
-          $v = $p.Project.PropertyGroup.Version | Select-Object -First 1
-          if (-not $v) { throw "Version not found in csproj" }
-          "version=$v" >> $env:GITHUB_OUTPUT
+          $pg = $p.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -First 1
+          if (-not $pg) { throw "Version not found in csproj" }
+          $v = ($pg.Version | Select-Object -First 1).ToString().Trim()
+          if ([string]::IsNullOrWhiteSpace($v)) { throw "Version is empty in csproj" }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Check if tag already exists
         id: tagcheck
         shell: pwsh
         run: |
-          git fetch --tags
+          git fetch --tags --force
           $tag = "v${{ steps.ver.outputs.version }}"
           $exists = (git tag -l $tag)
-          if ($exists) { "exists=true" >> $env:GITHUB_OUTPUT } else { "exists=false" >> $env:GITHUB_OUTPUT }
+          if ($exists) { "exists=true" | Out-File $env:GITHUB_OUTPUT -Append } else { "exists=false" | Out-File $env:GITHUB_OUTPUT -Append }
+          Write-Host "Tag=$tag exists=$($exists -ne $null -and $exists -ne '')"
+
+      - name: Restore
+        if: steps.tagcheck.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          dotnet restore ${{ env.CS_PROJ }}
 
       - name: Publish app
+        if: steps.tagcheck.outputs.exists != 'true'
         shell: pwsh
         run: |
           dotnet publish ${{ env.CS_PROJ }} -c Release -r win-x64 --self-contained true -o publish
 
       - name: Install vpk
+        if: steps.tagcheck.outputs.exists != 'true'
         shell: pwsh
         run: |
           dotnet tool install -g vpk --version ${{ env.VPK_VERSION }}
-          echo "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Download previous releases (optional)
         if: steps.tagcheck.outputs.exists != 'true'
         shell: pwsh
+        continue-on-error: true
         run: |
-          try {
-            vpk download github --repoUrl https://github.com/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }}
-          } catch {
-            Write-Host "No previous releases found (first release) - continuing..."
-          }
+          vpk download github --repoUrl https://github.com/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Velopack packages (Releases folder)
         if: steps.tagcheck.outputs.exists != 'true'
