@@ -245,21 +245,25 @@
 
                                 <StackPanel Margin="10,0,0,0">
                                     <TextBlock Text="LEGENDBORN" FontWeight="Bold" FontSize="13"/>
-                                    <TextBlock Text="Launcher" Foreground="{StaticResource TextDim}" FontSize="11"/>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="Launcher" Foreground="{StaticResource TextDim}" FontSize="11"/>
+                                        <TextBlock Text="  •  " Foreground="{StaticResource TextDim}" FontSize="11"/>
+                                        <TextBlock Text="{Binding LauncherVersion}" Foreground="{StaticResource TextDim}" FontSize="11"/>
+                                    </StackPanel>
                                 </StackPanel>
                             </StackPanel>
                         </Button>
 
-                        <!-- DRAG зона (остаток слева, чтобы можно было двигать окно) -->
+                        <!-- DRAG зона -->
                         <Grid Grid.Column="0"
-                              Margin="220,0,0,0"
+                              Margin="260,0,0,0"
                               Background="Transparent"
                               MouseLeftButtonDown="TitleBar_OnMouseLeftButtonDown"/>
 
                         <!-- RIGHT BUTTONS -->
                         <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
 
-                            <!-- Profile (с аватаркой с сайта) -->
+                            <!-- Profile -->
                             <Button Style="{StaticResource ProfilePillButton}"
                                     Margin="0,0,10,0"
                                     Visibility="{Binding IsLoggedIn, Converter={StaticResource BoolToVis}}"
@@ -272,18 +276,16 @@
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
 
-                                    <!-- avatar -->
                                     <Border Width="24" Height="24" CornerRadius="999" ClipToBounds="True" Background="#24324B">
                                         <Grid>
-                                            <!-- fallback: буква -->
                                             <TextBlock Text="{Binding UserInitial}"
                                                        FontWeight="Bold"
                                                        FontSize="12"
                                                        HorizontalAlignment="Center"
                                                        VerticalAlignment="Center"/>
 
-                                            <!-- если AvatarUrl есть — картинка просто перекроет букву -->
-                                            <Image Source="{Binding AvatarUrl}"
+                                            <!-- важно: IsAsync=True чтобы не подвисал UI на загрузке -->
+                                            <Image Source="{Binding AvatarUrl, IsAsync=True}"
                                                    Stretch="UniformToFill"/>
                                         </Grid>
                                     </Border>
@@ -398,7 +400,7 @@
                                             Padding="18,0"
                                             Visibility="{Binding IsWaitingSiteConfirm, Converter={StaticResource BoolToVis}}"/>
 
-                                    <!-- ===== NEW: FALLBACK LOGIN LINK (open/copy) ===== -->
+                                    <!-- ===== FALLBACK LOGIN LINK (open/copy) ===== -->
                                     <Border Margin="0,14,0,0"
                                             Background="#0F172A"
                                             BorderBrush="{StaticResource Stroke}"
@@ -409,7 +411,8 @@
                                         <StackPanel>
                                             <TextBlock Text="Если сайт не открылся автоматически" FontWeight="SemiBold"/>
                                             <TextBlock Margin="0,6,0,0" Foreground="{StaticResource TextDim}" FontSize="12">
-                                                Нажми «Открыть ссылку» или скопируй и открой в браузере (при необходимости через VPN/другой браузер).
+                                                Нажми «Открыть ссылку» (принудительно) или скопируй и открой в браузере.
+                                                При необходимости — через VPN/другой браузер.
                                             </TextBlock>
 
                                             <Border Margin="0,10,0,0"
@@ -461,22 +464,18 @@
                     <!-- 1) START -->
                     <TabItem>
                         <Grid>
-                            <!-- ВАЖНО: фон-картинка теперь под ВСЕЙ карточкой Start (и под кнопками тоже) -->
                             <Border CornerRadius="18"
                                     BorderBrush="{StaticResource Stroke}"
                                     BorderThickness="1"
                                     ClipToBounds="True">
 
                                 <Grid>
-                                    <!-- фон -->
                                     <Image Source="pack://application:,,,/Assets/legendcraft.jpg"
                                            Stretch="UniformToFill"
                                            Opacity="0.40"/>
 
-                                    <!-- общий затемняющий слой -->
                                     <Rectangle Fill="#A00B0F1A"/>
 
-                                    <!-- градиент для читаемости текста/кнопок -->
                                     <Rectangle>
                                         <Rectangle.Fill>
                                             <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
@@ -487,7 +486,6 @@
                                         </Rectangle.Fill>
                                     </Rectangle>
 
-                                    <!-- контент с отступом -->
                                     <Border Background="#00000000" Padding="22">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
@@ -508,7 +506,6 @@
                                                     NeoForge 1.21.1 • сборка и моды обновляются автоматически с сайта перед запуском.
                                                 </TextBlock>
 
-                                                <!-- SERVER CARD -->
                                                 <Border Margin="0,18,0,0"
                                                         Background="#900B0F1A"
                                                         BorderBrush="{StaticResource Stroke}"
@@ -554,7 +551,6 @@
                                                     </Grid>
                                                 </Border>
 
-                                                <!-- STATUS -->
                                                 <Border Margin="0,16,0,0"
                                                         Background="#900B0F1A"
                                                         BorderBrush="{StaticResource Stroke}"
@@ -693,8 +689,15 @@
 
                                     <StackPanel Grid.Column="2" VerticalAlignment="Bottom">
                                         <Button Style="{StaticResource GhostButton}"
-                                                Content="Проверить обновления"
+                                                Content="Проверить обновления лаунчера"
+                                                Command="{Binding CheckLauncherUpdatesCommand}"
+                                                Height="42"
+                                                Padding="18,0"/>
+
+                                        <Button Style="{StaticResource GhostButton}"
+                                                Content="Проверить сборку (версии)"
                                                 Command="{Binding RefreshVersionsCommand}"
+                                                Margin="0,12,0,0"
                                                 Height="42"
                                                 Padding="18,0"/>
 
@@ -743,7 +746,6 @@
                                             </ItemsControl.ItemTemplate>
                                         </ItemsControl>
                                     </ScrollViewer>
-
 
                                 </Grid>
                             </Border>

@@ -4,7 +4,7 @@ using System.Windows;
 using Velopack;
 using Velopack.Sources;
 
-namespace LegendBorn;
+namespace LegendBorn.Services;
 
 public static class UpdateService
 {
@@ -13,7 +13,7 @@ public static class UpdateService
 
     private static GithubSource CreateSource()
     {
-        // Публичный репо -> accessToken не нужен
+        // Публичный репо -> токен не нужен
         return new GithubSource(
             repoUrl: RepoUrl,
             accessToken: null,
@@ -22,15 +22,15 @@ public static class UpdateService
     }
 
     /// <summary>
-    /// silent=true  -> без окон, тихо
-    /// silent=false -> показывает окна
+    /// silent=true  -> вообще без окон (полностью тихо)
+    /// silent=false -> показать окно ТОЛЬКО если есть обновление.
+    /// showNoUpdates=true -> при ручной проверке покажет "обновлений нет".
     /// </summary>
-    public static async Task CheckAndUpdateAsync(bool silent)
+    public static async Task CheckAndUpdateAsync(bool silent, bool showNoUpdates = false)
     {
         var mgr = new UpdateManager(CreateSource());
 
-        // Обновления работают только у установленной версии (через Setup.exe).
-        // Из Rider обычно приложение не установлено — просто выходим.
+        // Обновления работают только у установленной версии (через Setup.exe / Velopack install).
         if (!mgr.IsInstalled)
             return;
 
@@ -46,11 +46,11 @@ public static class UpdateService
             var updates = await mgr.CheckForUpdatesAsync();
             if (updates is null)
             {
-                if (!silent)
+                if (!silent && showNoUpdates)
                 {
                     MessageBox.Show(
-                        "Обновлений нет.",
-                        "Обновление",
+                        "Обновлений лаунчера нет.",
+                        "Обновление лаунчера",
                         MessageBoxButton.OK,
                         MessageBoxImage.Information);
                 }
@@ -63,8 +63,8 @@ public static class UpdateService
             if (!silent)
             {
                 var ask = MessageBox.Show(
-                    $"Доступно обновление: {target.Version}\n\nСкачать и перезапустить?",
-                    "Обновление",
+                    $"Доступно обновление лаунчера: {target.Version}\n\nОбновить сейчас? Лаунчер перезапустится.",
+                    "Обновление лаунчера",
                     MessageBoxButton.YesNo,
                     MessageBoxImage.Information);
 
@@ -74,7 +74,7 @@ public static class UpdateService
 
             await mgr.DownloadUpdatesAsync(updates);
 
-            // Применяем после выхода приложения + перезапуск
+            // Применяем после закрытия приложения и перезапускаем
             mgr.WaitExitThenApplyUpdates(target, restart: true);
             Application.Current.Shutdown();
         }
@@ -84,10 +84,15 @@ public static class UpdateService
             {
                 MessageBox.Show(
                     $"Ошибка обновления:\n{ex}",
-                    "Обновление",
+                    "Обновление лаунчера",
                     MessageBoxButton.OK,
                     MessageBoxImage.Error);
             }
+        }
+        finally
+        {
+            // На случай если в будущих версиях UpdateManager станет IDisposable (без поломки текущей)
+            (mgr as IDisposable)?.Dispose();
         }
     }
 }

@@ -4,6 +4,7 @@ using System.Configuration;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -38,6 +39,30 @@ public sealed class MainViewModel : ObservableObject
     public bool IsStartPage { get => SelectedMenuIndex == 1; set { if (value) SelectedMenuIndex = 1; } }
     public bool IsProfilePage { get => SelectedMenuIndex == 2; set { if (value) SelectedMenuIndex = 2; } }
     public bool IsSettingsPage { get => SelectedMenuIndex == 3; set { if (value) SelectedMenuIndex = 3; } }
+
+    // ===== LAUNCHER VERSION (NEW) =====
+    public string LauncherVersion
+    {
+        get
+        {
+            try
+            {
+                var asm = Assembly.GetEntryAssembly() ?? Assembly.GetExecutingAssembly();
+
+                var info = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+                if (!string.IsNullOrWhiteSpace(info))
+                    return "v" + info.Split('+')[0];
+
+                var v = asm.GetName().Version;
+                if (v is null) return "v?";
+                return $"v{v.Major}.{v.Minor}.{v.Build}";
+            }
+            catch
+            {
+                return "v?";
+            }
+        }
+    }
 
     // ===== Pack display (UI) =====
     public string PackName => "LegendBorn";
@@ -324,6 +349,9 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand OpenLoginUrlCommand { get; private set; } = null!;
     public RelayCommand CopyLoginUrlCommand { get; private set; } = null!;
 
+    // NEW: launcher update check (manual from Settings)
+    public AsyncRelayCommand CheckLauncherUpdatesCommand { get; private set; } = null!;
+
     private readonly string _gameDir;
     private bool _commandsReady;
 
@@ -377,6 +405,11 @@ public sealed class MainViewModel : ObservableObject
         // NEW: commands for login URL
         OpenLoginUrlCommand = new RelayCommand(OpenLoginUrl, () => HasLoginUrl);
         CopyLoginUrlCommand = new RelayCommand(CopyLoginUrl, () => HasLoginUrl);
+
+        // NEW: manual update check (show "no updates")
+        CheckLauncherUpdatesCommand = new AsyncRelayCommand(
+            async () => await UpdateService.CheckAndUpdateAsync(silent: false, showNoUpdates: true),
+            () => !IsBusy);
 
         _commandsReady = true;
 
@@ -562,12 +595,10 @@ public sealed class MainViewModel : ObservableObject
                 fullUrl += (fullUrl.Contains("?") ? "&" : "?") + "deviceId=" + Uri.EscapeDataString(deviceId);
             }
 
-            // NEW: сохраняем ссылку, чтобы пользователь мог открыть/скопировать вручную
             LoginUrl = fullUrl;
 
             AppendLog($"Ссылка для входа: {fullUrl}");
 
-            // NEW: пытаемся открыть более надёжно (несколько fallback-методов)
             if (!TryOpenUrlInBrowser(fullUrl, out var openError))
             {
                 AppendLog(openError);
@@ -639,10 +670,7 @@ public sealed class MainViewModel : ObservableObject
         {
             IsBusy = false;
             IsWaitingSiteConfirm = false;
-
-            // NEW: очищаем ссылку, когда ожидание закончилось
             LoginUrl = null;
-
             RefreshCanStates();
         }
     }
@@ -685,7 +713,6 @@ public sealed class MainViewModel : ObservableObject
 
     private static bool TryOpenUrlInBrowser(string url, out string error)
     {
-        // 1) самый стандартный путь
         try
         {
             Process.Start(new ProcessStartInfo
@@ -698,7 +725,6 @@ public sealed class MainViewModel : ObservableObject
         }
         catch (Exception ex1)
         {
-            // 2) через explorer.exe (часто работает, когда default browser сломан)
             try
             {
                 Process.Start(new ProcessStartInfo
@@ -712,7 +738,6 @@ public sealed class MainViewModel : ObservableObject
             }
             catch (Exception ex2)
             {
-                // 3) через cmd start (очень надёжный fallback)
                 try
                 {
                     var escaped = url.Replace("\"", "\\\"");
@@ -895,6 +920,8 @@ public sealed class MainViewModel : ObservableObject
 
         OpenLoginUrlCommand.RaiseCanExecuteChanged();
         CopyLoginUrlCommand.RaiseCanExecuteChanged();
+
+        CheckLauncherUpdatesCommand.RaiseCanExecuteChanged();
     }
 
     private void UpdateRezoniteFromProfile()

@@ -7,9 +7,9 @@ namespace LegendBorn;
 public partial class App : Application
 {
     [STAThread]
-    public static void Main(string[] args)
+    private static void Main(string[] args)
     {
-        // Velopack должен выполниться ДО открытия окна (обновления / relaunch)
+        // ВАЖНО: Velopack hooks должны выполниться ДО старта WPF UI
         VelopackApp.Build().Run();
 
         var app = new App();

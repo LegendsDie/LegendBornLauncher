@@ -1,9 +1,9 @@
-﻿using System;
-using System.Threading.Tasks;
+﻿using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using LegendBorn.Services; // ✅ ВАЖНО: UpdateService теперь здесь
 
 namespace LegendBorn;
 
@@ -28,7 +28,7 @@ public partial class MainWindow : Window
 
         _updatesChecked = true;
 
-        // ВАЖНО: запуск в фоне, чтобы не подвисал UI на старте.
+        // ✅ В фоне, чтобы не подвисал UI
         _ = RunUpdateCheckSafeAsync();
     }
 
@@ -45,7 +45,6 @@ public partial class MainWindow : Window
         catch
         {
             // Любая ошибка апдейта не должна ломать запуск лаунчера.
-            // Логи при желании можно писать в файл/LogLines, но сейчас просто молчим.
         }
     }
 
@@ -83,3 +82,4 @@ public partial class MainWindow : Window
         return false;
     }
 }
+    
