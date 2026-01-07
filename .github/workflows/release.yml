@@ -96,8 +96,8 @@ jobs:
         run: |
           dotnet tool update -g vpk --version "${{ env.VPK_VERSION }}"
           "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
-          vpk --version
-
+          vpk --help
+      
       - name: Download previous releases (optional)
         shell: pwsh
         continue-on-error: true
