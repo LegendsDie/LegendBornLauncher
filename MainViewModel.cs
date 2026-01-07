@@ -64,18 +64,55 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    // ===== Pack display (UI) =====
-    public string PackName => "LegendBorn";
-    public string MinecraftVersion => "1.21.1";
-    public string LoaderName => "NeoForge";
-    public string LoaderVersion => "21.1.34";
+    // ===== Pack display (UI) — зависит от сервера =====
+    public string PackName => SelectedServer?.Name ?? "LegendBorn";
+    public string MinecraftVersion => SelectedServer?.MinecraftVersion ?? "1.21.1";
+    public string LoaderName => FormatLoaderName(SelectedServer?.LoaderName);
+    public string LoaderVersion => SelectedServer?.LoaderVersion ?? "";
     public string BuildDisplayName => $"{PackName} • {LoaderName} {MinecraftVersion}";
 
-    // ===== One server =====
+    private static string FormatLoaderName(string? loaderType)
+    {
+        var t = (loaderType ?? "vanilla").Trim().ToLowerInvariant();
+        return t switch
+        {
+            "vanilla" => "Vanilla",
+            "neoforge" => "NeoForge",
+            "forge" => "Forge",
+            "fabric" => "Fabric",
+            "quilt" => "Quilt",
+            _ => string.IsNullOrWhiteSpace(loaderType) ? "Vanilla" : loaderType.Trim()
+        };
+    }
+
+    // ===== Server model (UI) =====
     public sealed class ServerEntry
     {
+        public string Id { get; init; } = "";
         public string Name { get; init; } = "";
         public string Address { get; init; } = "";
+
+        public string MinecraftVersion { get; init; } = "1.21.1";
+
+        // здесь хранится ТИП: vanilla / neoforge / forge (для UI форматируем отдельно)
+        public string LoaderName { get; init; } = "vanilla";
+        public string LoaderVersion { get; init; } = "";
+
+        // installerUrl из servers.json (обязательно для neoforge/forge)
+        public string LoaderInstallerUrl { get; init; } = "";
+
+        // ⚠️ оставлено для совместимости, но больше не нужно для запуска
+        public string ClientVersionId { get; init; } = "";
+
+        // базовый URL папки pack (manifest.json + blobs/...), должен заканчиваться "/"
+        public string PackBaseUrl { get; init; } = "https://legendborn.ru/launcher/pack/";
+
+        // доп. зеркала pack (опционально)
+        public string[] PackMirrors { get; init; } = Array.Empty<string>();
+
+        // синхронизировать сборку перед запуском
+        public bool SyncPack { get; init; } = true;
+
         public override string ToString() => Name;
     }
 
@@ -90,7 +127,23 @@ public sealed class MainViewModel : ObservableObject
             if (Set(ref _selectedServer, value))
             {
                 if (value is not null)
+                {
                     ServerIp = value.Address;
+
+                    // для UI показываем “AUTO…”
+                    SelectedVersion = MakeAutoVersionLabel(value);
+
+                    TrySaveSetting("SelectedServerId", value.Id);
+                    Settings.Default.Save();
+
+                    Raise(nameof(PackName));
+                    Raise(nameof(MinecraftVersion));
+                    Raise(nameof(LoaderName));
+                    Raise(nameof(LoaderVersion));
+                    Raise(nameof(BuildDisplayName));
+                }
+
+                RefreshCanStates();
             }
         }
     }
@@ -114,6 +167,9 @@ public sealed class MainViewModel : ObservableObject
 
     // ===== Core =====
     private readonly MinecraftService _mc;
+
+    // ===== Servers list =====
+    private readonly ServerListService _servers = new();
 
     // ===== Site auth =====
     private readonly SiteAuthService _site = new();
@@ -149,7 +205,6 @@ public sealed class MainViewModel : ObservableObject
 
     private const string SiteBaseUrl = "https://legendborn.ru";
 
-    // ===== Avatar URL =====
     public string? AvatarUrl
     {
         get
@@ -247,7 +302,6 @@ public sealed class MainViewModel : ObservableObject
             if (Set(ref _isWaitingSiteConfirm, value))
             {
                 Raise(nameof(LoginButtonText));
-                // ВАЖНО: блок с кнопками должен появляться уже на этапе ожидания
                 Raise(nameof(LoginUrlVisibility));
                 RefreshCanStates();
             }
@@ -312,9 +366,6 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public bool HasLoginUrl => !string.IsNullOrWhiteSpace(LoginUrl);
-
-    // ✅ ВАЖНО: теперь видимость зависит от ОЖИДАНИЯ, а не от наличия ссылки.
-    // Так блок появляется сразу, как только нажали “Войти через сайт”.
     public Visibility LoginUrlVisibility => IsWaitingSiteConfirm ? Visibility.Visible : Visibility.Collapsed;
 
     private Process? _runningProcess;
@@ -326,7 +377,7 @@ public sealed class MainViewModel : ObservableObject
         IsLoggedIn &&
         Profile is not null &&
         Profile.CanPlay &&
-        !string.IsNullOrWhiteSpace(SelectedVersion) &&
+        SelectedServer is not null &&
         !string.IsNullOrWhiteSpace(Username);
 
     public string PlayButtonText => IsBusy ? "..." : "Играть";
@@ -346,17 +397,16 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand OpenStartCommand { get; private set; } = null!;
     public RelayCommand OpenProfileCommand { get; private set; } = null!;
 
-    // buttons (open/copy)
     public RelayCommand OpenLoginUrlCommand { get; private set; } = null!;
     public RelayCommand CopyLoginUrlCommand { get; private set; } = null!;
 
-    // updates
     public AsyncRelayCommand CheckLauncherUpdatesCommand { get; private set; } = null!;
 
     private readonly string _gameDir;
     private bool _commandsReady;
 
-    private const string DefaultVersionName = "LegendBorn";
+    // защита от двойного запуска PlayAsync
+    private int _playGuard;
 
     public MainViewModel()
     {
@@ -374,10 +424,9 @@ public sealed class MainViewModel : ObservableObject
         _mc = new MinecraftService(_gameDir);
         _mc.Log += (_, line) => AppendLog(line);
 
+        // ✅ FIX: явный Action, иначе у некоторых сборок .NET ловится ambiguous Invoke
         _mc.ProgressPercent += (_, p) =>
-        {
-            App.Current?.Dispatcher.Invoke(() => ProgressPercent = p);
-        };
+            App.Current?.Dispatcher.Invoke((Action)(() => ProgressPercent = p));
 
         RefreshVersionsCommand = new AsyncRelayCommand(RefreshVersionsAsync, () => !IsBusy && !IsWaitingSiteConfirm);
         PlayCommand = new AsyncRelayCommand(PlayAsync, () => CanPlay);
@@ -390,11 +439,7 @@ public sealed class MainViewModel : ObservableObject
         ClearLogCommand = new RelayCommand(() => LogLines.Clear());
 
         OpenSettingsCommand = new RelayCommand(() => SelectedMenuIndex = 3);
-
-        OpenStartCommand = new RelayCommand(() =>
-        {
-            SelectedMenuIndex = IsLoggedIn ? 1 : 0;
-        });
+        OpenStartCommand = new RelayCommand(() => SelectedMenuIndex = IsLoggedIn ? 1 : 0);
 
         OpenProfileCommand = new RelayCommand(() =>
         {
@@ -411,33 +456,105 @@ public sealed class MainViewModel : ObservableObject
         _commandsReady = true;
 
         Username = TryLoadStringSetting("Username", "Player") ?? "Player";
-        ServerIp = TryLoadStringSetting("ServerIp", "legendcraft.minerent.io") ?? "legendcraft.minerent.io";
-
-        SelectedVersion = TryLoadStringSetting("SelectedVersion", null);
-        if (string.IsNullOrWhiteSpace(SelectedVersion))
-            SelectedVersion = DefaultVersionName;
 
         RamMb = TryLoadIntSetting("RamMb", 4096);
         if (!RamOptions.Contains(RamMb))
             RamMb = 4096;
 
-        RebuildServers();
-
-        _ = RefreshVersionsAsync();
-        _ = TryAutoLoginAsync();
-
+        _ = InitializeAsync();
         RefreshCanStates();
     }
 
-    private void RebuildServers()
+    private async Task InitializeAsync()
     {
-        Servers.Clear();
-        Servers.Add(new ServerEntry { Name = "LegendBorn", Address = "legendcraft.minerent.io" });
-
-        SelectedServer = Servers.FirstOrDefault();
-        if (SelectedServer is not null)
-            ServerIp = SelectedServer.Address;
+        try
+        {
+            await LoadServersAsync();
+            await RefreshVersionsAsync();
+            await TryAutoLoginAsync();
+        }
+        catch (Exception ex)
+        {
+            AppendLog(ex.ToString());
+        }
     }
+
+    // =========================
+    // Servers.json
+    // =========================
+
+    private async Task LoadServersAsync()
+    {
+        try
+        {
+            AppendLog("Серверы: загрузка списка...");
+
+            var list = await _servers.GetServersOrDefaultAsync(ct: CancellationToken.None);
+
+            App.Current?.Dispatcher.Invoke((Action)(() =>
+            {
+                Servers.Clear();
+
+                foreach (var s in list)
+                {
+                    var loaderType = (s.Loader?.Type ?? "vanilla").Trim().ToLowerInvariant();
+                    var loaderVer = (s.Loader?.Version ?? "").Trim();
+                    var installerUrl = (s.Loader?.InstallerUrl ?? "").Trim();
+
+                    Servers.Add(new ServerEntry
+                    {
+                        Id = s.Id,
+                        Name = s.Name,
+                        Address = s.Address,
+                        MinecraftVersion = s.MinecraftVersion,
+
+                        LoaderName = loaderType,
+                        LoaderVersion = loaderVer,
+                        LoaderInstallerUrl = installerUrl,
+
+                        PackBaseUrl = EnsureSlash(s.PackBaseUrl),
+                        PackMirrors = s.PackMirrors ?? Array.Empty<string>(),
+                        SyncPack = s.SyncPack
+                    });
+                }
+
+                var savedId = TryLoadStringSetting("SelectedServerId", null);
+                SelectedServer =
+                    Servers.FirstOrDefault(x => x.Id.Equals(savedId ?? "", StringComparison.OrdinalIgnoreCase)) ??
+                    Servers.FirstOrDefault();
+
+                if (SelectedServer is not null)
+                    ServerIp = SelectedServer.Address;
+            }));
+
+            AppendLog($"Серверы: загружено {Servers.Count} шт.");
+        }
+        catch (Exception ex)
+        {
+            AppendLog("Серверы: ошибка загрузки.");
+            AppendLog(ex.Message);
+        }
+        finally
+        {
+            Raise(nameof(PackName));
+            Raise(nameof(MinecraftVersion));
+            Raise(nameof(LoaderName));
+            Raise(nameof(LoaderVersion));
+            Raise(nameof(BuildDisplayName));
+            RefreshCanStates();
+        }
+    }
+
+    private static string EnsureSlash(string url)
+    {
+        url = (url ?? "").Trim();
+        if (!url.EndsWith("/")) url += "/";
+        return url;
+    }
+
+    // =========================
+    // Versions UI
+    // =========================
 
     private async Task RefreshVersionsAsync()
     {
@@ -449,27 +566,16 @@ public sealed class MainViewModel : ObservableObject
 
             Versions.Clear();
 
-            try
+            if (SelectedServer is null)
             {
-                var all = await _mc.GetAllVersionNamesAsync();
-                var ours = all.FirstOrDefault(v => v.Equals(DefaultVersionName, StringComparison.OrdinalIgnoreCase))
-                           ?? all.FirstOrDefault(v => v.Contains("LegendBorn", StringComparison.OrdinalIgnoreCase));
-
-                if (!string.IsNullOrWhiteSpace(ours))
-                {
-                    Versions.Add(ours);
-                    SelectedVersion = ours;
-                }
-                else
-                {
-                    Versions.Add(DefaultVersionName);
-                    SelectedVersion = DefaultVersionName;
-                }
+                Versions.Add("AUTO");
+                SelectedVersion = "AUTO";
             }
-            catch
+            else
             {
-                Versions.Add(DefaultVersionName);
-                SelectedVersion = DefaultVersionName;
+                var label = MakeAutoVersionLabel(SelectedServer);
+                Versions.Add(label);
+                SelectedVersion = label;
             }
 
             StatusText = "Готово.";
@@ -485,6 +591,27 @@ public sealed class MainViewModel : ObservableObject
             RefreshCanStates();
         }
     }
+
+    private static string MakeAutoVersionLabel(ServerEntry s)
+    {
+        var loaderType = (s.LoaderName ?? "vanilla").Trim().ToLowerInvariant();
+        var lver = (s.LoaderVersion ?? "").Trim();
+        var mc = (s.MinecraftVersion ?? "1.21.1").Trim();
+
+        string L(string? t) => FormatLoaderName(t);
+
+        if (loaderType == "vanilla" || string.IsNullOrWhiteSpace(loaderType))
+            return $"AUTO • {L(loaderType)} {mc}";
+
+        if (string.IsNullOrWhiteSpace(lver))
+            return $"AUTO • {L(loaderType)} ({mc})";
+
+        return $"AUTO • {L(loaderType)} {lver} ({mc})";
+    }
+
+    // =========================
+    // Auth
+    // =========================
 
     private async Task TrySendDailyLauncherLoginEventAsync()
     {
@@ -503,10 +630,7 @@ public sealed class MainViewModel : ObservableObject
                 payload: new { client = "LegendBornLauncher", v = "1" },
                 ct: CancellationToken.None);
         }
-        catch
-        {
-            // not critical
-        }
+        catch { }
     }
 
     private async Task TryAutoLoginAsync()
@@ -570,10 +694,7 @@ public sealed class MainViewModel : ObservableObject
 
         try
         {
-            // ✅ сразу включаем “Ожидание...” и показываем блок с кнопками
             IsWaitingSiteConfirm = true;
-
-            // ✅ сброс старой ссылки, чтобы не копировали “прошлую”
             LoginUrl = null;
 
             StatusText = "Запрос входа...";
@@ -595,12 +716,9 @@ public sealed class MainViewModel : ObservableObject
                 fullUrl += (fullUrl.Contains("?") ? "&" : "?") + "deviceId=" + Uri.EscapeDataString(deviceId);
             }
 
-            // ✅ ссылка готова — можно копировать/открывать
             LoginUrl = fullUrl;
-
             AppendLog($"Ссылка для входа: {fullUrl}");
 
-            // авто-открытие оставляем, но пользователю доступны кнопки независимо от результата
             if (!TryOpenUrlInBrowser(fullUrl, out var openError))
             {
                 AppendLog(openError);
@@ -672,10 +790,7 @@ public sealed class MainViewModel : ObservableObject
         {
             IsBusy = false;
             IsWaitingSiteConfirm = false;
-
-            // можно чистить ссылку после завершения ожидания
             LoginUrl = null;
-
             RefreshCanStates();
         }
     }
@@ -689,11 +804,11 @@ public sealed class MainViewModel : ObservableObject
         if (!TryOpenUrlInBrowser(url, out var err))
         {
             AppendLog(err);
-            StatusText = "Не удалось открыть ссылку. Скопируй и открой вручную (например через VPN/другой браузер).";
+            StatusText = "Не удалось открыть ссылку. Скопируй и открой вручную.";
         }
         else
         {
-            StatusText = "Открыл ссылку в браузере. Если сайт блокируется — открой через VPN.";
+            StatusText = "Открыл ссылку в браузере.";
         }
     }
 
@@ -705,7 +820,7 @@ public sealed class MainViewModel : ObservableObject
 
         try
         {
-            App.Current?.Dispatcher.Invoke(() => Clipboard.SetText(url));
+            App.Current?.Dispatcher.Invoke((Action)(() => Clipboard.SetText(url)));
             StatusText = "Ссылка скопирована в буфер обмена.";
             AppendLog("Ссылка скопирована.");
         }
@@ -720,11 +835,7 @@ public sealed class MainViewModel : ObservableObject
     {
         try
         {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = url,
-                UseShellExecute = true
-            });
+            Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
             error = "";
             return true;
         }
@@ -732,12 +843,7 @@ public sealed class MainViewModel : ObservableObject
         {
             try
             {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = "explorer.exe",
-                    Arguments = url,
-                    UseShellExecute = true
-                });
+                Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = url, UseShellExecute = true });
                 error = "";
                 return true;
             }
@@ -796,10 +902,20 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    // =========================
+    // Play flow (PrepareAsync)
+    // =========================
+
     private async Task PlayAsync()
     {
-        if (string.IsNullOrWhiteSpace(SelectedVersion))
-            SelectedVersion = DefaultVersionName;
+        if (SelectedServer is null)
+        {
+            StatusText = "Сервер не выбран.";
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _playGuard, 1) == 1)
+            return;
 
         try
         {
@@ -807,19 +923,35 @@ public sealed class MainViewModel : ObservableObject
             StatusText = $"Подготовка {BuildDisplayName}...";
             ProgressPercent = 0;
 
-            await _mc.InstallAsync(SelectedVersion);
+            var mirrors = new[] { SelectedServer.PackBaseUrl }
+                .Concat(SelectedServer.PackMirrors ?? Array.Empty<string>())
+                .Select(EnsureSlash)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            var loader = CreateLoaderSpecFromServer(SelectedServer);
+
+            var launchVersionId = await _mc.PrepareAsync(
+                minecraftVersion: SelectedServer.MinecraftVersion,
+                loader: loader,
+                packMirrors: mirrors,
+                syncPack: SelectedServer.SyncPack,
+                ct: CancellationToken.None);
+
+            Versions.Clear();
+            Versions.Add(launchVersionId);
+            SelectedVersion = launchVersionId;
 
             TrySaveSetting("Username", Username);
-            TrySaveSetting("ServerIp", ServerIp);
-            TrySaveSetting("SelectedVersion", SelectedVersion ?? "");
             TrySaveSetting("RamMb", RamMb);
+            TrySaveSetting("SelectedServerId", SelectedServer.Id);
             Settings.Default.Save();
 
             StatusText = "Запуск игры...";
 
             _runningProcess = await _mc.BuildAndLaunchAsync(
-                SelectedVersion,
-                Username.Trim(),
+                version: launchVersionId,
+                username: Username.Trim(),
                 ramMb: RamMb,
                 serverIp: string.IsNullOrWhiteSpace(ServerIp) ? null : ServerIp.Trim());
 
@@ -830,14 +962,14 @@ public sealed class MainViewModel : ObservableObject
 
             _runningProcess.Exited += (_, __) =>
             {
-                App.Current?.Dispatcher.Invoke(() =>
+                App.Current?.Dispatcher.Invoke((Action)(() =>
                 {
                     AppendLog("Игра закрыта.");
                     _runningProcess = null;
                     Raise(nameof(CanStop));
                     StopGameCommand.RaiseCanExecuteChanged();
                     RefreshCanStates();
-                });
+                }));
             };
 
             AppendLog("Игра запущена.");
@@ -851,8 +983,32 @@ public sealed class MainViewModel : ObservableObject
         finally
         {
             IsBusy = false;
+            Interlocked.Exchange(ref _playGuard, 0);
             RefreshCanStates();
         }
+    }
+
+    private MinecraftService.LoaderSpec CreateLoaderSpecFromServer(ServerEntry s)
+    {
+        var loaderType = (s.LoaderName ?? "vanilla").Trim().ToLowerInvariant();
+        var loaderVer = (s.LoaderVersion ?? "").Trim();
+        var installerUrl = (s.LoaderInstallerUrl ?? "").Trim();
+
+        if (loaderType == "vanilla" || string.IsNullOrWhiteSpace(loaderType))
+            return new MinecraftService.LoaderSpec("vanilla", "", "");
+
+        // если сервер не дал installerUrl — подстрахуемся дефолтом
+        if (string.IsNullOrWhiteSpace(installerUrl))
+        {
+            if (loaderType == "neoforge")
+                installerUrl = $"https://maven.neoforged.net/releases/net/neoforged/neoforge/{loaderVer}/neoforge-{loaderVer}-installer.jar";
+            else if (loaderType == "forge")
+                installerUrl = $"https://maven.minecraftforge.net/net/minecraftforge/forge/{s.MinecraftVersion}-{loaderVer}/forge-{s.MinecraftVersion}-{loaderVer}-installer.jar";
+            else
+                throw new InvalidOperationException($"Неизвестный loader '{loaderType}'.");
+        }
+
+        return new MinecraftService.LoaderSpec(loaderType, loaderVer, installerUrl);
     }
 
     private void OpenGameDir()
@@ -887,14 +1043,18 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    // =========================
+    // Misc
+    // =========================
+
     private void AppendLog(string text)
     {
-        App.Current?.Dispatcher.Invoke(() =>
+        App.Current?.Dispatcher.Invoke((Action)(() =>
         {
             LogLines.Add($"[{DateTime.Now:HH:mm:ss}] {text}");
             if (LogLines.Count > 500)
                 LogLines.RemoveAt(0);
-        });
+        }));
     }
 
     private void RefreshCanStates()
@@ -911,6 +1071,12 @@ public sealed class MainViewModel : ObservableObject
 
         Raise(nameof(HasLoginUrl));
         Raise(nameof(LoginUrlVisibility));
+
+        Raise(nameof(PackName));
+        Raise(nameof(MinecraftVersion));
+        Raise(nameof(LoaderName));
+        Raise(nameof(LoaderVersion));
+        Raise(nameof(BuildDisplayName));
 
         if (!_commandsReady) return;
 

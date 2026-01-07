@@ -23,8 +23,7 @@ env:
 
   PACK_TITLE: LegendBorn Launcher
 
-  # Версия vpk tool (dotnet tool). Не обязана совпадать 1-в-1 с nuget Velopack,
-  # но если ты закрепил - оставляем как есть.
+  # Версия vpk tool (dotnet tool)
   VPK_VERSION: 0.0.1369-g1d5c984
 
 jobs:
@@ -45,16 +44,23 @@ jobs:
             10.0.x
             8.0.x
 
-      - name: Read Version from csproj
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/*.props', '**/*.targets', '**/packages.lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Read Version from csproj (msbuild)
         id: ver
         shell: pwsh
         run: |
-          [xml]$p = Get-Content "${{ env.CS_PROJ }}"
-          $pg = $p.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -First 1
-          if (-not $pg) { throw "Version not found in csproj" }
-          $v = ($pg.Version | Select-Object -First 1).ToString().Trim()
-          if ([string]::IsNullOrWhiteSpace($v)) { throw "Version is empty in csproj" }
+          $v = (dotnet msbuild "${{ env.CS_PROJ }}" -nologo -t:GetProperty -p:PropertyName=Version | Select-Object -Last 1).Trim()
+          if ([string]::IsNullOrWhiteSpace($v)) { throw "Version not found in csproj" }
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Version=$v"
 
       - name: Check if tag already exists
         id: tagcheck
@@ -64,52 +70,54 @@ jobs:
           $tag = "v${{ steps.ver.outputs.version }}"
           $exists = (git tag -l $tag)
           if ($exists) { "exists=true" | Out-File $env:GITHUB_OUTPUT -Append } else { "exists=false" | Out-File $env:GITHUB_OUTPUT -Append }
-          Write-Host "Tag=$tag exists=$($exists -ne $null -and $exists -ne '')"
+          Write-Host "Tag=$tag exists=$([bool]$exists)"
+
+      - name: Stop (tag already exists)
+        if: steps.tagcheck.outputs.exists == 'true'
+        shell: pwsh
+        run: |
+          Write-Host "Release tag already exists. Skipping build."
+          exit 0
 
       - name: Restore
-        if: steps.tagcheck.outputs.exists != 'true'
         shell: pwsh
         run: |
-          dotnet restore ${{ env.CS_PROJ }}
+          dotnet restore "${{ env.CS_PROJ }}"
 
       - name: Publish app
-        if: steps.tagcheck.outputs.exists != 'true'
         shell: pwsh
         run: |
-          dotnet publish ${{ env.CS_PROJ }} -c Release -r win-x64 --self-contained true -o publish
+          dotnet publish "${{ env.CS_PROJ }}" -c Release -r win-x64 --self-contained true -o publish
 
-      - name: Install vpk
-        if: steps.tagcheck.outputs.exists != 'true'
+      - name: Install/Update vpk tool
         shell: pwsh
         run: |
-          dotnet tool install -g vpk --version ${{ env.VPK_VERSION }}
+          dotnet tool update -g vpk --version "${{ env.VPK_VERSION }}"
           "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
+          vpk --version
 
       - name: Download previous releases (optional)
-        if: steps.tagcheck.outputs.exists != 'true'
         shell: pwsh
         continue-on-error: true
         run: |
-          vpk download github --repoUrl https://github.com/${{ github.repository }} --token ${{ secrets.GITHUB_TOKEN }}
+          vpk download github --repoUrl "https://github.com/${{ github.repository }}" --token "${{ secrets.GITHUB_TOKEN }}"
 
       - name: Create Velopack packages (Releases folder)
-        if: steps.tagcheck.outputs.exists != 'true'
         shell: pwsh
         run: |
           vpk pack `
-            --packId ${{ env.PACK_ID }} `
-            --packVersion ${{ steps.ver.outputs.version }} `
-            --packDir publish `
-            --mainExe ${{ env.MAIN_EXE }} `
+            --packId "${{ env.PACK_ID }}" `
+            --packVersion "${{ steps.ver.outputs.version }}" `
+            --packDir "publish" `
+            --mainExe "${{ env.MAIN_EXE }}" `
             --packTitle "${{ env.PACK_TITLE }}"
 
       - name: Upload GitHub Release
-        if: steps.tagcheck.outputs.exists != 'true'
         shell: pwsh
         run: |
           vpk upload github `
-            --repoUrl https://github.com/${{ github.repository }} `
-            --token ${{ secrets.GITHUB_TOKEN }} `
+            --repoUrl "https://github.com/${{ github.repository }}" `
+            --token "${{ secrets.GITHUB_TOKEN }}" `
             --publish `
             --releaseName "${{ env.PACK_TITLE }} ${{ steps.ver.outputs.version }}" `
             --tag "v${{ steps.ver.outputs.version }}"
