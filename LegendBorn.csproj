@@ -8,41 +8,30 @@
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
 
-        <!-- ВАЖНО: версия приложения = версия обновлений Velopack -->
         <Version>0.1.5</Version>
         <AssemblyVersion>0.1.5.0</AssemblyVersion>
         <FileVersion>0.1.5.0</FileVersion>
 
-        <!-- чтобы в UI показывалось ровно v0.1.4 без +hash -->
-        <InformationalVersion>0.1.4</InformationalVersion>
+        <InformationalVersion>0.1.5</InformationalVersion>
         <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 
-        <!-- ВАЖНО: чтобы WPF точно использовал твой Main() -->
         <StartupObject>LegendBorn.App</StartupObject>
     </PropertyGroup>
 
     <ItemGroup>
         <PackageReference Include="CmlLib.Core" Version="4.0.6" />
-
-        <!-- Нужно для авто-установки NeoForge/Forge из лаунчера -->
         <PackageReference Include="CmlLib.Core.Installer.NeoForge" Version="4.0.0" />
         <PackageReference Include="CmlLib.Core.Installer.Forge" Version="1.1.1" />
-
         <PackageReference Include="Velopack" Version="0.0.1369-g1d5c984" />
     </ItemGroup>
 
-    <!-- Картинка фона как Resource (pack://application...) -->
     <ItemGroup>
         <Resource Include="Assets\legendcraft.jpg" />
     </ItemGroup>
 
-    <!-- ВАЖНО: отключаем автосгенерированный WPF Main(), чтобы использовать свой Main() -->
     <ItemGroup>
         <ApplicationDefinition Remove="App.xaml" />
         <Page Include="App.xaml" />
     </ItemGroup>
-
-    <!-- .github/workflows НЕ надо включать в билд/публикацию -->
-    <!-- Удалил Content Include=".github\workflows\release.yml" -->
 
 </Project>
