@@ -14,16 +14,9 @@ concurrency:
 
 env:
   CS_PROJ: LegendBorn.csproj
-
-  # PackId должен быть стабильным и не меняться
   PACK_ID: LegendBornLauncher
-
-  # Имя exe после publish (обычно = имя проекта)
   MAIN_EXE: LegendBorn.exe
-
   PACK_TITLE: LegendBorn Launcher
-
-  # Версия vpk tool (dotnet tool)
   VPK_VERSION: 0.0.1369-g1d5c984
 
 jobs:
@@ -36,7 +29,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Ставим .NET 10 для сборки проекта, и .NET 8 для dotnet tool (vpk)
       - name: Install .NET 10 + .NET 8
         uses: actions/setup-dotnet@v4
         with:
@@ -53,12 +45,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
-      - name: Read Version from csproj (msbuild)
+      - name: Read Version from csproj
         id: ver
         shell: pwsh
         run: |
-          $v = (dotnet msbuild "${{ env.CS_PROJ }}" -nologo -t:GetProperty -p:PropertyName=Version | Select-Object -Last 1).Trim()
-          if ([string]::IsNullOrWhiteSpace($v)) { throw "Version not found in csproj" }
+          $proj = "${{ env.CS_PROJ }}"
+          if (!(Test-Path $proj)) { throw "csproj not found: $proj" }
+
+          [xml]$xml = Get-Content -Raw -Path $proj
+          $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+          $ns.AddNamespace("msb", $xml.Project.NamespaceURI)
+
+          $node = $xml.SelectSingleNode("//msb:Project/msb:PropertyGroup/msb:Version", $ns)
+          $v = $node.InnerText.Trim()
+
+          if ([string]::IsNullOrWhiteSpace($v)) { throw "Version not found in csproj (<Version>...)" }
+
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Version=$v"
 
