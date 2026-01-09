@@ -49,8 +49,13 @@ public sealed class ServerListService
                 if (root is null || root.Servers is null || root.Servers.Count == 0)
                     throw new InvalidOperationException("servers.json: пустой список servers");
 
+                // нормализуем и выкидываем мусор
                 var result = root.Servers
-                    .Select(NormalizeServer)
+                    .Select(s =>
+                    {
+                        try { return NormalizeServer(s); }
+                        catch { return null; } // один битый сервер не должен убивать весь список
+                    })
                     .Where(s => s is not null)
                     .Cast<ServerInfo>()
                     .ToList();
@@ -94,7 +99,7 @@ public sealed class ServerListService
                         Version = "21.1.216",
                         InstallerUrl = "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.216/neoforge-21.1.216-installer.jar"
                     },
-                    ClientVersionId = "LegendBorn", // если у тебя pack всё ещё держит versions/LegendBorn/LegendBorn.json
+                    ClientVersionId = "LegendBorn",
                     PackBaseUrl = "https://legendborn.ru/launcher/pack/",
                     PackMirrors = Array.Empty<string>(),
                     SyncPack = true
@@ -116,7 +121,7 @@ public sealed class ServerListService
         var mc = (s.MinecraftVersion ?? "").Trim();
         if (string.IsNullOrWhiteSpace(mc)) return null;
 
-        // ✅ loader: новый формат (loader{}) или старый (loaderName/loaderVersion)
+        // loader: новый формат (loader{}) или старый (loaderName/loaderVersion)
         var loader = s.Loader;
 
         if (loader is null)
@@ -128,21 +133,17 @@ public sealed class ServerListService
             {
                 Type = legacyName,
                 Version = legacyVer,
-                InstallerUrl = "" // попробуем вывести автоматически ниже
+                InstallerUrl = ""
             };
         }
 
         var loaderType = (loader.Type ?? "vanilla").Trim().ToLowerInvariant();
-        if (loaderType == "neoforge") loaderType = "neoforge";
-        if (loaderType == "forge") loaderType = "forge";
-        if (loaderType == "fabric") loaderType = "fabric";
-        if (loaderType == "quilt") loaderType = "quilt";
         if (string.IsNullOrWhiteSpace(loaderType)) loaderType = "vanilla";
 
         var loaderVer = (loader.Version ?? "").Trim();
         var installerUrl = (loader.InstallerUrl ?? "").Trim();
 
-        // ✅ если installerUrl не задан (старый json) — подставим дефолт для forge/neoforge
+        // если installerUrl не задан (старый json) — подставим дефолт для forge/neoforge
         if (loaderType != "vanilla" && string.IsNullOrWhiteSpace(installerUrl))
         {
             installerUrl = loaderType switch
@@ -157,8 +158,9 @@ public sealed class ServerListService
             };
         }
 
+        // если не vanilla — installerUrl обязателен
         if (loaderType != "vanilla" && string.IsNullOrWhiteSpace(installerUrl))
-            throw new InvalidOperationException($"servers.json: для loader '{loaderType}' нужен installerUrl или корректная версия");
+            return null;
 
         var packBase = NormalizeBaseUrl(s.PackBaseUrl);
         var mirrors = (s.PackMirrors ?? Array.Empty<string>())
@@ -207,7 +209,7 @@ public sealed class ServerListService
 
     public sealed record LoaderInfo
     {
-        [JsonPropertyName("type")] public string Type { get; init; } = "vanilla"; // vanilla / neoforge / forge
+        [JsonPropertyName("type")] public string Type { get; init; } = "vanilla";
         [JsonPropertyName("version")] public string Version { get; init; } = "";
         [JsonPropertyName("installerUrl")] public string InstallerUrl { get; init; } = "";
     }
@@ -220,14 +222,13 @@ public sealed class ServerListService
 
         [JsonPropertyName("minecraftVersion")] public string MinecraftVersion { get; init; } = "1.21.1";
 
-        // ✅ NEW format
+        // NEW format
         [JsonPropertyName("loader")] public LoaderInfo? Loader { get; init; } = null;
 
-        // ✅ LEGACY format (поддержка старого servers.json)
+        // LEGACY format
         [JsonPropertyName("loaderName")] public string? LoaderName { get; init; } = null;
         [JsonPropertyName("loaderVersion")] public string? LoaderVersion { get; init; } = null;
 
-        // ✅ LEGACY: если сервер всё ещё отдаёт clientVersionId (например LegendBorn)
         [JsonPropertyName("clientVersionId")] public string? ClientVersionId { get; init; } = null;
 
         [JsonPropertyName("packBaseUrl")] public string PackBaseUrl { get; init; } = "";

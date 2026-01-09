@@ -19,11 +19,23 @@ public sealed class SiteAuthService
         PropertyNameCaseInsensitive = true
     };
 
-    // HttpClient должен жить долго (не создаём каждый запрос)
-    private static readonly HttpClient Http = new()
+    // ✅ HttpClient живёт долго + timeout + user-agent + decompression
+    private static readonly HttpClient Http = CreateHttp();
+
+    private static HttpClient CreateHttp()
     {
-        BaseAddress = new Uri(SiteBaseUrl)
-    };
+        var http = new HttpClient(new HttpClientHandler
+        {
+            AutomaticDecompression = DecompressionMethods.All
+        })
+        {
+            BaseAddress = new Uri(SiteBaseUrl),
+            Timeout = TimeSpan.FromSeconds(60)
+        };
+
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("LegendBornLauncher/0.1.6");
+        return http;
+    }
 
     private static string NormalizeToken(string token)
     {
@@ -120,7 +132,7 @@ public sealed class SiteAuthService
                ?? new UserProfile { UserName = "Unknown", MinecraftName = "Player" };
     }
 
-    // ✅ GET /api/launcher/economy/balance -> { currency:"RZN", balance:123 }
+    // GET /api/launcher/economy/balance -> { currency:"RZN", balance:123 }
     public async Task<long> GetRezoniteBalanceAsync(string accessToken, CancellationToken ct)
     {
         accessToken = NormalizeToken(accessToken);
@@ -142,7 +154,7 @@ public sealed class SiteAuthService
         return dto?.Balance ?? 0;
     }
 
-    // ✅ POST /api/launcher/events
+    // POST /api/launcher/events
     // body: { key, idempotencyKey, payload }
     public async Task<LauncherEventResponse?> SendLauncherEventAsync(
         string accessToken,
@@ -184,7 +196,7 @@ public sealed class SiteAuthService
         return JsonSerializer.Deserialize<LauncherEventResponse>(respJson, JsonOptions);
     }
 
-    // ===== DTO (можешь вынести в Models, но так проще) =====
+    // ===== DTO =====
     private sealed class RezoniteBalanceResponse
     {
         public string? Currency { get; set; }

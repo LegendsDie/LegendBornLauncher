@@ -18,7 +18,6 @@ namespace LegendBorn;
 public sealed class MainViewModel : ObservableObject
 {
     // ===== UI: Tabs (Auth / Start / Profile / Settings) =====
-    // 0 = Auth, 1 = Start, 2 = Profile, 3 = Settings
     private int _selectedMenuIndex;
     public int SelectedMenuIndex
     {
@@ -67,9 +66,24 @@ public sealed class MainViewModel : ObservableObject
     // ===== Pack display (UI) — зависит от сервера =====
     public string PackName => SelectedServer?.Name ?? "LegendBorn";
     public string MinecraftVersion => SelectedServer?.MinecraftVersion ?? "1.21.1";
+
     public string LoaderName => FormatLoaderName(SelectedServer?.LoaderName);
     public string LoaderVersion => SelectedServer?.LoaderVersion ?? "";
-    public string BuildDisplayName => $"{PackName} • {LoaderName} {MinecraftVersion}";
+
+    public string BuildDisplayName
+    {
+        get
+        {
+            var mc = MinecraftVersion;
+            var ln = LoaderName;
+            var lv = (SelectedServer?.LoaderVersion ?? "").Trim();
+
+            if (string.IsNullOrWhiteSpace(lv) || ln.Equals("Vanilla", StringComparison.OrdinalIgnoreCase))
+                return $"{PackName} • {ln} {mc}";
+
+            return $"{PackName} • {ln} {lv} ({mc})";
+        }
+    }
 
     private static string FormatLoaderName(string? loaderType)
     {
@@ -91,26 +105,18 @@ public sealed class MainViewModel : ObservableObject
         public string Id { get; init; } = "";
         public string Name { get; init; } = "";
         public string Address { get; init; } = "";
-
         public string MinecraftVersion { get; init; } = "1.21.1";
 
-        // здесь хранится ТИП: vanilla / neoforge / forge (для UI форматируем отдельно)
+        // Тип: vanilla / neoforge / forge / fabric...
         public string LoaderName { get; init; } = "vanilla";
         public string LoaderVersion { get; init; } = "";
 
-        // installerUrl из servers.json (обязательно для neoforge/forge)
+        // installerUrl обязателен для neoforge/forge
         public string LoaderInstallerUrl { get; init; } = "";
 
-        // ⚠️ оставлено для совместимости, но больше не нужно для запуска
         public string ClientVersionId { get; init; } = "";
-
-        // базовый URL папки pack (manifest.json + blobs/...), должен заканчиваться "/"
         public string PackBaseUrl { get; init; } = "https://legendborn.ru/launcher/pack/";
-
-        // доп. зеркала pack (опционально)
         public string[] PackMirrors { get; init; } = Array.Empty<string>();
-
-        // синхронизировать сборку перед запуском
         public bool SyncPack { get; init; } = true;
 
         public override string ToString() => Name;
@@ -129,8 +135,6 @@ public sealed class MainViewModel : ObservableObject
                 if (value is not null)
                 {
                     ServerIp = value.Address;
-
-                    // для UI показываем “AUTO…”
                     SelectedVersion = MakeAutoVersionLabel(value);
 
                     TrySaveSetting("SelectedServerId", value.Id);
@@ -405,7 +409,6 @@ public sealed class MainViewModel : ObservableObject
     private readonly string _gameDir;
     private bool _commandsReady;
 
-    // защита от двойного запуска PlayAsync
     private int _playGuard;
 
     public MainViewModel()
@@ -424,7 +427,6 @@ public sealed class MainViewModel : ObservableObject
         _mc = new MinecraftService(_gameDir);
         _mc.Log += (_, line) => AppendLog(line);
 
-        // ✅ FIX: явный Action, иначе у некоторых сборок .NET ловится ambiguous Invoke
         _mc.ProgressPercent += (_, p) =>
             App.Current?.Dispatcher.Invoke((Action)(() => ProgressPercent = p));
 
@@ -491,14 +493,16 @@ public sealed class MainViewModel : ObservableObject
 
             var list = await _servers.GetServersOrDefaultAsync(ct: CancellationToken.None);
 
+            int count = 0;
+
             App.Current?.Dispatcher.Invoke((Action)(() =>
             {
                 Servers.Clear();
 
                 foreach (var s in list)
                 {
-                    var loaderType = (s.Loader?.Type ?? "vanilla").Trim().ToLowerInvariant();
-                    var loaderVer = (s.Loader?.Version ?? "").Trim();
+                    var loaderType = (s.Loader?.Type ?? s.LoaderName ?? "vanilla").Trim().ToLowerInvariant();
+                    var loaderVer = (s.Loader?.Version ?? s.LoaderVersion ?? "").Trim();
                     var installerUrl = (s.Loader?.InstallerUrl ?? "").Trim();
 
                     Servers.Add(new ServerEntry
@@ -525,9 +529,11 @@ public sealed class MainViewModel : ObservableObject
 
                 if (SelectedServer is not null)
                     ServerIp = SelectedServer.Address;
+
+                count = Servers.Count;
             }));
 
-            AppendLog($"Серверы: загружено {Servers.Count} шт.");
+            AppendLog($"Серверы: загружено {count} шт.");
         }
         catch (Exception ex)
         {
@@ -613,6 +619,33 @@ public sealed class MainViewModel : ObservableObject
     // Auth
     // =========================
 
+    private void CancelLoginWait()
+    {
+        var cts = _loginCts;
+        _loginCts = null;
+
+        if (cts is null) return;
+
+        try { cts.Cancel(); } catch { }
+        try { cts.Dispose(); } catch { }
+    }
+
+    private static bool IsExpired(AuthTokens t)
+    {
+        if (t.ExpiresAtUnix <= 0) return false;
+
+        try
+        {
+            // небольшой запас на рассинхрон часов
+            var exp = DateTimeOffset.FromUnixTimeSeconds(t.ExpiresAtUnix).AddSeconds(-30);
+            return DateTimeOffset.UtcNow >= exp;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private async Task TrySendDailyLauncherLoginEventAsync()
     {
         try
@@ -638,6 +671,13 @@ public sealed class MainViewModel : ObservableObject
         var saved = _tokenStore.Load();
         if (saved is null || string.IsNullOrWhiteSpace(saved.AccessToken))
             return;
+
+        // ✅ быстрый отсев протухшего токена
+        if (IsExpired(saved))
+        {
+            _tokenStore.Clear();
+            return;
+        }
 
         try
         {
@@ -678,18 +718,24 @@ public sealed class MainViewModel : ObservableObject
 
             IsLoggedIn = false;
             SiteUserName = "Не вошли";
+
+            StatusText = "Требуется вход.";
         }
         finally
         {
             IsBusy = false;
-            StatusText = "Готово.";
+
+            // ✅ не затираем важные статусы на "Готово."
+            if (string.Equals(StatusText, "Проверка входа на сайте...", StringComparison.Ordinal))
+                StatusText = "Готово.";
+
             RefreshCanStates();
         }
     }
 
     private async Task LoginViaSiteAsync()
     {
-        _loginCts?.Cancel();
+        CancelLoginWait();
         _loginCts = new CancellationTokenSource();
 
         try
@@ -791,6 +837,8 @@ public sealed class MainViewModel : ObservableObject
             IsBusy = false;
             IsWaitingSiteConfirm = false;
             LoginUrl = null;
+
+            CancelLoginWait();
             RefreshCanStates();
         }
     }
@@ -879,8 +927,7 @@ public sealed class MainViewModel : ObservableObject
     {
         try
         {
-            _loginCts?.Cancel();
-            _loginCts = null;
+            CancelLoginWait();
 
             _tokens = null;
             _tokenStore.Clear();
@@ -894,6 +941,7 @@ public sealed class MainViewModel : ObservableObject
 
             LoginUrl = null;
 
+            StatusText = "Вы вышли.";
             AppendLog("Сайт: выход выполнен.");
         }
         finally
@@ -903,7 +951,7 @@ public sealed class MainViewModel : ObservableObject
     }
 
     // =========================
-    // Play flow (PrepareAsync)
+    // Play flow
     // =========================
 
     private async Task PlayAsync()
@@ -997,7 +1045,6 @@ public sealed class MainViewModel : ObservableObject
         if (loaderType == "vanilla" || string.IsNullOrWhiteSpace(loaderType))
             return new MinecraftService.LoaderSpec("vanilla", "", "");
 
-        // если сервер не дал installerUrl — подстрахуемся дефолтом
         if (string.IsNullOrWhiteSpace(installerUrl))
         {
             if (loaderType == "neoforge")

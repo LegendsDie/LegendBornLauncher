@@ -28,8 +28,8 @@ public sealed class MinecraftService
     };
 
     private const string ManifestFileName = "manifest.json";
+    private const string PackStateFileName = "pack_state.json";
 
-    // ⚠️ pack НЕ должен писать в versions/ — это делает installer (NeoForge/Forge)
     private static readonly string[] AllowedDestPrefixes =
     {
         "config/",
@@ -68,18 +68,8 @@ public sealed class MinecraftService
         };
     }
 
-    // =========================
-    // Public API
-    // =========================
-
     public sealed record LoaderSpec(string Type, string Version, string InstallerUrl);
 
-    /// <summary>
-    /// 1) sync pack (manifest+blobs) если syncPack=true
-    /// 2) install vanilla minecraftVersion
-    /// 3) install loader (neoforge/forge) через installer.jar (если нужно)
-    /// 4) returns versionId to launch
-    /// </summary>
     public async Task<string> PrepareAsync(
         string minecraftVersion,
         LoaderSpec loader,
@@ -94,7 +84,6 @@ public sealed class MinecraftService
         var loaderVersion = (loader.Version ?? "").Trim();
         var installerUrl = (loader.InstallerUrl ?? "").Trim();
 
-        // 1) pack sync
         if (syncPack)
         {
             var mirrors = (packMirrors is { Length: > 0 } ? packMirrors : DefaultPackMirrors)
@@ -105,11 +94,9 @@ public sealed class MinecraftService
             await EnsurePackUpToDateAsync(mirrors, ct);
         }
 
-        // 2) vanilla
         Log?.Invoke(this, $"Minecraft: установка базовой версии {minecraftVersion}...");
         await _launcher.InstallAsync(minecraftVersion);
 
-        // 3) loader
         var launchVersionId = await EnsureLoaderInstalledAsync(
             minecraftVersion,
             loaderType,
@@ -117,7 +104,6 @@ public sealed class MinecraftService
             installerUrl,
             ct);
 
-        // 4) финальная версия (если не vanilla)
         if (!string.Equals(launchVersionId, minecraftVersion, StringComparison.OrdinalIgnoreCase))
         {
             Log?.Invoke(this, $"Minecraft: подготовка версии {launchVersionId}...");
@@ -146,10 +132,6 @@ public sealed class MinecraftService
         return process;
     }
 
-    // =========================
-    // Loader install
-    // =========================
-
     private async Task<string> EnsureLoaderInstalledAsync(
         string minecraftVersion,
         string loaderType,
@@ -161,7 +143,7 @@ public sealed class MinecraftService
             return minecraftVersion;
 
         if (string.IsNullOrWhiteSpace(installerUrl))
-            throw new InvalidOperationException($"Loader '{loaderType}' требует installerUrl (в servers.json).");
+            throw new InvalidOperationException($"Loader '{loaderType}' требует installerUrl.");
 
         var expectedId = GetExpectedLoaderVersionId(minecraftVersion, loaderType, loaderVersion);
 
@@ -171,51 +153,143 @@ public sealed class MinecraftService
             return expectedId;
         }
 
+        var installerPath = await DownloadInstallerAsync(loaderType, minecraftVersion, loaderVersion, installerUrl, ct);
+
+        var installedId = await InstallLoaderIntoGameDirAsync(
+            installerPath,
+            minecraftVersion,
+            loaderType,
+            loaderVersion,
+            expectedId,
+            ct);
+
+        if (string.IsNullOrWhiteSpace(installedId))
+            throw new InvalidOperationException("Installer отработал, но версия лоадера не найдена.");
+
+        return installedId!;
+    }
+
+    private async Task<string?> InstallLoaderIntoGameDirAsync(
+        string installerPath,
+        string minecraftVersion,
+        string loaderType,
+        string loaderVersion,
+        string expectedId,
+        CancellationToken ct)
+    {
+        var javaExe = FindJavaExecutable();
+
         var versionsDir = Path.Combine(_path.BasePath, "versions");
         Directory.CreateDirectory(versionsDir);
 
-        var before = Directory.EnumerateDirectories(versionsDir)
+        var beforeGame = SnapshotVersionIds(_path.BasePath);
+
+        // 1) если installer вдруг поддерживает явный installDir
+        var argTries = new List<string[]>
+        {
+            new[] { "-jar", installerPath, "--installClient", "--installDir", _path.BasePath },
+            new[] { "-jar", installerPath, "--installClient", "--install-dir", _path.BasePath },
+        };
+
+        foreach (var args in argTries)
+        {
+            var res = await RunJavaAsync(javaExe, args, workingDir: _path.BasePath, ct);
+            if (res.ExitCode == 0)
+            {
+                if (IsVersionPresent(expectedId)) return expectedId;
+
+                var afterGame = SnapshotVersionIds(_path.BasePath);
+                var created = afterGame.Except(beforeGame, StringComparer.OrdinalIgnoreCase).ToList();
+                var picked = PickInstalledVersionId(created, minecraftVersion, loaderType, loaderVersion);
+                if (!string.IsNullOrWhiteSpace(picked)) return picked;
+            }
+
+            if (LooksLikeUnrecognizedOption(res.StdErr) || LooksLikeUnrecognizedOption(res.StdOut))
+                continue;
+        }
+
+        // 2) fallback: NeoForge/Forge installer на Windows почти всегда ставит в %APPDATA%\.minecraft
+        if (!OperatingSystem.IsWindows())
+        {
+            var res = await RunJavaAsync(javaExe, new[] { "-jar", installerPath, "--installClient" }, workingDir: _path.BasePath, ct);
+            if (res.ExitCode != 0)
+                throw new InvalidOperationException($"Installer завершился с ошибкой.\n{res.StdErr}");
+
+            if (IsVersionPresent(expectedId)) return expectedId;
+            return FindInstalledVersionId(minecraftVersion, loaderType, loaderVersion);
+        }
+
+        var systemMc = GetSystemMinecraftDir();
+        Directory.CreateDirectory(systemMc);
+        EnsureLauncherProfileStub(systemMc);
+
+        var beforeSys = SnapshotVersionIds(systemMc);
+
+        Log?.Invoke(this, $"Loader: installer требует .minecraft, ставлю во временную системную папку и переношу в лаунчер...");
+
+        var res2 = await RunJavaAsync(javaExe, new[] { "-jar", installerPath, "--installClient" }, workingDir: _path.BasePath, ct);
+        if (res2.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"Installer завершился с ошибкой (code {res2.ExitCode}).\n" +
+                $"{(string.IsNullOrWhiteSpace(res2.StdErr) ? res2.StdOut : res2.StdErr)}");
+        }
+
+        var afterSys = SnapshotVersionIds(systemMc);
+        var createdSys = afterSys.Except(beforeSys, StringComparer.OrdinalIgnoreCase).ToList();
+
+        var sysPicked = PickInstalledVersionId(createdSys, minecraftVersion, loaderType, loaderVersion)
+                        ?? FindInstalledVersionIdInBase(systemMc, minecraftVersion, loaderType, loaderVersion);
+
+        // переносим (не трогаем существующий .minecraft пользователя кроме чтения)
+        MergeDir(Path.Combine(systemMc, "versions"), Path.Combine(_path.BasePath, "versions"));
+        MergeDir(Path.Combine(systemMc, "libraries"), Path.Combine(_path.BasePath, "libraries"));
+        MergeDir(Path.Combine(systemMc, "assets"), Path.Combine(_path.BasePath, "assets"));
+
+        if (!string.IsNullOrWhiteSpace(sysPicked) && IsVersionPresent(sysPicked!))
+            return sysPicked;
+
+        if (IsVersionPresent(expectedId))
+            return expectedId;
+
+        return FindInstalledVersionId(minecraftVersion, loaderType, loaderVersion);
+    }
+
+    private static HashSet<string> SnapshotVersionIds(string baseDir)
+    {
+        var versionsDir = Path.Combine(baseDir, "versions");
+        if (!Directory.Exists(versionsDir))
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        return Directory.EnumerateDirectories(versionsDir)
             .Select(Path.GetFileName)
             .Where(n => !string.IsNullOrWhiteSpace(n))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
 
-        var installerPath = await DownloadInstallerAsync(loaderType, minecraftVersion, loaderVersion, installerUrl, ct);
-
-        Log?.Invoke(this, $"Loader: установка {loaderType} {loaderVersion}...");
-        await RunInstallerWithFallbackAsync(installerPath, ct);
-
-        if (IsVersionPresent(expectedId))
+    private static string? PickInstalledVersionId(
+        List<string> candidates,
+        string minecraftVersion,
+        string loaderType,
+        string loaderVersion)
+    {
+        foreach (var id in candidates)
         {
-            Log?.Invoke(this, $"Loader: установлен -> {expectedId}");
-            return expectedId;
-        }
+            if (string.IsNullOrWhiteSpace(id)) continue;
 
-        var after = Directory.EnumerateDirectories(versionsDir)
-            .Select(Path.GetFileName)
-            .Where(n => !string.IsNullOrWhiteSpace(n))
-            .ToList();
-
-        var newDirs = after.Where(d => !before.Contains(d!)).ToList();
-
-        foreach (var id in newDirs)
-        {
-            if (IsVersionProfileLooksLike(id!, minecraftVersion, loaderType, loaderVersion))
+            var keyword = loaderType switch
             {
-                Log?.Invoke(this, $"Loader: установлен -> {id}");
-                return id!;
-            }
+                "neoforge" => "neoforge",
+                "forge" => "forge",
+                _ => loaderType
+            };
+
+            if (id.Contains(keyword, StringComparison.OrdinalIgnoreCase) &&
+                (string.IsNullOrWhiteSpace(loaderVersion) || id.Contains(loaderVersion, StringComparison.OrdinalIgnoreCase)))
+                return id;
         }
 
-        var found = FindInstalledVersionId(minecraftVersion, loaderType, loaderVersion);
-        if (!string.IsNullOrWhiteSpace(found))
-        {
-            Log?.Invoke(this, $"Loader: установлен -> {found}");
-            return found!;
-        }
-
-        throw new InvalidOperationException(
-            $"Installer отработал, но версия лоадера не найдена.\n" +
-            $"Проверь что installer пишет в: {_path.BasePath}\\versions");
+        return null;
     }
 
     private static string GetExpectedLoaderVersionId(string mc, string loaderType, string loaderVersion)
@@ -261,7 +335,7 @@ public sealed class MinecraftService
         Log?.Invoke(this, $"Loader: скачиваю installer: {installerUrl}");
 
         using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        reqCts.CancelAfter(TimeSpan.FromMinutes(2));
+        reqCts.CancelAfter(TimeSpan.FromMinutes(3));
 
         using var resp = await _http.GetAsync(installerUrl, HttpCompletionOption.ResponseHeadersRead, reqCts.Token);
         resp.EnsureSuccessStatusCode();
@@ -282,56 +356,6 @@ public sealed class MinecraftService
         return local;
     }
 
-    /// <summary>
-    /// NeoForge/Forge installer:
-    /// - часто НЕ поддерживает --installDir
-    /// - проверяет launcher_profiles.json
-    /// - по умолчанию ставит в %APPDATA%\.minecraft
-    ///
-    /// Поэтому:
-    /// 1) создаём launcher_profiles.json в gameDir
-    /// 2) пробуем (на удачу) варианты --installDir
-    /// 3) затем APPDATA redirect: envRoot\.minecraft -> junction на gameDir
-    /// </summary>
-    private async Task RunInstallerWithFallbackAsync(string installerPath, CancellationToken ct)
-    {
-        // пусть профайл лежит в gameDir (когда junction активен — это и будет "appdata\.minecraft")
-        EnsureLauncherProfileStub(_path.BasePath);
-
-        var javaExe = FindJavaExecutable();
-
-        // Попытка №1: если вдруг installer поддерживает явный путь
-        var argTries = new List<string[]>
-        {
-            new[] { "-jar", installerPath, "--installClient", "--installDir", _path.BasePath },
-            new[] { "-jar", installerPath, "--installClient", "--install-dir", _path.BasePath },
-        };
-
-        foreach (var args in argTries)
-        {
-            var res = await RunJavaAsync(javaExe, args, appDataOverride: null, ct);
-            if (res.ExitCode == 0)
-                return;
-
-            if (LooksLikeUnrecognizedOption(res.StdErr) || LooksLikeUnrecognizedOption(res.StdOut))
-                continue;
-        }
-
-        // Попытка №2: надёжно на Windows — APPDATA redirect
-        if (OperatingSystem.IsWindows())
-        {
-            await RunInstallerWithAppDataRedirectAsync(javaExe, installerPath, ct);
-            return;
-        }
-
-        // На не-Windows — просто запускаем (лучше чем ничего)
-        {
-            var res = await RunJavaAsync(javaExe, new[] { "-jar", installerPath, "--installClient" }, appDataOverride: null, ct);
-            if (res.ExitCode != 0)
-                throw new InvalidOperationException($"Installer завершился с ошибкой.\n{res.StdErr}");
-        }
-    }
-
     private static bool LooksLikeUnrecognizedOption(string? s)
     {
         if (string.IsNullOrWhiteSpace(s)) return false;
@@ -339,79 +363,60 @@ public sealed class MinecraftService
                s.Contains("is not a recognized option", StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task RunInstallerWithAppDataRedirectAsync(string javaExe, string installerPath, CancellationToken ct)
+    private string FindJavaExecutable()
     {
-        var envRoot = Path.Combine(_path.BasePath, "launcher", "installer_env", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(envRoot);
-
-        // installer будет писать в %APPDATA%\.minecraft
-        // мы подменяем APPDATA -> envRoot
-        // и делаем envRoot\.minecraft -> junction на _path.BasePath
-        var fakeMinecraft = Path.Combine(envRoot, ".minecraft");
-
-        bool isJunction = TryCreateJunction(fakeMinecraft, _path.BasePath);
-        if (!isJunction)
+        var runtimeDir = Path.Combine(_path.BasePath, "runtime");
+        if (Directory.Exists(runtimeDir))
         {
-            // fallback без junction: просто папка, потом копируем
-            Directory.CreateDirectory(fakeMinecraft);
-            EnsureLauncherProfileStub(fakeMinecraft);
+            var candidates = Directory.EnumerateFiles(runtimeDir, "java.exe", SearchOption.AllDirectories)
+                .Concat(Directory.EnumerateFiles(runtimeDir, "javaw.exe", SearchOption.AllDirectories))
+                .ToList();
+
+            var pick = candidates.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(pick))
+                return pick!;
         }
 
-        Log?.Invoke(this, $"Loader: запуск installer через APPDATA redirect -> {envRoot}");
-
-        var res2 = await RunJavaAsync(javaExe, new[] { "-jar", installerPath, "--installClient" }, appDataOverride: envRoot, ct);
-        if (res2.ExitCode != 0)
+        var javaHome = Environment.GetEnvironmentVariable("JAVA_HOME");
+        if (!string.IsNullOrWhiteSpace(javaHome))
         {
-            throw new InvalidOperationException(
-                $"Installer завершился с ошибкой (code {res2.ExitCode}).\n" +
-                $"{(string.IsNullOrWhiteSpace(res2.StdErr) ? res2.StdOut : res2.StdErr)}");
+            var p1 = Path.Combine(javaHome!, "bin", "java.exe");
+            if (File.Exists(p1)) return p1;
+
+            var p2 = Path.Combine(javaHome!, "bin", "java");
+            if (File.Exists(p2)) return p2;
         }
 
-        // если junction не удалось — переносим результат в gameDir
-        if (!isJunction)
-        {
-            MergeDir(Path.Combine(fakeMinecraft, "versions"), Path.Combine(_path.BasePath, "versions"));
-            MergeDir(Path.Combine(fakeMinecraft, "libraries"), Path.Combine(_path.BasePath, "libraries"));
-            MergeDir(Path.Combine(fakeMinecraft, "assets"), Path.Combine(_path.BasePath, "assets"));
-        }
-
-        try { Directory.Delete(envRoot, recursive: true); } catch { }
+        return "java";
     }
 
-    private bool TryCreateJunction(string junctionPath, string targetPath)
+    private static string GetSystemMinecraftDir()
     {
-        try
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        return Path.Combine(appData, ".minecraft");
+    }
+
+    private string? FindInstalledVersionId(string minecraftVersion, string loaderType, string loaderVersion)
+        => FindInstalledVersionIdInBase(_path.BasePath, minecraftVersion, loaderType, loaderVersion);
+
+    private static string? FindInstalledVersionIdInBase(string baseDir, string minecraftVersion, string loaderType, string loaderVersion)
+    {
+        var versionsDir = Path.Combine(baseDir, "versions");
+        if (!Directory.Exists(versionsDir))
+            return null;
+
+        foreach (var dir in Directory.EnumerateDirectories(versionsDir))
         {
-            if (Directory.Exists(junctionPath) || File.Exists(junctionPath))
-            {
-                try { Directory.Delete(junctionPath, recursive: true); } catch { }
-            }
+            var id = Path.GetFileName(dir);
+            if (string.IsNullOrWhiteSpace(id))
+                continue;
 
-            var psi = new ProcessStartInfo
-            {
-                FileName = "cmd.exe",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
-
-            psi.ArgumentList.Add("/c");
-            psi.ArgumentList.Add("mklink");
-            psi.ArgumentList.Add("/J");
-            psi.ArgumentList.Add(junctionPath);
-            psi.ArgumentList.Add(targetPath);
-
-            using var p = Process.Start(psi);
-            if (p is null) return false;
-            p.WaitForExit(8000);
-
-            return p.ExitCode == 0 && Directory.Exists(junctionPath);
+            if (id.Contains(loaderType, StringComparison.OrdinalIgnoreCase) &&
+                (string.IsNullOrWhiteSpace(loaderVersion) || id.Contains(loaderVersion, StringComparison.OrdinalIgnoreCase)))
+                return id;
         }
-        catch
-        {
-            return false;
-        }
+
+        return null;
     }
 
     private static void MergeDir(string src, string dst)
@@ -459,27 +464,21 @@ public sealed class MinecraftService
 
             var p2 = Path.Combine(mcDir, "launcher_profiles_microsoft_store.json");
             if (!File.Exists(p2))
-            {
                 File.WriteAllText(p2, File.ReadAllText(p1));
-            }
         }
-        catch
-        {
-            // ignore
-        }
+        catch { }
     }
 
-    // ✅ FIX: args теперь IEnumerable/array, а не IList (чтобы не ломалось на target-typed new())
     private async Task<(int ExitCode, string StdOut, string StdErr)> RunJavaAsync(
         string javaExe,
         IEnumerable<string> args,
-        string? appDataOverride,
+        string workingDir,
         CancellationToken ct)
     {
         var psi = new ProcessStartInfo
         {
             FileName = javaExe,
-            WorkingDirectory = _path.BasePath,
+            WorkingDirectory = workingDir,
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -488,12 +487,6 @@ public sealed class MinecraftService
 
         foreach (var a in args)
             psi.ArgumentList.Add(a);
-
-        if (!string.IsNullOrWhiteSpace(appDataOverride))
-        {
-            psi.Environment["APPDATA"] = appDataOverride!;
-            psi.Environment["LOCALAPPDATA"] = appDataOverride!;
-        }
 
         using var p = Process.Start(psi) ?? throw new InvalidOperationException("Не удалось запустить java для installer.");
 
@@ -514,98 +507,6 @@ public sealed class MinecraftService
         return (p.ExitCode, stdout, stderr);
     }
 
-    private string FindJavaExecutable()
-    {
-        var runtimeDir = Path.Combine(_path.BasePath, "runtime");
-        if (Directory.Exists(runtimeDir))
-        {
-            var candidates = Directory.EnumerateFiles(runtimeDir, "java.exe", SearchOption.AllDirectories)
-                .Concat(Directory.EnumerateFiles(runtimeDir, "javaw.exe", SearchOption.AllDirectories))
-                .ToList();
-
-            var pick = candidates.FirstOrDefault();
-            if (!string.IsNullOrWhiteSpace(pick))
-                return pick!;
-        }
-
-        var javaHome = Environment.GetEnvironmentVariable("JAVA_HOME");
-        if (!string.IsNullOrWhiteSpace(javaHome))
-        {
-            var p1 = Path.Combine(javaHome!, "bin", "java.exe");
-            if (File.Exists(p1)) return p1;
-
-            var p2 = Path.Combine(javaHome!, "bin", "java");
-            if (File.Exists(p2)) return p2;
-        }
-
-        return "java";
-    }
-
-    private string? FindInstalledVersionId(string minecraftVersion, string loaderType, string loaderVersion)
-    {
-        var versionsDir = Path.Combine(_path.BasePath, "versions");
-        if (!Directory.Exists(versionsDir))
-            return null;
-
-        foreach (var dir in Directory.EnumerateDirectories(versionsDir))
-        {
-            var id = Path.GetFileName(dir);
-            if (string.IsNullOrWhiteSpace(id))
-                continue;
-
-            if (IsVersionProfileLooksLike(id!, minecraftVersion, loaderType, loaderVersion))
-                return id;
-        }
-
-        return null;
-    }
-
-    private bool IsVersionProfileLooksLike(string versionId, string minecraftVersion, string loaderType, string loaderVersion)
-    {
-        var jsonPath = Path.Combine(_path.BasePath, "versions", versionId, versionId + ".json");
-        if (!File.Exists(jsonPath))
-            return false;
-
-        try
-        {
-            using var fs = File.OpenRead(jsonPath);
-            using var doc = JsonDocument.Parse(fs);
-
-            var root = doc.RootElement;
-
-            var keyword = loaderType switch
-            {
-                "neoforge" => "neoforge",
-                "forge" => "forge",
-                _ => loaderType
-            };
-
-            if (root.TryGetProperty("libraries", out var libs) && libs.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var lib in libs.EnumerateArray())
-                {
-                    if (!lib.TryGetProperty("name", out var nameProp)) continue;
-                    var name = nameProp.GetString() ?? "";
-
-                    if (name.Contains(keyword, StringComparison.OrdinalIgnoreCase) &&
-                        (string.IsNullOrWhiteSpace(loaderVersion) || name.Contains(loaderVersion, StringComparison.OrdinalIgnoreCase)))
-                        return true;
-                }
-            }
-
-            if (versionId.Contains(keyword, StringComparison.OrdinalIgnoreCase) &&
-                (string.IsNullOrWhiteSpace(loaderVersion) || versionId.Contains(loaderVersion, StringComparison.OrdinalIgnoreCase)))
-                return true;
-        }
-        catch { }
-
-        return false;
-    }
-
-    // =========================
-    // Pack update (manifest + blobs)
-    // =========================
-
     private async Task EnsurePackUpToDateAsync(string[] mirrors, CancellationToken ct)
     {
         Log?.Invoke(this, "Сборка: проверка обновлений...");
@@ -618,12 +519,17 @@ public sealed class MinecraftService
             return;
         }
 
+        var state = LoadPackState();
+
         var wanted = new HashSet<string>(
             manifest.Files.Select(f => NormalizeRelPath(f.Path)).Where(p => !string.IsNullOrWhiteSpace(p)),
             StringComparer.OrdinalIgnoreCase);
 
         long totalBytes = manifest.Files.Sum(f => Math.Max(0, f.Size));
         long doneBytes = 0;
+
+        static long ClampLong(long v, long min, long max)
+            => v < min ? min : (v > max ? max : v);
 
         int lastPercent = -1;
         void ReportProgress()
@@ -659,10 +565,20 @@ public sealed class MinecraftService
 
             await TryApplyPendingAsync(destRel, localPath, file.Sha256, ct);
 
-            var need = await NeedsDownloadAsync(localPath, file, ct);
-            if (!need)
+            var check = await CheckFileAsync(destRel, localPath, file, state, ct);
+
+            if (check == FileCheckResult.Match)
             {
-                doneBytes += Math.Max(0, file.Size);
+                doneBytes = ClampLong(doneBytes + Math.Max(0, file.Size), 0, totalBytes);
+                ReportProgress();
+                continue;
+            }
+
+            // важный момент: config/ часто меняется игрой -> не перекачиваем обратно каждый запуск
+            if (IsUserMutableDest(destRel))
+            {
+                Log?.Invoke(this, $"Сборка: {destRel} изменён локально — оставляю как есть.");
+                doneBytes = ClampLong(doneBytes + Math.Max(0, file.Size), 0, totalBytes);
                 ReportProgress();
                 continue;
             }
@@ -680,28 +596,131 @@ public sealed class MinecraftService
                 ct,
                 onBytes: bytes =>
                 {
-                    if (bytes > 0)
-                    {
-                        doneBytes += bytes;
-                        ReportProgress();
-                    }
+                    if (bytes == 0) return;
+                    doneBytes = ClampLong(doneBytes + bytes, 0, totalBytes);
+                    ReportProgress();
                 });
 
+            UpdatePackStateEntry(state, destRel, localPath, file.Sha256);
             Log?.Invoke(this, $"Сборка: OK {destRel}");
         }
 
+        // ✅ prune: только разрешённые корни + НЕ трогаем user-mutable (config/)
         if (manifest.Prune is { Length: > 0 })
         {
-            var roots = manifest.Prune.Select(NormalizeRoot)
-                .Where(r => !string.IsNullOrWhiteSpace(r))
+            var roots = manifest.Prune
+                .Select(NormalizeRoot)
+                .Where(r =>
+                    !string.IsNullOrWhiteSpace(r) &&
+                    IsAllowedDest(r) &&
+                    !IsUserMutableDest(r)) // не чистим config/
                 .ToArray();
 
             if (roots.Length > 0)
                 PruneExtras(roots, wanted);
         }
 
+        state.PackId = manifest.PackId;
+        state.ManifestVersion = manifest.Version;
+        SavePackState(state);
+
         Log?.Invoke(this, $"Сборка: актуальна (версия {manifest.Version}).");
         ProgressPercent?.Invoke(this, 100);
+    }
+
+    private enum FileCheckResult { MissingOrDifferent, Match }
+
+    private async Task<FileCheckResult> CheckFileAsync(string rel, string localPath, PackFile file, PackState state, CancellationToken ct)
+    {
+        if (!File.Exists(localPath))
+            return FileCheckResult.MissingOrDifferent;
+
+        try
+        {
+            var info = new FileInfo(localPath);
+
+            if (file.Size > 0 && info.Length != file.Size)
+                return FileCheckResult.MissingOrDifferent;
+
+            if (state.Files.TryGetValue(rel, out var cached) &&
+                cached.Size == info.Length &&
+                cached.LastWriteUtcTicks == info.LastWriteTimeUtc.Ticks &&
+                cached.Sha256.Equals(file.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                return FileCheckResult.Match;
+            }
+
+            var sha = await ComputeSha256Async(localPath, ct);
+            if (!sha.Equals(file.Sha256, StringComparison.OrdinalIgnoreCase))
+                return FileCheckResult.MissingOrDifferent;
+
+            UpdatePackStateEntry(state, rel, localPath, file.Sha256);
+            return FileCheckResult.Match;
+        }
+        catch
+        {
+            return FileCheckResult.MissingOrDifferent;
+        }
+    }
+
+    private void UpdatePackStateEntry(PackState state, string rel, string localPath, string sha256)
+    {
+        try
+        {
+            var info = new FileInfo(localPath);
+            state.Files[rel] = new PackStateEntry
+            {
+                Size = info.Length,
+                Sha256 = sha256.ToLowerInvariant(),
+                LastWriteUtcTicks = info.LastWriteTimeUtc.Ticks
+            };
+        }
+        catch { }
+    }
+
+    private PackState LoadPackState()
+    {
+        try
+        {
+            var path = Path.Combine(_path.BasePath, "launcher", PackStateFileName);
+            if (!File.Exists(path))
+                return new PackState();
+
+            var json = File.ReadAllText(path);
+            var st = JsonSerializer.Deserialize<PackState>(json);
+            return st ?? new PackState();
+        }
+        catch
+        {
+            return new PackState();
+        }
+    }
+
+    private void SavePackState(PackState state)
+    {
+        try
+        {
+            var dir = Path.Combine(_path.BasePath, "launcher");
+            Directory.CreateDirectory(dir);
+
+            var path = Path.Combine(dir, PackStateFileName);
+            File.WriteAllText(path, JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch { }
+    }
+
+    private sealed class PackState
+    {
+        public string? PackId { get; set; }
+        public string? ManifestVersion { get; set; }
+        public Dictionary<string, PackStateEntry> Files { get; set; } = new();
+    }
+
+    private sealed class PackStateEntry
+    {
+        public long Size { get; set; }
+        public string Sha256 { get; set; } = "";
+        public long LastWriteUtcTicks { get; set; }
     }
 
     private async Task<(string activeBaseUrl, PackManifest manifest)> DownloadManifestFromMirrorsAsync(string[] mirrors, CancellationToken ct)
@@ -718,7 +737,7 @@ public sealed class MinecraftService
                 Log?.Invoke(this, $"Сборка: читаю manifest: {url}");
 
                 using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                reqCts.CancelAfter(TimeSpan.FromSeconds(12));
+                reqCts.CancelAfter(TimeSpan.FromSeconds(30));
 
                 using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, reqCts.Token);
                 resp.EnsureSuccessStatusCode();
@@ -776,43 +795,34 @@ public sealed class MinecraftService
         {
             ct.ThrowIfCancellationRequested();
 
+            long attemptBytes = 0;
+            void Counted(long b)
+            {
+                if (b > 0) attemptBytes += b;
+                onBytes(b);
+            }
+
             try
             {
                 var url = CombineUrl(baseUrl, blobRel);
                 Log?.Invoke(this, $"Сборка: download {blobRel} ({FormatBytes(file.Size)})");
 
-                await DownloadToFileAsync(url, localPath, file.Sha256, destRel, ct, onBytes);
+                await DownloadToFileAsync(url, localPath, file.Sha256, destRel, ct, Counted);
                 return;
             }
             catch (Exception ex)
             {
                 last = ex;
+
+                // ✅ rollback прогресса за неудавшуюся попытку
+                if (attemptBytes > 0)
+                    onBytes(-attemptBytes);
+
                 Log?.Invoke(this, $"Сборка: ошибка скачивания (зеркало {baseUrl}) — {ex.Message}");
             }
         }
 
         throw new InvalidOperationException($"Не удалось скачать blob: {blobRel}", last);
-    }
-
-    private async Task<bool> NeedsDownloadAsync(string localPath, PackFile file, CancellationToken ct)
-    {
-        if (!File.Exists(localPath))
-            return true;
-
-        try
-        {
-            var info = new FileInfo(localPath);
-
-            if (file.Size > 0 && info.Length != file.Size)
-                return true;
-
-            var sha = await ComputeSha256Async(localPath, ct);
-            return !sha.Equals(file.Sha256, StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            return true;
-        }
     }
 
     private async Task DownloadToFileAsync(string url, string localPath, string expectedSha256, string destRel, CancellationToken ct, Action<long> onBytes)
@@ -930,7 +940,6 @@ public sealed class MinecraftService
                     TryDeleteQuiet(backup);
 
                     File.Replace(source, dest, backup, ignoreMetadataErrors: true);
-
                     TryDeleteQuiet(backup);
                 }
                 else
@@ -980,10 +989,6 @@ public sealed class MinecraftService
         }
     }
 
-    // =========================
-    // Helpers
-    // =========================
-
     private static bool IsAllowedDest(string destRel)
     {
         destRel = destRel.Replace('\\', '/');
@@ -996,6 +1001,12 @@ public sealed class MinecraftService
     }
 
     private static bool IsOptionalDest(string destRel)
+    {
+        destRel = destRel.Replace('\\', '/');
+        return destRel.StartsWith("config/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsUserMutableDest(string destRel)
     {
         destRel = destRel.Replace('\\', '/');
         return destRel.StartsWith("config/", StringComparison.OrdinalIgnoreCase);
@@ -1103,7 +1114,7 @@ public sealed class MinecraftService
         });
 
         http.Timeout = TimeSpan.FromSeconds(60);
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("LegendBornLauncher/1.0");
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("LegendBornLauncher/0.1.6");
         return http;
     }
 
@@ -1121,10 +1132,6 @@ public sealed class MinecraftService
     {
         try { if (File.Exists(path)) File.Delete(path); } catch { }
     }
-
-    // =========================
-    // Manifest models
-    // =========================
 
     public sealed record PackManifest(
         [property: JsonPropertyName("packId")] string PackId,

@@ -1,9 +1,10 @@
 ﻿using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
-using LegendBorn.Services; // UpdateService в LegendBorn.Services
+using LegendBorn.Services;
 
 namespace LegendBorn;
 
@@ -28,7 +29,6 @@ public partial class MainWindow : Window
 
         _updatesChecked = true;
 
-        // В фоне, чтобы не подвисал UI
         _ = RunUpdateCheckSafeAsync();
     }
 
@@ -39,12 +39,11 @@ public partial class MainWindow : Window
             if (_isClosing)
                 return;
 
-            // ✅ На старте НЕ показываем "обновлений нет", но если обновление есть — спросим
             await UpdateService.CheckAndUpdateAsync(silent: false, showNoUpdates: false);
         }
         catch
         {
-            // Любая ошибка апдейта не должна ломать запуск лаунчера.
+            // апдейтер не должен ломать запуск
         }
     }
 
@@ -74,6 +73,13 @@ public partial class MainWindow : Window
         while (d != null)
         {
             if (d is ButtonBase) return true;
+            if (d is TextBoxBase) return true;
+            if (d is PasswordBox) return true;
+            if (d is Selector) return true;     // ComboBox/ListBox etc.
+            if (d is Thumb) return true;        // ScrollBar thumbs
+            if (d is ScrollBar) return true;
+            if (d is Slider) return true;
+
             d = VisualTreeHelper.GetParent(d);
         }
         return false;

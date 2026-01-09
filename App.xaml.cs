@@ -9,7 +9,7 @@ public partial class App : Application
     [STAThread]
     private static void Main(string[] args)
     {
-        // ВАЖНО: Velopack hooks должны выполниться ДО старта WPF UI
+        // Velopack hooks до старта WPF UI
         VelopackApp.Build().Run();
 
         var app = new App();
