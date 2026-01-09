@@ -1,4 +1,9 @@
-﻿using System.Threading.Tasks;
+﻿using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
+using System.Text.Json;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -13,13 +18,217 @@ public partial class MainWindow : Window
     private bool _updatesChecked;
     private bool _isClosing;
 
+    // ===== 0.1.7 prefs =====
+    private enum LauncherGameUiMode { Hide, Minimize, None }
+
+    private LauncherGameUiMode _gameUiMode = LauncherGameUiMode.Hide; // default
+    private bool _settingModeGuard;
+
+    private bool _wasGameRunning;
+    private bool _uiChangedForGame;
+    private WindowState _preGameWindowState;
+    private bool _preGameWasVisible;
+
+    private static readonly string PrefsPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "LegendBorn", "launcher_prefs.json");
+
+    public bool GameUiModeHide
+    {
+        get => (bool)GetValue(GameUiModeHideProperty);
+        set => SetValue(GameUiModeHideProperty, value);
+    }
+    public static readonly DependencyProperty GameUiModeHideProperty =
+        DependencyProperty.Register(nameof(GameUiModeHide), typeof(bool), typeof(MainWindow),
+            new PropertyMetadata(false, OnGameUiModeFlagChanged));
+
+    public bool GameUiModeMinimize
+    {
+        get => (bool)GetValue(GameUiModeMinimizeProperty);
+        set => SetValue(GameUiModeMinimizeProperty, value);
+    }
+    public static readonly DependencyProperty GameUiModeMinimizeProperty =
+        DependencyProperty.Register(nameof(GameUiModeMinimize), typeof(bool), typeof(MainWindow),
+            new PropertyMetadata(false, OnGameUiModeFlagChanged));
+
+    public bool GameUiModeNone
+    {
+        get => (bool)GetValue(GameUiModeNoneProperty);
+        set => SetValue(GameUiModeNoneProperty, value);
+    }
+    public static readonly DependencyProperty GameUiModeNoneProperty =
+        DependencyProperty.Register(nameof(GameUiModeNone), typeof(bool), typeof(MainWindow),
+            new PropertyMetadata(false, OnGameUiModeFlagChanged));
+
+    private static void OnGameUiModeFlagChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var w = (MainWindow)d;
+        if (w._settingModeGuard) return;
+        if (e.NewValue is not bool b || !b) return;
+
+        if (ReferenceEquals(e.Property, GameUiModeHideProperty))
+            w.SetUiMode(LauncherGameUiMode.Hide);
+        else if (ReferenceEquals(e.Property, GameUiModeMinimizeProperty))
+            w.SetUiMode(LauncherGameUiMode.Minimize);
+        else if (ReferenceEquals(e.Property, GameUiModeNoneProperty))
+            w.SetUiMode(LauncherGameUiMode.None);
+    }
+
     public MainWindow()
     {
         InitializeComponent();
-        DataContext = new MainViewModel();
+
+        LoadPrefs();
+        ApplyModeToBindings();
+
+        var vm = new MainViewModel();
+        DataContext = vm;
+
+        if (vm is INotifyPropertyChanged inpc)
+            inpc.PropertyChanged += VmOnPropertyChanged;
 
         Loaded += MainWindow_OnLoaded;
         Closing += (_, __) => _isClosing = true;
+    }
+
+    private void VmOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(MainViewModel.CanStop))
+            return;
+
+        if (sender is not MainViewModel vm)
+            return;
+
+        var running = vm.CanStop;
+
+        if (running && !_wasGameRunning)
+            OnGameStarted();
+
+        if (!running && _wasGameRunning)
+            OnGameStopped();
+
+        _wasGameRunning = running;
+    }
+
+    private void OnGameStarted()
+    {
+        if (_gameUiMode == LauncherGameUiMode.None)
+            return;
+
+        _preGameWindowState = WindowState;
+        _preGameWasVisible = IsVisible;
+        _uiChangedForGame = true;
+
+        Dispatcher.Invoke(() =>
+        {
+            if (_gameUiMode == LauncherGameUiMode.Hide)
+            {
+                Hide();
+            }
+            else if (_gameUiMode == LauncherGameUiMode.Minimize)
+            {
+                WindowState = WindowState.Minimized;
+            }
+        });
+    }
+
+    private void OnGameStopped()
+    {
+        if (!_uiChangedForGame)
+            return;
+
+        _uiChangedForGame = false;
+
+        Dispatcher.Invoke(() =>
+        {
+            try
+            {
+                if (!IsVisible)
+                    Show();
+
+                WindowState = _preGameWindowState == WindowState.Minimized ? WindowState.Normal : _preGameWindowState;
+
+                Activate();
+                Topmost = true;
+                Topmost = false;
+            }
+            catch { }
+        });
+    }
+
+    private void SetUiMode(LauncherGameUiMode mode)
+    {
+        if (_gameUiMode == mode) return;
+        _gameUiMode = mode;
+
+        ApplyModeToBindings();
+        SavePrefs();
+    }
+
+    private void ApplyModeToBindings()
+    {
+        _settingModeGuard = true;
+        try
+        {
+            GameUiModeHide = _gameUiMode == LauncherGameUiMode.Hide;
+            GameUiModeMinimize = _gameUiMode == LauncherGameUiMode.Minimize;
+            GameUiModeNone = _gameUiMode == LauncherGameUiMode.None;
+        }
+        finally
+        {
+            _settingModeGuard = false;
+        }
+    }
+
+    private sealed class PrefsDto
+    {
+        public string? GameUiMode { get; set; }
+    }
+
+    private void LoadPrefs()
+    {
+        try
+        {
+            if (!File.Exists(PrefsPath))
+            {
+                _gameUiMode = LauncherGameUiMode.Hide;
+                return;
+            }
+
+            var json = File.ReadAllText(PrefsPath);
+            var dto = JsonSerializer.Deserialize<PrefsDto>(json);
+            var s = (dto?.GameUiMode ?? "").Trim();
+
+            _gameUiMode = s.Equals("Minimize", StringComparison.OrdinalIgnoreCase) ? LauncherGameUiMode.Minimize
+                       : s.Equals("None", StringComparison.OrdinalIgnoreCase) ? LauncherGameUiMode.None
+                       : LauncherGameUiMode.Hide;
+        }
+        catch
+        {
+            _gameUiMode = LauncherGameUiMode.Hide;
+        }
+    }
+
+    private void SavePrefs()
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(PrefsPath);
+            if (!string.IsNullOrWhiteSpace(dir))
+                Directory.CreateDirectory(dir);
+
+            var dto = new PrefsDto { GameUiMode = _gameUiMode.ToString() };
+            var json = JsonSerializer.Serialize(dto, new JsonSerializerOptions { WriteIndented = true });
+
+            var tmp = PrefsPath + ".tmp";
+            File.WriteAllText(tmp, json);
+
+            if (File.Exists(PrefsPath))
+                File.Replace(tmp, PrefsPath, destinationBackupFileName: null, ignoreMetadataErrors: true);
+            else
+                File.Move(tmp, PrefsPath);
+        }
+        catch { }
     }
 
     private void MainWindow_OnLoaded(object sender, RoutedEventArgs e)
@@ -75,8 +284,8 @@ public partial class MainWindow : Window
             if (d is ButtonBase) return true;
             if (d is TextBoxBase) return true;
             if (d is PasswordBox) return true;
-            if (d is Selector) return true;     // ComboBox/ListBox etc.
-            if (d is Thumb) return true;        // ScrollBar thumbs
+            if (d is Selector) return true;
+            if (d is Thumb) return true;
             if (d is ScrollBar) return true;
             if (d is Slider) return true;
 

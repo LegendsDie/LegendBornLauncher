@@ -8,12 +8,10 @@ namespace LegendBorn.Services;
 
 public static class UpdateService
 {
-    // Repo URL БЕЗ .git
     private const string RepoUrl = "https://github.com/LegendsDie/LegendBornLauncher";
 
     private static GithubSource CreateSource()
     {
-        // Публичный репо -> токен не нужен
         return new GithubSource(
             repoUrl: RepoUrl,
             accessToken: null,
@@ -21,22 +19,15 @@ public static class UpdateService
         );
     }
 
-    /// <summary>
-    /// silent=true  -> вообще без окон (полностью тихо)
-    /// silent=false -> показать окно ТОЛЬКО если есть обновление.
-    /// showNoUpdates=true -> при ручной проверке покажет "обновлений нет".
-    /// </summary>
     public static async Task CheckAndUpdateAsync(bool silent, bool showNoUpdates = false)
     {
         var mgr = new UpdateManager(CreateSource());
 
-        // Обновления работают только у установленной версии (через Setup.exe / Velopack install).
         if (!mgr.IsInstalled)
             return;
 
         try
         {
-            // Если апдейт уже скачан и ждёт перезапуска — применяем сразу
             if (mgr.UpdatePendingRestart is { } pending)
             {
                 mgr.ApplyUpdatesAndRestart(pending);
@@ -74,7 +65,6 @@ public static class UpdateService
 
             await mgr.DownloadUpdatesAsync(updates);
 
-            // Применяем после закрытия приложения и перезапускаем
             mgr.WaitExitThenApplyUpdates(target, restart: true);
             Application.Current.Shutdown();
         }
@@ -91,7 +81,6 @@ public static class UpdateService
         }
         finally
         {
-            // На случай если в будущих версиях UpdateManager станет IDisposable (без поломки текущей)
             (mgr as IDisposable)?.Dispose();
         }
     }

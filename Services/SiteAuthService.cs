@@ -19,33 +19,34 @@ public sealed class SiteAuthService
         PropertyNameCaseInsensitive = true
     };
 
-    // ✅ HttpClient живёт долго + timeout + user-agent + decompression
     private static readonly HttpClient Http = CreateHttp();
 
     private static HttpClient CreateHttp()
     {
-        var http = new HttpClient(new HttpClientHandler
+        var handler = new SocketsHttpHandler
         {
-            AutomaticDecompression = DecompressionMethods.All
-        })
-        {
-            BaseAddress = new Uri(SiteBaseUrl),
-            Timeout = TimeSpan.FromSeconds(60)
+            AutomaticDecompression = DecompressionMethods.All,
+            ConnectTimeout = TimeSpan.FromSeconds(15),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+            AllowAutoRedirect = true,
+            MaxConnectionsPerServer = 8
         };
 
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("LegendBornLauncher/0.1.6");
+        var http = new HttpClient(handler)
+        {
+            BaseAddress = new Uri(SiteBaseUrl),
+            Timeout = Timeout.InfiniteTimeSpan
+        };
+
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("LegendBornLauncher/0.1.7");
         return http;
     }
 
     private static string NormalizeToken(string token)
-    {
-        // На практике часто прилетает token с кавычками или пробелами
-        return (token ?? string.Empty).Trim().Trim('"');
-    }
+        => (token ?? string.Empty).Trim().Trim('"');
 
     private static async Task<string> ReadBodyAsync(HttpResponseMessage resp, CancellationToken ct)
     {
-        // ReadAsStringAsync(ct) не везде доступен (зависит от TF), поэтому так:
         var s = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         return s ?? string.Empty;
@@ -61,10 +62,65 @@ public sealed class SiteAuthService
             ? v
             : 0;
 
+    private static bool IsRetryableStatus(HttpStatusCode code)
+        => (int)code >= 500 || code == HttpStatusCode.RequestTimeout || code == HttpStatusCode.TooManyRequests;
+
+    private static async Task<HttpResponseMessage> SendAsyncWithRetry(HttpRequestMessage req, CancellationToken ct, TimeSpan perTryTimeout)
+    {
+        // IMPORTANT: HttpRequestMessage нельзя переиспользовать, поэтому мы передаём "фабрику" ниже
+        throw new NotSupportedException();
+    }
+
+    private static async Task<HttpResponseMessage> SendAsyncWithRetry(Func<HttpRequestMessage> factory, CancellationToken ct, int attempts, TimeSpan perTryTimeout)
+    {
+        Exception? last = null;
+
+        for (int i = 1; i <= attempts; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                using var tcs = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                tcs.CancelAfter(perTryTimeout);
+
+                using var req = factory();
+                var resp = await Http.SendAsync(req, tcs.Token).ConfigureAwait(false);
+
+                if (IsRetryableStatus(resp.StatusCode))
+                {
+                    last = new HttpRequestException("Retryable status: " + (int)resp.StatusCode);
+                    resp.Dispose();
+                    await Task.Delay(200 * i, ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                return resp; // caller disposes
+            }
+            catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
+            {
+                last = ex;
+                await Task.Delay(200 * i, ct).ConfigureAwait(false);
+            }
+            catch (HttpRequestException ex)
+            {
+                last = ex;
+                await Task.Delay(200 * i, ct).ConfigureAwait(false);
+            }
+        }
+
+        throw new InvalidOperationException("Сетевой запрос не удался после ретраев.", last);
+    }
+
     // POST /api/launcher/login -> { deviceId, connectUrl, expiresAtUnix }
     public async Task<(string DeviceId, string ConnectUrl, long ExpiresAtUnix)> StartLauncherLoginAsync(CancellationToken ct)
     {
-        using var resp = await Http.PostAsync("api/launcher/login", content: null, ct).ConfigureAwait(false);
+        using var resp = await SendAsyncWithRetry(
+            factory: () => new HttpRequestMessage(HttpMethod.Post, "api/launcher/login"),
+            ct: ct,
+            attempts: 3,
+            perTryTimeout: TimeSpan.FromSeconds(25));
+
         resp.EnsureSuccessStatusCode();
 
         var json = await ReadBodyAsync(resp, ct).ConfigureAwait(false);
@@ -87,8 +143,11 @@ public sealed class SiteAuthService
         if (string.IsNullOrWhiteSpace(deviceId))
             return null;
 
-        using var resp = await Http.GetAsync($"api/launcher/login?deviceId={Uri.EscapeDataString(deviceId)}", ct)
-            .ConfigureAwait(false);
+        using var resp = await SendAsyncWithRetry(
+            factory: () => new HttpRequestMessage(HttpMethod.Get, $"api/launcher/login?deviceId={Uri.EscapeDataString(deviceId)}"),
+            ct: ct,
+            attempts: 3,
+            perTryTimeout: TimeSpan.FromSeconds(20));
 
         if (!resp.IsSuccessStatusCode)
             return null;
@@ -116,11 +175,17 @@ public sealed class SiteAuthService
     {
         accessToken = NormalizeToken(accessToken);
 
-        using var req = new HttpRequestMessage(HttpMethod.Get, "api/launcher/me");
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-        using var resp = await Http.SendAsync(req, ct).ConfigureAwait(false);
+        using var resp = await SendAsyncWithRetry(
+            factory: () =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Get, "api/launcher/me");
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+                req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                return req;
+            },
+            ct: ct,
+            attempts: 3,
+            perTryTimeout: TimeSpan.FromSeconds(25));
 
         if (resp.StatusCode == HttpStatusCode.Unauthorized)
             throw new UnauthorizedAccessException("Unauthorized (launcher token invalid/expired).");
@@ -137,11 +202,17 @@ public sealed class SiteAuthService
     {
         accessToken = NormalizeToken(accessToken);
 
-        using var req = new HttpRequestMessage(HttpMethod.Get, "api/launcher/economy/balance");
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-        using var resp = await Http.SendAsync(req, ct).ConfigureAwait(false);
+        using var resp = await SendAsyncWithRetry(
+            factory: () =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Get, "api/launcher/economy/balance");
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+                req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                return req;
+            },
+            ct: ct,
+            attempts: 3,
+            perTryTimeout: TimeSpan.FromSeconds(25));
 
         if (resp.StatusCode == HttpStatusCode.Unauthorized)
             throw new UnauthorizedAccessException("Unauthorized (launcher token invalid/expired).");
@@ -155,7 +226,6 @@ public sealed class SiteAuthService
     }
 
     // POST /api/launcher/events
-    // body: { key, idempotencyKey, payload }
     public async Task<LauncherEventResponse?> SendLauncherEventAsync(
         string accessToken,
         string key,
@@ -179,12 +249,18 @@ public sealed class SiteAuthService
 
         var jsonBody = JsonSerializer.Serialize(body, JsonOptions);
 
-        using var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/events");
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
-
-        using var resp = await Http.SendAsync(req, ct).ConfigureAwait(false);
+        using var resp = await SendAsyncWithRetry(
+            factory: () =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/events");
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+                req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+                return req;
+            },
+            ct: ct,
+            attempts: 3,
+            perTryTimeout: TimeSpan.FromSeconds(30));
 
         if (resp.StatusCode == HttpStatusCode.Unauthorized)
             throw new UnauthorizedAccessException("Unauthorized (launcher token invalid/expired).");

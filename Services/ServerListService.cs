@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -14,6 +16,10 @@ public sealed class ServerListService
     public const string DefaultServersUrl = "https://legendborn.ru/launcher/servers.json";
 
     private static readonly HttpClient _http = CreateHttp();
+
+    private static readonly string CacheFilePath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "LegendBorn", "cache", "servers_cache.json");
 
     public async Task<IReadOnlyList<ServerInfo>> GetServersAsync(
         IEnumerable<string>? mirrors = null,
@@ -32,44 +38,69 @@ public sealed class ServerListService
 
         foreach (var url in urls)
         {
-            try
+            // 3 попытки на одно зеркало (мягкий ретрай)
+            for (int attempt = 1; attempt <= 3; attempt++)
             {
-                using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                reqCts.CancelAfter(TimeSpan.FromSeconds(10));
+                ct.ThrowIfCancellationRequested();
 
-                using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, reqCts.Token);
-                resp.EnsureSuccessStatusCode();
+                try
+                {
+                    var perTryTimeout = TimeSpan.FromSeconds(attempt == 1 ? 20 : 35);
 
-                await using var stream = await resp.Content.ReadAsStreamAsync(reqCts.Token);
-                var root = await JsonSerializer.DeserializeAsync(
-                    stream,
-                    ServerListJsonContext.Default.ServersRoot,
-                    reqCts.Token);
+                    using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    reqCts.CancelAfter(perTryTimeout);
 
-                if (root is null || root.Servers is null || root.Servers.Count == 0)
-                    throw new InvalidOperationException("servers.json: пустой список servers");
+                    using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, reqCts.Token)
+                        .ConfigureAwait(false);
 
-                // нормализуем и выкидываем мусор
-                var result = root.Servers
-                    .Select(s =>
-                    {
-                        try { return NormalizeServer(s); }
-                        catch { return null; } // один битый сервер не должен убивать весь список
-                    })
-                    .Where(s => s is not null)
-                    .Cast<ServerInfo>()
-                    .ToList();
+                    resp.EnsureSuccessStatusCode();
 
-                if (result.Count == 0)
-                    throw new InvalidOperationException("servers.json: после нормализации серверов не осталось");
+                    // читаем целиком -> можем сохранить в кеш
+                    var json = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    reqCts.Token.ThrowIfCancellationRequested();
 
-                return result;
-            }
-            catch (Exception ex)
-            {
-                last = ex;
+                    var root = JsonSerializer.Deserialize(json, ServerListJsonContext.Default.ServersRoot);
+                    if (root is null || root.Servers is null || root.Servers.Count == 0)
+                        throw new InvalidOperationException("servers.json: пустой список servers");
+
+                    var result = root.Servers
+                        .Select(s =>
+                        {
+                            try { return NormalizeServer(s); }
+                            catch { return null; }
+                        })
+                        .Where(s => s is not null)
+                        .Cast<ServerInfo>()
+                        .ToList();
+
+                    if (result.Count == 0)
+                        throw new InvalidOperationException("servers.json: после нормализации серверов не осталось");
+
+                    SaveCacheQuiet(json);
+                    return result;
+                }
+                catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
+                {
+                    last = ex;
+                    await Task.Delay(250 * attempt, ct).ConfigureAwait(false);
+                }
+                catch (HttpRequestException ex)
+                {
+                    last = ex;
+                    await Task.Delay(250 * attempt, ct).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    last = ex;
+                    break; // если ошибка парсинга/формата — ретрай не поможет
+                }
             }
         }
+
+        // если сеть умерла — пытаемся подняться с кеша
+        var cached = TryLoadCache();
+        if (cached is not null && cached.Count > 0)
+            return cached;
 
         throw new InvalidOperationException("Не удалось загрузить servers.json ни с одного URL", last);
     }
@@ -80,7 +111,7 @@ public sealed class ServerListService
     {
         try
         {
-            return await GetServersAsync(mirrors, ct);
+            return await GetServersAsync(mirrors, ct).ConfigureAwait(false);
         }
         catch
         {
@@ -109,6 +140,59 @@ public sealed class ServerListService
     }
 
     // =========================
+    // Cache
+    // =========================
+
+    private static void SaveCacheQuiet(string json)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(CacheFilePath);
+            if (!string.IsNullOrWhiteSpace(dir))
+                Directory.CreateDirectory(dir);
+
+            var tmp = CacheFilePath + ".tmp";
+            File.WriteAllText(tmp, json);
+
+            if (File.Exists(CacheFilePath))
+                File.Replace(tmp, CacheFilePath, destinationBackupFileName: null, ignoreMetadataErrors: true);
+            else
+                File.Move(tmp, CacheFilePath);
+        }
+        catch { }
+    }
+
+    private static IReadOnlyList<ServerInfo>? TryLoadCache()
+    {
+        try
+        {
+            if (!File.Exists(CacheFilePath))
+                return null;
+
+            var json = File.ReadAllText(CacheFilePath);
+            var root = JsonSerializer.Deserialize(json, ServerListJsonContext.Default.ServersRoot);
+            if (root is null || root.Servers is null || root.Servers.Count == 0)
+                return null;
+
+            var result = root.Servers
+                .Select(s =>
+                {
+                    try { return NormalizeServer(s); }
+                    catch { return null; }
+                })
+                .Where(s => s is not null)
+                .Cast<ServerInfo>()
+                .ToList();
+
+            return result.Count > 0 ? result : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    // =========================
     // Normalize / Validate
     // =========================
 
@@ -121,7 +205,6 @@ public sealed class ServerListService
         var mc = (s.MinecraftVersion ?? "").Trim();
         if (string.IsNullOrWhiteSpace(mc)) return null;
 
-        // loader: новый формат (loader{}) или старый (loaderName/loaderVersion)
         var loader = s.Loader;
 
         if (loader is null)
@@ -143,7 +226,6 @@ public sealed class ServerListService
         var loaderVer = (loader.Version ?? "").Trim();
         var installerUrl = (loader.InstallerUrl ?? "").Trim();
 
-        // если installerUrl не задан (старый json) — подставим дефолт для forge/neoforge
         if (loaderType != "vanilla" && string.IsNullOrWhiteSpace(installerUrl))
         {
             installerUrl = loaderType switch
@@ -158,7 +240,6 @@ public sealed class ServerListService
             };
         }
 
-        // если не vanilla — installerUrl обязателен
         if (loaderType != "vanilla" && string.IsNullOrWhiteSpace(installerUrl))
             return null;
 
@@ -189,13 +270,21 @@ public sealed class ServerListService
 
     private static HttpClient CreateHttp()
     {
-        var http = new HttpClient(new HttpClientHandler
+        var handler = new SocketsHttpHandler
         {
-            AutomaticDecompression = System.Net.DecompressionMethods.All
-        });
+            AutomaticDecompression = DecompressionMethods.All,
+            ConnectTimeout = TimeSpan.FromSeconds(15),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+            AllowAutoRedirect = true,
+            MaxConnectionsPerServer = 8
+        };
 
-        http.Timeout = TimeSpan.FromSeconds(30);
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("LegendBornLauncher/1.0");
+        var http = new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan // таймауты делаем per-request
+        };
+
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("LegendBornLauncher/0.1.7");
         return http;
     }
 
@@ -222,10 +311,8 @@ public sealed class ServerListService
 
         [JsonPropertyName("minecraftVersion")] public string MinecraftVersion { get; init; } = "1.21.1";
 
-        // NEW format
         [JsonPropertyName("loader")] public LoaderInfo? Loader { get; init; } = null;
 
-        // LEGACY format
         [JsonPropertyName("loaderName")] public string? LoaderName { get; init; } = null;
         [JsonPropertyName("loaderVersion")] public string? LoaderVersion { get; init; } = null;
 

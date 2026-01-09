@@ -135,7 +135,9 @@ public sealed class MainViewModel : ObservableObject
                 if (value is not null)
                 {
                     ServerIp = value.Address;
-                    SelectedVersion = MakeAutoVersionLabel(value);
+
+                    var label = MakeAutoVersionLabel(value);
+                    SetVersionsUi(label);
 
                     TrySaveSetting("SelectedServerId", value.Id);
                     Settings.Default.Save();
@@ -171,8 +173,6 @@ public sealed class MainViewModel : ObservableObject
 
     // ===== Core =====
     private readonly MinecraftService _mc;
-
-    // ===== Servers list =====
     private readonly ServerListService _servers = new();
 
     // ===== Site auth =====
@@ -261,7 +261,9 @@ public sealed class MainViewModel : ObservableObject
         set
         {
             if (Set(ref _username, value))
+            {
                 RefreshCanStates();
+            }
         }
     }
 
@@ -306,7 +308,6 @@ public sealed class MainViewModel : ObservableObject
             if (Set(ref _isWaitingSiteConfirm, value))
             {
                 Raise(nameof(LoginButtonText));
-                Raise(nameof(LoginUrlVisibility));
                 RefreshCanStates();
             }
         }
@@ -362,15 +363,11 @@ public sealed class MainViewModel : ObservableObject
         set
         {
             if (Set(ref _loginUrl, value))
-            {
-                Raise(nameof(HasLoginUrl));
                 RefreshCanStates();
-            }
         }
     }
 
     public bool HasLoginUrl => !string.IsNullOrWhiteSpace(LoginUrl);
-    public Visibility LoginUrlVisibility => IsWaitingSiteConfirm ? Visibility.Visible : Visibility.Collapsed;
 
     private Process? _runningProcess;
     public bool CanStop => _runningProcess is { HasExited: false };
@@ -382,13 +379,13 @@ public sealed class MainViewModel : ObservableObject
         Profile is not null &&
         Profile.CanPlay &&
         SelectedServer is not null &&
-        !string.IsNullOrWhiteSpace(Username);
+        IsValidMcName(Username);
 
     public string PlayButtonText => IsBusy ? "..." : "Играть";
     public string LoginButtonText => IsWaitingSiteConfirm ? "Ожидание..." : "Войти через сайт";
 
     // ===== Commands =====
-    public AsyncRelayCommand RefreshVersionsCommand { get; private set; } = null!;
+    public AsyncRelayCommand RefreshVersionsCommand { get; private set; } = null!; // фактически: "Проверить сборку"
     public AsyncRelayCommand PlayCommand { get; private set; } = null!;
     public RelayCommand OpenGameDirCommand { get; private set; } = null!;
     public RelayCommand StopGameCommand { get; private set; } = null!;
@@ -430,7 +427,9 @@ public sealed class MainViewModel : ObservableObject
         _mc.ProgressPercent += (_, p) =>
             App.Current?.Dispatcher.Invoke((Action)(() => ProgressPercent = p));
 
-        RefreshVersionsCommand = new AsyncRelayCommand(RefreshVersionsAsync, () => !IsBusy && !IsWaitingSiteConfirm);
+        // ✅ "Проверить сборку" — реально синхронизирует pack по manifest
+        RefreshVersionsCommand = new AsyncRelayCommand(CheckPackAsync, () => !IsBusy && !IsWaitingSiteConfirm && SelectedServer is not null);
+
         PlayCommand = new AsyncRelayCommand(PlayAsync, () => CanPlay);
         OpenGameDirCommand = new RelayCommand(OpenGameDir);
         StopGameCommand = new RelayCommand(StopGame, () => CanStop);
@@ -458,7 +457,6 @@ public sealed class MainViewModel : ObservableObject
         _commandsReady = true;
 
         Username = TryLoadStringSetting("Username", "Player") ?? "Player";
-
         RamMb = TryLoadIntSetting("RamMb", 4096);
         if (!RamOptions.Contains(RamMb))
             RamMb = 4096;
@@ -472,7 +470,10 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             await LoadServersAsync();
-            await RefreshVersionsAsync();
+            // только UI-лейбл AUTO (без скачивания)
+            if (SelectedServer is not null)
+                SetVersionsUi(MakeAutoVersionLabel(SelectedServer));
+
             await TryAutoLoginAsync();
         }
         catch (Exception ex)
@@ -558,44 +559,11 @@ public sealed class MainViewModel : ObservableObject
         return url;
     }
 
-    // =========================
-    // Versions UI
-    // =========================
-
-    private async Task RefreshVersionsAsync()
+    private void SetVersionsUi(string label)
     {
-        try
-        {
-            IsBusy = true;
-            StatusText = "Проверка сборки...";
-            ProgressPercent = 0;
-
-            Versions.Clear();
-
-            if (SelectedServer is null)
-            {
-                Versions.Add("AUTO");
-                SelectedVersion = "AUTO";
-            }
-            else
-            {
-                var label = MakeAutoVersionLabel(SelectedServer);
-                Versions.Add(label);
-                SelectedVersion = label;
-            }
-
-            StatusText = "Готово.";
-        }
-        catch (Exception ex)
-        {
-            StatusText = "Ошибка проверки сборки.";
-            AppendLog(ex.ToString());
-        }
-        finally
-        {
-            IsBusy = false;
-            RefreshCanStates();
-        }
+        Versions.Clear();
+        Versions.Add(label);
+        SelectedVersion = label;
     }
 
     private static string MakeAutoVersionLabel(ServerEntry s)
@@ -613,6 +581,46 @@ public sealed class MainViewModel : ObservableObject
             return $"AUTO • {L(loaderType)} ({mc})";
 
         return $"AUTO • {L(loaderType)} {lver} ({mc})";
+    }
+
+    // =========================
+    // Проверка сборки (pack sync)
+    // =========================
+
+    private async Task CheckPackAsync()
+    {
+        if (SelectedServer is null)
+        {
+            StatusText = "Сервер не выбран.";
+            return;
+        }
+
+        try
+        {
+            IsBusy = true;
+            StatusText = "Проверка обновлений сборки...";
+            ProgressPercent = 0;
+
+            var mirrors = new[] { EnsureSlash(SelectedServer.PackBaseUrl) }
+                .Concat((SelectedServer.PackMirrors ?? Array.Empty<string>()).Select(EnsureSlash))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (SelectedServer.SyncPack)
+                await _mc.SyncPackAsync(mirrors, CancellationToken.None);
+
+            StatusText = "Сборка актуальна.";
+        }
+        catch (Exception ex)
+        {
+            StatusText = "Ошибка проверки сборки.";
+            AppendLog(ex.ToString());
+        }
+        finally
+        {
+            IsBusy = false;
+            RefreshCanStates();
+        }
     }
 
     // =========================
@@ -636,7 +644,6 @@ public sealed class MainViewModel : ObservableObject
 
         try
         {
-            // небольшой запас на рассинхрон часов
             var exp = DateTimeOffset.FromUnixTimeSeconds(t.ExpiresAtUnix).AddSeconds(-30);
             return DateTimeOffset.UtcNow >= exp;
         }
@@ -672,7 +679,6 @@ public sealed class MainViewModel : ObservableObject
         if (saved is null || string.IsNullOrWhiteSpace(saved.AccessToken))
             return;
 
-        // ✅ быстрый отсев протухшего токена
         if (IsExpired(saved))
         {
             _tokenStore.Clear();
@@ -725,7 +731,6 @@ public sealed class MainViewModel : ObservableObject
         {
             IsBusy = false;
 
-            // ✅ не затираем важные статусы на "Готово."
             if (string.Equals(StatusText, "Проверка входа на сайте...", StringComparison.Ordinal))
                 StatusText = "Готово.";
 
@@ -971,9 +976,8 @@ public sealed class MainViewModel : ObservableObject
             StatusText = $"Подготовка {BuildDisplayName}...";
             ProgressPercent = 0;
 
-            var mirrors = new[] { SelectedServer.PackBaseUrl }
-                .Concat(SelectedServer.PackMirrors ?? Array.Empty<string>())
-                .Select(EnsureSlash)
+            var mirrors = new[] { EnsureSlash(SelectedServer.PackBaseUrl) }
+                .Concat((SelectedServer.PackMirrors ?? Array.Empty<string>()).Select(EnsureSlash))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
@@ -1045,6 +1049,9 @@ public sealed class MainViewModel : ObservableObject
         if (loaderType == "vanilla" || string.IsNullOrWhiteSpace(loaderType))
             return new MinecraftService.LoaderSpec("vanilla", "", "");
 
+        if (string.IsNullOrWhiteSpace(loaderVer))
+            throw new InvalidOperationException($"Loader '{loaderType}' требует версию (loader.version).");
+
         if (string.IsNullOrWhiteSpace(installerUrl))
         {
             if (loaderType == "neoforge")
@@ -1052,7 +1059,7 @@ public sealed class MainViewModel : ObservableObject
             else if (loaderType == "forge")
                 installerUrl = $"https://maven.minecraftforge.net/net/minecraftforge/forge/{s.MinecraftVersion}-{loaderVer}/forge-{s.MinecraftVersion}-{loaderVer}-installer.jar";
             else
-                throw new InvalidOperationException($"Неизвестный loader '{loaderType}'.");
+                throw new InvalidOperationException($"Неизвестный loader '{loaderType}' (нет installerUrl).");
         }
 
         return new MinecraftService.LoaderSpec(loaderType, loaderVer, installerUrl);
@@ -1117,7 +1124,6 @@ public sealed class MainViewModel : ObservableObject
         Raise(nameof(IsSettingsPage));
 
         Raise(nameof(HasLoginUrl));
-        Raise(nameof(LoginUrlVisibility));
 
         Raise(nameof(PackName));
         Raise(nameof(MinecraftVersion));
@@ -1154,6 +1160,24 @@ public sealed class MainViewModel : ObservableObject
         {
             Rezonite = 0;
         }
+    }
+
+    private static bool IsValidMcName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        name = name.Trim();
+        if (name.Length is < 3 or > 16) return false;
+
+        foreach (var ch in name)
+        {
+            var ok =
+                (ch >= 'a' && ch <= 'z') ||
+                (ch >= 'A' && ch <= 'Z') ||
+                (ch >= '0' && ch <= '9') ||
+                ch == '_';
+            if (!ok) return false;
+        }
+        return true;
     }
 
     private static string MakeValidMcName(string name)

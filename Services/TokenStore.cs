@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -15,15 +16,32 @@ public sealed class TokenStore
 
     public void Save(AuthTokens tokens)
     {
-        var json = JsonSerializer.Serialize(tokens);
-        var data = Encoding.UTF8.GetBytes(json);
-        var protectedBytes = ProtectedData.Protect(data, Entropy, DataProtectionScope.CurrentUser);
+        try
+        {
+            var json = JsonSerializer.Serialize(tokens);
+            var data = Encoding.UTF8.GetBytes(json);
+            var protectedBytes = ProtectedData.Protect(data, Entropy, DataProtectionScope.CurrentUser);
 
-        var dir = Path.GetDirectoryName(_filePath);
-        if (!string.IsNullOrWhiteSpace(dir))
-            Directory.CreateDirectory(dir);
+            var dir = Path.GetDirectoryName(_filePath);
+            if (!string.IsNullOrWhiteSpace(dir))
+                Directory.CreateDirectory(dir);
 
-        File.WriteAllBytes(_filePath, protectedBytes);
+            var tmp = _filePath + ".tmp";
+            File.WriteAllBytes(tmp, protectedBytes);
+
+            if (File.Exists(_filePath))
+            {
+                File.Replace(tmp, _filePath, destinationBackupFileName: null, ignoreMetadataErrors: true);
+            }
+            else
+            {
+                File.Move(tmp, _filePath);
+            }
+        }
+        catch
+        {
+            // если не смогли — лучше молча, чем убить запуск
+        }
     }
 
     public AuthTokens? Load()
@@ -44,7 +62,11 @@ public sealed class TokenStore
 
     public void Clear()
     {
-        if (File.Exists(_filePath))
-            File.Delete(_filePath);
+        try
+        {
+            if (File.Exists(_filePath))
+                File.Delete(_filePath);
+        }
+        catch { }
     }
 }
