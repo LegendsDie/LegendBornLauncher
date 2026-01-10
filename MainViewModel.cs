@@ -470,7 +470,6 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             await LoadServersAsync();
-            // только UI-лейбл AUTO (без скачивания)
             if (SelectedServer is not null)
                 SetVersionsUi(MakeAutoVersionLabel(SelectedServer));
 
@@ -492,7 +491,10 @@ public sealed class MainViewModel : ObservableObject
         {
             AppendLog("Серверы: загрузка списка...");
 
-            var list = await _servers.GetServersOrDefaultAsync(ct: CancellationToken.None);
+            // ✅ 0.1.8: пробуем несколько зеркал списка серверов (если в будущем ты зальёшь servers.json на SourceForge)
+            var list = await _servers.GetServersOrDefaultAsync(
+                mirrors: ServerListService.DefaultServersMirrors,
+                ct: CancellationToken.None);
 
             int count = 0;
 
@@ -584,6 +586,62 @@ public sealed class MainViewModel : ObservableObject
     }
 
     // =========================
+    // 0.1.8: Mirror helper (SourceForge -> остальные -> legendborn)
+    // =========================
+
+    private static readonly string[] SourceForgePackMirrors =
+    {
+        "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/",
+        "https://downloads.sourceforge.net/project/legendborn-pack/launcher/pack/"
+    };
+
+    private static bool IsLegendbornHost(string? url)
+        => !string.IsNullOrWhiteSpace(url) &&
+           url.Contains("legendborn.ru", StringComparison.OrdinalIgnoreCase);
+
+    private static string[] BuildPackMirrors(ServerEntry s)
+    {
+        var baseUrl = EnsureSlash(s.PackBaseUrl);
+
+        var extra = (s.PackMirrors ?? Array.Empty<string>())
+            .Select(EnsureSlash)
+            .Where(u => !string.IsNullOrWhiteSpace(u))
+            .ToArray();
+
+        // Собираем кандидатов
+        var all = extra
+            .Concat(new[] { baseUrl })
+            .Where(u => !string.IsNullOrWhiteSpace(u))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // Если основной/кто-то из зеркал legendborn.ru — добавляем SourceForge как страховку
+        if (all.Any(IsLegendbornHost) && !all.Any(u => u.Contains("sourceforge.net", StringComparison.OrdinalIgnoreCase)))
+        {
+            all.InsertRange(0, SourceForgePackMirrors.Select(EnsureSlash));
+        }
+
+        // 0.1.8: порядок приоритета (важно для России)
+        // 1) master.dl.sourceforge
+        // 2) остальные sourceforge
+        // 3) любые не-legendborn
+        // 4) legendborn в конец
+        var ordered = all
+            .OrderBy(u =>
+            {
+                var lu = u.ToLowerInvariant();
+                if (lu.Contains("master.dl.sourceforge.net")) return 0;
+                if (lu.Contains("sourceforge.net")) return 1;
+                if (!lu.Contains("legendborn.ru")) return 2;
+                return 3;
+            })
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return ordered;
+    }
+
+    // =========================
     // Проверка сборки (pack sync)
     // =========================
 
@@ -601,10 +659,7 @@ public sealed class MainViewModel : ObservableObject
             StatusText = "Проверка обновлений сборки...";
             ProgressPercent = 0;
 
-            var mirrors = new[] { EnsureSlash(SelectedServer.PackBaseUrl) }
-                .Concat((SelectedServer.PackMirrors ?? Array.Empty<string>()).Select(EnsureSlash))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+            var mirrors = BuildPackMirrors(SelectedServer);
 
             if (SelectedServer.SyncPack)
                 await _mc.SyncPackAsync(mirrors, CancellationToken.None);
@@ -976,10 +1031,8 @@ public sealed class MainViewModel : ObservableObject
             StatusText = $"Подготовка {BuildDisplayName}...";
             ProgressPercent = 0;
 
-            var mirrors = new[] { EnsureSlash(SelectedServer.PackBaseUrl) }
-                .Concat((SelectedServer.PackMirrors ?? Array.Empty<string>()).Select(EnsureSlash))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+            // ✅ 0.1.8: зеркала паков с приоритетом SourceForge
+            var mirrors = BuildPackMirrors(SelectedServer);
 
             var loader = CreateLoaderSpecFromServer(SelectedServer);
 
@@ -1052,6 +1105,7 @@ public sealed class MainViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(loaderVer))
             throw new InvalidOperationException($"Loader '{loaderType}' требует версию (loader.version).");
 
+        // ✅ 0.1.8: если installerUrl пустой — ставим официальный Maven
         if (string.IsNullOrWhiteSpace(installerUrl))
         {
             if (loaderType == "neoforge")

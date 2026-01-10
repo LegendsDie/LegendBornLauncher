@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
@@ -15,6 +16,16 @@ public sealed class ServerListService
 {
     public const string DefaultServersUrl = "https://legendborn.ru/launcher/servers.json";
 
+    // ✅ 0.1.8: если позже зальёшь servers.json на SourceForge — лаунчер начнёт брать оттуда автоматически
+    public static readonly string[] DefaultServersMirrors =
+    {
+        DefaultServersUrl,
+        "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/servers.json",
+        "https://downloads.sourceforge.net/project/legendborn-pack/launcher/servers.json"
+    };
+
+    private const string LauncherUserAgent = "LegendBornLauncher/0.1.8";
+
     private static readonly HttpClient _http = CreateHttp();
 
     private static readonly string CacheFilePath = Path.Combine(
@@ -25,7 +36,7 @@ public sealed class ServerListService
         IEnumerable<string>? mirrors = null,
         CancellationToken ct = default)
     {
-        var urls = (mirrors ?? new[] { DefaultServersUrl })
+        var urls = (mirrors ?? DefaultServersMirrors)
             .Select(u => (u ?? "").Trim())
             .Where(u => !string.IsNullOrWhiteSpace(u))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -38,26 +49,38 @@ public sealed class ServerListService
 
         foreach (var url in urls)
         {
-            // 3 попытки на одно зеркало (мягкий ретрай)
+            // 0.1.8: мягкий ретрай на зеркало
             for (int attempt = 1; attempt <= 3; attempt++)
             {
                 ct.ThrowIfCancellationRequested();
 
                 try
                 {
-                    var perTryTimeout = TimeSpan.FromSeconds(attempt == 1 ? 20 : 35);
+                    // Для проблемных доменов не ждём вечность
+                    var isLegendborn = url.Contains("legendborn.ru", StringComparison.OrdinalIgnoreCase);
+                    var perTryTimeout = isLegendborn
+                        ? TimeSpan.FromSeconds(attempt == 1 ? 12 : 18)
+                        : TimeSpan.FromSeconds(attempt == 1 ? 25 : 40);
 
                     using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     reqCts.CancelAfter(perTryTimeout);
 
-                    using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, reqCts.Token)
+                    using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                    req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                    req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
+
+                    using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token)
                         .ConfigureAwait(false);
 
                     resp.EnsureSuccessStatusCode();
 
-                    // читаем целиком -> можем сохранить в кеш
                     var json = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
                     reqCts.Token.ThrowIfCancellationRequested();
+
+                    // 0.1.8: защита от HTML (иногда некоторые зеркала/прокси отдают страницу вместо файла)
+                    var trimmed = (json ?? "").TrimStart();
+                    if (trimmed.StartsWith("<", StringComparison.Ordinal))
+                        throw new InvalidOperationException("servers.json: получен HTML вместо JSON (зеркало вернуло страницу).");
 
                     var root = JsonSerializer.Deserialize(json, ServerListJsonContext.Default.ServersRoot);
                     if (root is null || root.Servers is null || root.Servers.Count == 0)
@@ -82,17 +105,17 @@ public sealed class ServerListService
                 catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
                 {
                     last = ex;
-                    await Task.Delay(250 * attempt, ct).ConfigureAwait(false);
+                    await Task.Delay(250 * attempt + Random.Shared.Next(0, 120), ct).ConfigureAwait(false);
                 }
                 catch (HttpRequestException ex)
                 {
                     last = ex;
-                    await Task.Delay(250 * attempt, ct).ConfigureAwait(false);
+                    await Task.Delay(250 * attempt + Random.Shared.Next(0, 120), ct).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
                     last = ex;
-                    break; // если ошибка парсинга/формата — ретрай не поможет
+                    break; // парс/формат — ретрай не поможет
                 }
             }
         }
@@ -132,7 +155,11 @@ public sealed class ServerListService
                     },
                     ClientVersionId = "LegendBorn",
                     PackBaseUrl = "https://legendborn.ru/launcher/pack/",
-                    PackMirrors = Array.Empty<string>(),
+                    PackMirrors = new[]
+                    {
+                        "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/",
+                        "https://downloads.sourceforge.net/project/legendborn-pack/launcher/pack/"
+                    },
                     SyncPack = true
                 }
             };
@@ -226,6 +253,7 @@ public sealed class ServerListService
         var loaderVer = (loader.Version ?? "").Trim();
         var installerUrl = (loader.InstallerUrl ?? "").Trim();
 
+        // 0.1.8: если installerUrl пустой — подставим официальный
         if (loaderType != "vanilla" && string.IsNullOrWhiteSpace(installerUrl))
         {
             installerUrl = loaderType switch
@@ -244,6 +272,7 @@ public sealed class ServerListService
             return null;
 
         var packBase = NormalizeBaseUrl(s.PackBaseUrl);
+
         var mirrors = (s.PackMirrors ?? Array.Empty<string>())
             .Select(NormalizeBaseUrl)
             .Where(u => !string.IsNullOrWhiteSpace(u))
@@ -273,7 +302,9 @@ public sealed class ServerListService
         var handler = new SocketsHttpHandler
         {
             AutomaticDecompression = DecompressionMethods.All,
-            ConnectTimeout = TimeSpan.FromSeconds(15),
+            Proxy = WebRequest.DefaultWebProxy,
+            UseProxy = true,
+            ConnectTimeout = TimeSpan.FromSeconds(12),
             PooledConnectionLifetime = TimeSpan.FromMinutes(2),
             AllowAutoRedirect = true,
             MaxConnectionsPerServer = 8
@@ -284,7 +315,7 @@ public sealed class ServerListService
             Timeout = Timeout.InfiniteTimeSpan // таймауты делаем per-request
         };
 
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("LegendBornLauncher/0.1.7");
+        http.DefaultRequestHeaders.UserAgent.ParseAdd(LauncherUserAgent);
         return http;
     }
 

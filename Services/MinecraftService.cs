@@ -8,6 +8,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -18,15 +19,18 @@ namespace LegendBorn.Services;
 
 public sealed class MinecraftService
 {
-    private const string LauncherUserAgent = "LegendBornLauncher/0.1.7";
+    private const string LauncherUserAgent = "LegendBornLauncher/0.1.8";
 
     private readonly MinecraftPath _path;
     private readonly MinecraftLauncher _launcher;
 
     private static readonly HttpClient _http = CreateHttp();
 
+    // ✅ 0.1.8: дефолтные зеркала паков (в т.ч. SourceForge)
     private static readonly string[] DefaultPackMirrors =
     {
+        "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/",
+        "https://downloads.sourceforge.net/project/legendborn-pack/launcher/pack/",
         "https://legendborn.ru/launcher/pack/",
     };
 
@@ -79,11 +83,7 @@ public sealed class MinecraftService
     /// </summary>
     public async Task SyncPackAsync(string[]? packMirrors, CancellationToken ct = default)
     {
-        var mirrors = (packMirrors is { Length: > 0 } ? packMirrors : DefaultPackMirrors)
-            .Select(NormalizeBaseUrl)
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        var mirrors = ExpandAndOrderPackMirrors(packMirrors);
 
         if (mirrors.Length == 0)
             throw new InvalidOperationException("Pack mirrors list is empty");
@@ -167,6 +167,49 @@ public sealed class MinecraftService
         return process;
     }
 
+    // =========================
+    // 0.1.8: Mirrors ordering
+    // =========================
+
+    private static bool IsLegendbornHost(string? url)
+        => !string.IsNullOrWhiteSpace(url) &&
+           url.Contains("legendborn.ru", StringComparison.OrdinalIgnoreCase);
+
+    private static string[] ExpandAndOrderPackMirrors(string[]? packMirrors)
+    {
+        var raw = (packMirrors is { Length: > 0 } ? packMirrors : DefaultPackMirrors)
+            .Select(NormalizeBaseUrl)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // Если есть legendborn — добавим SourceForge, даже если пользователь не указал
+        if (raw.Any(IsLegendbornHost) && !raw.Any(u => u.Contains("sourceforge.net", StringComparison.OrdinalIgnoreCase)))
+        {
+            raw.Insert(0, "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/");
+            raw.Insert(1, "https://downloads.sourceforge.net/project/legendborn-pack/launcher/pack/");
+        }
+
+        // Приоритет: master.dl -> sourceforge -> прочие -> legendborn
+        var ordered = raw
+            .OrderBy(u =>
+            {
+                var lu = u.ToLowerInvariant();
+                if (lu.Contains("master.dl.sourceforge.net")) return 0;
+                if (lu.Contains("sourceforge.net")) return 1;
+                if (!lu.Contains("legendborn.ru")) return 2;
+                return 3;
+            })
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return ordered;
+    }
+
+    // =========================
+    // Loader install
+    // =========================
+
     private async Task<string> EnsureLoaderInstalledAsync(
         string minecraftVersion,
         string loaderType,
@@ -209,6 +252,106 @@ public sealed class MinecraftService
         return installedId!;
     }
 
+    // ✅ 0.1.8: если installerUrl указывает на legendborn.ru и он недоступен — пробуем официальный Maven
+    private static string? GetOfficialInstallerUrl(string loaderType, string mc, string loaderVersion)
+    {
+        loaderType = (loaderType ?? "").Trim().ToLowerInvariant();
+        loaderVersion = (loaderVersion ?? "").Trim();
+        mc = (mc ?? "").Trim();
+
+        if (string.IsNullOrWhiteSpace(loaderType) || string.IsNullOrWhiteSpace(loaderVersion))
+            return null;
+
+        return loaderType switch
+        {
+            "neoforge" => $"https://maven.neoforged.net/releases/net/neoforged/neoforge/{loaderVersion}/neoforge-{loaderVersion}-installer.jar",
+            "forge" => $"https://maven.minecraftforge.net/net/minecraftforge/forge/{mc}-{loaderVersion}/forge-{mc}-{loaderVersion}-installer.jar",
+            _ => null
+        };
+    }
+
+    private async Task<string> DownloadInstallerAsync(
+        string loaderType,
+        string minecraftVersion,
+        string loaderVersion,
+        string installerUrl,
+        CancellationToken ct)
+    {
+        // список кандидатов (первый — что пришёл с сервера)
+        var urls = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(installerUrl))
+            urls.Add(installerUrl.Trim());
+
+        var official = GetOfficialInstallerUrl(loaderType, minecraftVersion, loaderVersion);
+        if (!string.IsNullOrWhiteSpace(official) &&
+            !urls.Any(u => u.Equals(official, StringComparison.OrdinalIgnoreCase)))
+        {
+            urls.Add(official);
+        }
+
+        Exception? last = null;
+
+        foreach (var urlTry in urls)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                if (!Uri.TryCreate(urlTry, UriKind.Absolute, out var uri))
+                    throw new InvalidOperationException($"installerUrl is not a valid absolute url: {urlTry}");
+
+                var cacheDir = Path.Combine(_path.BasePath, "launcher", "installers", loaderType, minecraftVersion, loaderVersion);
+                Directory.CreateDirectory(cacheDir);
+
+                var fileName = Path.GetFileName(uri.AbsolutePath);
+                if (string.IsNullOrWhiteSpace(fileName))
+                    fileName = $"{loaderType}-{loaderVersion}-installer.jar";
+
+                var local = Path.Combine(cacheDir, fileName);
+                if (File.Exists(local) && new FileInfo(local).Length > 0)
+                    return local;
+
+                var tmp = local + ".tmp";
+                TryDeleteQuiet(tmp);
+
+                Log?.Invoke(this, $"Loader: скачиваю installer: {urlTry}");
+
+                using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                reqCts.CancelAfter(TimeSpan.FromMinutes(3));
+
+                using var req = new HttpRequestMessage(HttpMethod.Get, urlTry);
+                req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/java-archive"));
+                req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
+
+                using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token);
+                resp.EnsureSuccessStatusCode();
+
+                await using (var input = await resp.Content.ReadAsStreamAsync(reqCts.Token))
+                await using (var output = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                {
+                    await input.CopyToAsync(output, reqCts.Token);
+                    await output.FlushAsync(reqCts.Token);
+                }
+
+                var ok = await TryMoveOrReplaceWithRetryAsync(tmp, local, ct, attempts: 20, delayMs: 200);
+                TryDeleteQuiet(tmp);
+
+                if (!ok)
+                    throw new IOException("Не удалось сохранить installer.jar (файл занят/нет доступа).");
+
+                return local;
+            }
+            catch (Exception ex)
+            {
+                last = ex;
+                Log?.Invoke(this, $"Loader: не удалось скачать installer ({urlTry}) — {ex.Message}");
+            }
+        }
+
+        throw new InvalidOperationException("Не удалось скачать installer ни по одному URL.", last);
+    }
+
     private async Task<string?> InstallLoaderIntoGameDirAsync(
         string installerPath,
         string minecraftVersion,
@@ -223,7 +366,6 @@ public sealed class MinecraftService
 
         var beforeGame = SnapshotVersionIds(_path.BasePath);
 
-        // 1) пробуем installer с явным installDir (если поддерживает)
         var argTries = new List<string[]>
         {
             new[] { "-jar", installerPath, "--installClient", "--installDir", _path.BasePath },
@@ -249,8 +391,6 @@ public sealed class MinecraftService
                 continue;
         }
 
-        // 2) fallback: многие Forge/NeoForge installers на Windows ставят в %APPDATA%\.minecraft
-        //    ДЕЛАЕМ ЭТО БЕЗОПАСНО: подменяем APPDATA на временную папку внутри игры
         if (!OperatingSystem.IsWindows())
         {
             var res = await RunJavaAsync(javaExe, new[] { "-jar", installerPath, "--installClient" }, workingDir: _path.BasePath, ct, env: null);
@@ -373,54 +513,6 @@ public sealed class MinecraftService
     {
         var json = Path.Combine(_path.BasePath, "versions", versionId, versionId + ".json");
         return File.Exists(json);
-    }
-
-    private async Task<string> DownloadInstallerAsync(
-        string loaderType,
-        string minecraftVersion,
-        string loaderVersion,
-        string installerUrl,
-        CancellationToken ct)
-    {
-        if (!Uri.TryCreate(installerUrl, UriKind.Absolute, out var uri))
-            throw new InvalidOperationException($"installerUrl is not a valid absolute url: {installerUrl}");
-
-        var cacheDir = Path.Combine(_path.BasePath, "launcher", "installers", loaderType, minecraftVersion, loaderVersion);
-        Directory.CreateDirectory(cacheDir);
-
-        var fileName = Path.GetFileName(uri.AbsolutePath);
-        if (string.IsNullOrWhiteSpace(fileName))
-            fileName = $"{loaderType}-{loaderVersion}-installer.jar";
-
-        var local = Path.Combine(cacheDir, fileName);
-        if (File.Exists(local) && new FileInfo(local).Length > 0)
-            return local;
-
-        var tmp = local + ".tmp";
-        TryDeleteQuiet(tmp);
-
-        Log?.Invoke(this, $"Loader: скачиваю installer: {installerUrl}");
-
-        using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        reqCts.CancelAfter(TimeSpan.FromMinutes(3));
-
-        using var resp = await _http.GetAsync(installerUrl, HttpCompletionOption.ResponseHeadersRead, reqCts.Token);
-        resp.EnsureSuccessStatusCode();
-
-        await using (var input = await resp.Content.ReadAsStreamAsync(reqCts.Token))
-        await using (var output = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
-        {
-            await input.CopyToAsync(output, reqCts.Token);
-            await output.FlushAsync(reqCts.Token);
-        }
-
-        var ok = await TryMoveOrReplaceWithRetryAsync(tmp, local, ct, attempts: 20, delayMs: 200);
-        TryDeleteQuiet(tmp);
-
-        if (!ok)
-            throw new IOException("Не удалось сохранить installer.jar (файл занят/нет доступа).");
-
-        return local;
     }
 
     private static bool LooksLikeUnrecognizedOption(string? s)
@@ -588,6 +680,10 @@ public sealed class MinecraftService
         return (p.ExitCode, stdout, stderr);
     }
 
+    // =========================
+    // Pack sync
+    // =========================
+
     private async Task EnsurePackUpToDateAsync(string[] mirrors, CancellationToken ct)
     {
         Log?.Invoke(this, "Сборка: проверка обновлений...");
@@ -686,7 +782,6 @@ public sealed class MinecraftService
             Log?.Invoke(this, $"Сборка: OK {destRel}");
         }
 
-        // prune: только разрешённые корни + НЕ трогаем user-mutable (config/)
         if (manifest.Prune is { Length: > 0 })
         {
             var roots = manifest.Prune
@@ -701,7 +796,6 @@ public sealed class MinecraftService
                 PruneExtras(roots, wanted);
         }
 
-        // подчищаем state чтобы не разрастался
         foreach (var k in state.Files.Keys.ToList())
         {
             if (!wanted.Contains(k))
@@ -778,7 +872,6 @@ public sealed class MinecraftService
 
             var st = JsonSerializer.Deserialize(json, PackJsonContext.Default.PackState) ?? new PackState();
 
-            // после десериализации Dictionary может стать null или case-sensitive
             if (st.Files is null)
                 st.Files = new Dictionary<string, PackStateEntry>(StringComparer.OrdinalIgnoreCase);
             else if (!Equals(st.Files.Comparer, StringComparer.OrdinalIgnoreCase))
@@ -815,7 +908,6 @@ public sealed class MinecraftService
             = new(StringComparer.OrdinalIgnoreCase);
     }
 
-    // ✅ ВАЖНО: тоже internal, иначе будет "Inconsistent accessibility"
     internal sealed class PackStateEntry
     {
         public long Size { get; set; }
@@ -831,39 +923,70 @@ public sealed class MinecraftService
         {
             var baseUrl = NormalizeBaseUrl(baseUrlRaw);
 
-            try
+            // 0.1.8: небольшой ретрай на зеркало
+            for (int attempt = 1; attempt <= 2; attempt++)
             {
-                var url = CombineUrl(baseUrl, ManifestFileName);
-                Log?.Invoke(this, $"Сборка: читаю manifest: {url}");
+                ct.ThrowIfCancellationRequested();
 
-                using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                reqCts.CancelAfter(TimeSpan.FromSeconds(30));
-
-                using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, reqCts.Token);
-                resp.EnsureSuccessStatusCode();
-
-                await using var stream = await resp.Content.ReadAsStreamAsync(reqCts.Token);
-                var manifest = await JsonSerializer.DeserializeAsync(stream, PackJsonContext.Default.PackManifest, reqCts.Token);
-                if (manifest is null)
-                    throw new InvalidOperationException("Manifest deserialization returned null");
-
-                if (manifest.Mirrors is { Length: > 0 })
+                try
                 {
-                    manifest = manifest with
-                    {
-                        Mirrors = manifest.Mirrors
-                            .Select(NormalizeBaseUrl)
-                            .Distinct(StringComparer.OrdinalIgnoreCase)
-                            .ToArray()
-                    };
-                }
+                    var url = CombineUrl(baseUrl, ManifestFileName);
+                    Log?.Invoke(this, $"Сборка: читаю manifest: {url}");
 
-                return (baseUrl, manifest);
-            }
-            catch (Exception ex)
-            {
-                last = ex;
-                Log?.Invoke(this, $"Сборка: зеркало недоступно ({baseUrl}) — {ex.Message}");
+                    var isLegendborn = baseUrl.Contains("legendborn.ru", StringComparison.OrdinalIgnoreCase);
+                    var timeout = isLegendborn
+                        ? TimeSpan.FromSeconds(attempt == 1 ? 18 : 28)
+                        : TimeSpan.FromSeconds(attempt == 1 ? 45 : 70);
+
+                    using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    reqCts.CancelAfter(timeout);
+
+                    using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                    req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                    req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
+
+                    using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token);
+                    resp.EnsureSuccessStatusCode();
+
+                    await using var stream = await resp.Content.ReadAsStreamAsync(reqCts.Token);
+
+                    // Если зеркало подсунуло HTML — десериализация упадёт, но мы дадим нормальный лог
+                    PackManifest? manifest;
+                    try
+                    {
+                        manifest = await JsonSerializer.DeserializeAsync(stream, PackJsonContext.Default.PackManifest, reqCts.Token);
+                    }
+                    catch (JsonException je)
+                    {
+                        throw new InvalidOperationException("Manifest parse error (возможно, зеркало вернуло HTML вместо JSON).", je);
+                    }
+
+                    if (manifest is null)
+                        throw new InvalidOperationException("Manifest deserialization returned null");
+
+                    if (manifest.Mirrors is { Length: > 0 })
+                    {
+                        manifest = manifest with
+                        {
+                            Mirrors = manifest.Mirrors
+                                .Select(NormalizeBaseUrl)
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .ToArray()
+                        };
+                    }
+
+                    return (baseUrl, manifest);
+                }
+                catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
+                {
+                    last = ex;
+                    Log?.Invoke(this, $"Сборка: таймаут зеркала ({baseUrl})");
+                }
+                catch (Exception ex)
+                {
+                    last = ex;
+                    Log?.Invoke(this, $"Сборка: зеркало недоступно ({baseUrl}) — {ex.Message}");
+                }
             }
         }
 
@@ -914,7 +1037,6 @@ public sealed class MinecraftService
             {
                 last = ex;
 
-                // rollback прогресса за неудавшуюся попытку
                 if (attemptBytes > 0)
                     onBytes(-attemptBytes);
 
@@ -937,31 +1059,16 @@ public sealed class MinecraftService
         using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         reqCts.CancelAfter(TimeSpan.FromMinutes(10));
 
-        using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, reqCts.Token);
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
+
+        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token);
         resp.EnsureSuccessStatusCode();
 
         using var sha = SHA256.Create();
         var buffer = new byte[128 * 1024];
 
-        await using (var input = await resp.Content.ReadAsStreamAsync(reqCts.Token))
-        await using (var output = new FileStream(
-            tmp,
-            FileMode.Create,
-            FileAccess.Write,
-            FileShare.None,
-            bufferSize: 128 * 1024,
-            options: FileOptions.Asynchronous | FileOptions.SequentialScan))
-        {
-            int read;
-            while ((read = await input.ReadAsync(buffer, 0, buffer.Length, reqCts.Token)) > 0)
-            {
-                await output.WriteAsync(buffer, 0, read, reqCts.Token);
-                sha.TransformBlock(buffer, 0, read, null, 0);
-                onBytes(read);
-            }
-
-            await output.FlushAsync(reqCts.Token);
-        }
+        await provisioning(resp, reqCts.Token, tmp, buffer, sha, onBytes);
 
         sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
         var actual = Convert.ToHexString(sha.Hash!).ToLowerInvariant();
@@ -979,8 +1086,6 @@ public sealed class MinecraftService
             return;
         }
 
-        // если файл занят — сохраняем pending почти для любого разрешенного пути,
-        // чтобы применить при следующем запуске, а не валить весь апдейт.
         if (IsPendingAllowedDest(destRel))
         {
             var pending = localPath + ".pending";
@@ -998,6 +1103,28 @@ public sealed class MinecraftService
 
         TryDeleteQuiet(tmp);
         throw new IOException($"Не удалось записать файл сборки (занят другим процессом): {destRel}");
+    }
+
+    private static async Task provisioning(HttpResponseMessage resp, CancellationToken token, string tmp, byte[] buffer, SHA256 sha, Action<long> onBytes)
+    {
+        await using var input = await resp.Content.ReadAsStreamAsync(token);
+        await using var output = new FileStream(
+            tmp,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 128 * 1024,
+            options: FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+        int read;
+        while ((read = await input.ReadAsync(buffer, 0, buffer.Length, token)) > 0)
+        {
+            await output.WriteAsync(buffer, 0, read, token);
+            sha.TransformBlock(buffer, 0, read, null, 0);
+            onBytes(read);
+        }
+
+        await output.FlushAsync(token);
     }
 
     private async Task TryApplyPendingAsync(string destRel, string localPath, string expectedSha256, CancellationToken ct)
@@ -1089,7 +1216,6 @@ public sealed class MinecraftService
                 }
             }
 
-            // подчистим пустые папки
             try
             {
                 foreach (var d in Directory.EnumerateDirectories(localRoot, "*", SearchOption.AllDirectories)
@@ -1116,7 +1242,6 @@ public sealed class MinecraftService
 
     private static bool IsPendingAllowedDest(string destRel)
     {
-        // pending разрешаем для всех разрешённых корней, кроме config/ (мы всё равно его не обновляем)
         destRel = destRel.Replace('\\', '/');
         if (!IsAllowedDest(destRel)) return false;
         return !destRel.StartsWith("config/", StringComparison.OrdinalIgnoreCase);
@@ -1234,21 +1359,20 @@ public sealed class MinecraftService
 
     private static HttpClient CreateHttp()
     {
-        // ✅ Больше совместимости (в т.ч. “спорные территории” / прокси / провайдеры):
-        // - системный прокси
-        // - принудительно HTTP/1.1 (меньше проблем, чем HTTP/2 у некоторых сетей)
         var handler = new SocketsHttpHandler
         {
             AutomaticDecompression = DecompressionMethods.All,
             Proxy = WebRequest.DefaultWebProxy,
             UseProxy = true,
-            ConnectTimeout = TimeSpan.FromSeconds(15),
-            PooledConnectionLifetime = TimeSpan.FromMinutes(10)
+            ConnectTimeout = TimeSpan.FromSeconds(12),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+            AllowAutoRedirect = true,
+            MaxConnectionsPerServer = 8
         };
 
         var http = new HttpClient(handler)
         {
-            Timeout = TimeSpan.FromSeconds(60),
+            Timeout = Timeout.InfiniteTimeSpan, // таймауты per-request
             DefaultRequestVersion = HttpVersion.Version11,
             DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower
         };
