@@ -26,17 +26,29 @@ public sealed class MinecraftService
 
     private static readonly HttpClient _http = CreateHttp();
 
-    // ✅ 0.1.9: дефолтные зеркала паков
-    // Важно: легендборн первым (если доступен — он обычно быстрее),
-    // SF master — запасной. downloads.sourceforge — убран.
+    // ✅ Дефолтные зеркала паков (релизная логика):
+    // 1) твой сайт (primary)
+    // 2) Bunny (быстрый CDN)
+    // 3) SourceForge master (fallback)
+    //
+    // Важно: baseUrl должен указывать на ПАПКУ, где лежат manifest.json и blobs/
+    // (см. пояснение в конце про Bunny)
     private static readonly string[] DefaultPackMirrors =
     {
         "https://legendborn.ru/launcher/pack/",
+        "https://legendborn-pack.b-cdn.net/launcher/pack/",
         "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/"
     };
 
     private const string ManifestFileName = "manifest.json";
     private const string PackStateFileName = "pack_state.json";
+
+    // ===== Smart mirrors tuning (релизные параметры) =====
+    private const int MirrorPrimaryTimeoutSec1 = 6;   // быстрый fail для РФ
+    private const int MirrorPrimaryTimeoutSec2 = 12;  // второй шанс сайту
+    private const int MirrorFallbackTimeoutSec = 18;  // таймаут для Bunny/SF
+    private const int MirrorProbeMaxManifestBytes = 5 * 1024 * 1024; // safety (если Content-Length есть)
+    private const double MirrorEwmaAlpha = 0.30;      // 30% новое, 70% старое
 
     private static readonly string[] AllowedDestPrefixes =
     {
@@ -51,10 +63,22 @@ public sealed class MinecraftService
     public event EventHandler<string>? Log;
     public event EventHandler<int>? ProgressPercent;
 
+    // ===== mirror stats (скорость/успех) =====
+    private readonly object _mirrorStatsLock = new();
+    private MirrorStatsRoot _mirrorStats = new();
+
+    // “состояние текущего запуска”
+    private string? _primaryBaseUrlThisRun;
+    private bool _primaryOkThisRun;
+
+    private string MirrorStatsPath => Path.Combine(_path.BasePath, "launcher", "mirror_stats.json");
+
     public MinecraftService(string gameDir)
     {
         _path = new MinecraftPath(gameDir);
         Directory.CreateDirectory(_path.BasePath);
+
+        _mirrorStats = LoadMirrorStats();
 
         _launcher = new MinecraftLauncher(_path);
 
@@ -162,48 +186,47 @@ public sealed class MinecraftService
     }
 
     // =========================
-    // 0.1.9: Mirrors ordering
+    // Mirrors ordering
     // =========================
 
-    private static bool IsLegendbornHost(string? url)
-        => !string.IsNullOrWhiteSpace(url) &&
-           url.Contains("legendborn.ru", StringComparison.OrdinalIgnoreCase);
+    private static bool LooksLikeBunny(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return false;
+        url = url.ToLowerInvariant();
+        return url.Contains("b-cdn.net") || url.Contains("bunny");
+    }
 
-    private static bool IsSourceForgeMaster(string? url)
-        => !string.IsNullOrWhiteSpace(url) &&
-           url.Contains("master.dl.sourceforge.net", StringComparison.OrdinalIgnoreCase);
+    private static bool LooksLikeSourceForge(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return false;
+        url = url.ToLowerInvariant();
+        return url.Contains("sourceforge.net") || url.Contains("master.dl.sourceforge.net");
+    }
 
     private static string[] ExpandAndOrderPackMirrors(string[]? packMirrors)
     {
         var raw = (packMirrors is { Length: > 0 } ? packMirrors : DefaultPackMirrors)
-            .Select(NormalizeBaseUrl)
+            .Select(NormalizeAbsoluteBaseUrl)
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        // Если есть legendborn — убедимся, что master.dl есть как fallback
-        if (raw.Any(IsLegendbornHost) && !raw.Any(IsSourceForgeMaster))
-            raw.Add("https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/");
-
-        // 0.1.9: приоритет = легендборн (быстро проверяем, но не висим),
-        // затем master.dl, затем прочие.
-        var ordered = raw
+        // ЖЕЛЕЗНО: сайт первым. Далее Bunny/SF/прочие.
+        return raw
             .OrderBy(u =>
             {
                 var lu = u.ToLowerInvariant();
                 if (lu.Contains("legendborn.ru")) return 0;
-                if (lu.Contains("master.dl.sourceforge.net")) return 1;
-                if (!lu.Contains("sourceforge.net")) return 2;
+                if (LooksLikeBunny(lu)) return 1;
+                if (LooksLikeSourceForge(lu)) return 2;
                 return 3;
             })
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
-
-        return ordered;
     }
 
     // =========================
-    // Loader install
+    // Loader install (оставляем как у тебя)
     // =========================
 
     private async Task<string> EnsureLoaderInstalledAsync(
@@ -863,7 +886,6 @@ public sealed class MinecraftService
                 return new PackState();
 
             var json = File.ReadAllText(path);
-
             var st = JsonSerializer.Deserialize(json, PackJsonContext.Default.PackState) ?? new PackState();
 
             if (st.Files is null)
@@ -909,7 +931,8 @@ public sealed class MinecraftService
     }
 
     // =========================
-    // 0.1.9: Manifest download with fast failover + PIN baseUrl after redirect
+    // Manifest download: сайт всегда первый.
+    // Если сайт не доступен -> auto-select Bunny/SF (race) + stats.
     // =========================
 
     private static string GetFinalBaseUrlFromResponse(HttpResponseMessage resp, string fallbackBaseUrl)
@@ -935,7 +958,7 @@ public sealed class MinecraftService
             throw new InvalidOperationException("Mirrors list is empty");
 
         var list = mirrors
-            .Select(NormalizeBaseUrl)
+            .Select(NormalizeAbsoluteBaseUrl)
             .Where(u => !string.IsNullOrWhiteSpace(u))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -943,89 +966,165 @@ public sealed class MinecraftService
         if (list.Length == 0)
             throw new InvalidOperationException("Mirrors list is empty after normalize");
 
-        // primary = legendborn.ru если есть, иначе первый
+        // primary = твой сайт если есть, иначе первый
         var primary = list.FirstOrDefault(u => u.Contains("legendborn.ru", StringComparison.OrdinalIgnoreCase))
                       ?? list[0];
 
-        Exception? last = null;
+        _primaryBaseUrlThisRun = primary;
+        _primaryOkThisRun = false;
 
-        foreach (var baseUrl in list)
+        // 1) СНАЧАЛА — сайт (короткие таймауты)
+        var primaryRes = await TryFetchManifestFromBaseAsync(primary, ct, MirrorPrimaryTimeoutSec1).ConfigureAwait(false)
+                      ?? await TryFetchManifestFromBaseAsync(primary, ct, MirrorPrimaryTimeoutSec2).ConfigureAwait(false);
+
+        if (primaryRes is not null)
         {
-            var isPrimary = baseUrl.Equals(primary, StringComparison.OrdinalIgnoreCase);
+            _primaryOkThisRun = true;
+            return primaryRes.Value;
+        }
 
-            // 0.1.9: primary не висит вечность, но имеет пару ретраев;
-            // зеркалу даём чуть меньше
-            var timeouts = isPrimary
-                ? new[] { 8, 16, 28 }   // sec
-                : new[] { 10, 18 };     // sec
+        // 2) сайт не доступен -> выбираем лучший fallback автоматически (race)
+        var fallbacks = list
+            .Where(u => !u.Equals(primary, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
 
-            foreach (var sec in timeouts)
+        if (fallbacks.Length == 0)
+            throw new InvalidOperationException("Primary mirror failed and no fallbacks are available.");
+
+        fallbacks = OrderMirrorsByStats(fallbacks);
+
+        using var raceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+
+        var tasks = fallbacks
+            .Select(b => TryFetchManifestFromBaseAsync(b, raceCts.Token, MirrorFallbackTimeoutSec))
+            .ToList();
+
+        while (tasks.Count > 0)
+        {
+            var finished = await Task.WhenAny(tasks).ConfigureAwait(false);
+            tasks.Remove(finished);
+
+            try
             {
-                ct.ThrowIfCancellationRequested();
-
-                var url = CombineUrl(baseUrl, ManifestFileName);
-
-                try
+                var res = await finished.ConfigureAwait(false);
+                if (res is not null)
                 {
-                    Log?.Invoke(this, $"Сборка: читаю manifest: {url}");
+                    raceCts.Cancel(); // гасим остальных
 
-                    using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    reqCts.CancelAfter(TimeSpan.FromSeconds(sec));
+                    // важно: “съедаем” отменённые таски, чтобы не было unobserved exceptions
+                    try { await Task.WhenAll(tasks).ConfigureAwait(false); } catch { }
 
-                    using var req = new HttpRequestMessage(HttpMethod.Get, url);
-                    req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-                    req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
-
-                    using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token);
-                    resp.EnsureSuccessStatusCode();
-
-                    // ✅ PIN: закрепляем финальный хост после редиректа
-                    var pinnedBaseUrl = GetFinalBaseUrlFromResponse(resp, baseUrl);
-
-                    await using var stream = await resp.Content.ReadAsStreamAsync(reqCts.Token);
-
-                    PackManifest? manifest;
-                    try
-                    {
-                        manifest = await JsonSerializer.DeserializeAsync(stream, PackJsonContext.Default.PackManifest, reqCts.Token);
-                    }
-                    catch (JsonException je)
-                    {
-                        throw new InvalidOperationException("Manifest parse error (возможно, зеркало вернуло HTML вместо JSON).", je);
-                    }
-
-                    if (manifest is null)
-                        throw new InvalidOperationException("Manifest deserialization returned null");
-
-                    if (manifest.Mirrors is { Length: > 0 })
-                    {
-                        manifest = manifest with
-                        {
-                            Mirrors = manifest.Mirrors
-                                .Select(NormalizeBaseUrl)
-                                .Where(m => !string.IsNullOrWhiteSpace(m))
-                                .Distinct(StringComparer.OrdinalIgnoreCase)
-                                .ToArray()
-                        };
-                    }
-
-                    Log?.Invoke(this, $"Сборка: выбрано зеркало (pinned): {pinnedBaseUrl}");
-                    return (pinnedBaseUrl, manifest);
+                    return res.Value;
                 }
-                catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
-                {
-                    last = ex;
-                    Log?.Invoke(this, $"Сборка: таймаут {sec}s ({baseUrl})");
-                }
-                catch (Exception ex)
-                {
-                    last = ex;
-                    Log?.Invoke(this, $"Сборка: зеркало недоступно ({baseUrl}) — {ex.Message}");
-                }
+            }
+            catch
+            {
+                // игнор, пробуем дальше
             }
         }
 
-        throw new InvalidOperationException("Не удалось скачать manifest ни с одного зеркала.", last);
+        throw new InvalidOperationException("Не удалось скачать manifest ни с одного зеркала (site + fallbacks).");
+    }
+
+    private async Task<(string activeBaseUrl, PackManifest manifest)?> TryFetchManifestFromBaseAsync(string baseUrl, CancellationToken ct, int timeoutSec)
+    {
+        baseUrl = NormalizeAbsoluteBaseUrl(baseUrl);
+        if (string.IsNullOrWhiteSpace(baseUrl))
+            return null;
+
+        var url = CombineUrl(baseUrl, ManifestFileName);
+
+        try
+        {
+            Log?.Invoke(this, $"Сборка: читаю manifest: {url}");
+
+            var sw = Stopwatch.StartNew();
+
+            using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            reqCts.CancelAfter(TimeSpan.FromSeconds(timeoutSec));
+
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
+
+            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token).ConfigureAwait(false);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                TouchMirrorFail(baseUrl);
+                return null;
+            }
+
+            var media = resp.Content.Headers.ContentType?.MediaType ?? "";
+            if (media.Contains("text/html", StringComparison.OrdinalIgnoreCase))
+            {
+                TouchMirrorFail(baseUrl);
+                return null;
+            }
+
+            var len = resp.Content.Headers.ContentLength;
+            if (len.HasValue && len.Value > MirrorProbeMaxManifestBytes)
+            {
+                TouchMirrorFail(baseUrl);
+                return null;
+            }
+
+            var pinnedBaseUrl = GetFinalBaseUrlFromResponse(resp, baseUrl);
+
+            await using var stream = await resp.Content.ReadAsStreamAsync(reqCts.Token).ConfigureAwait(false);
+
+            PackManifest? manifest;
+            try
+            {
+                manifest = await JsonSerializer.DeserializeAsync(stream, PackJsonContext.Default.PackManifest, reqCts.Token).ConfigureAwait(false);
+            }
+            catch
+            {
+                TouchMirrorFail(baseUrl);
+                return null;
+            }
+
+            if (manifest is null)
+            {
+                TouchMirrorFail(baseUrl);
+                return null;
+            }
+
+            if (manifest.Mirrors is { Length: > 0 })
+            {
+                manifest = manifest with
+                {
+                    Mirrors = manifest.Mirrors
+                        .Select(NormalizeAbsoluteBaseUrl)
+                        .Where(m => !string.IsNullOrWhiteSpace(m))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToArray()
+                };
+            }
+
+            sw.Stop();
+            TouchMirrorOk(baseUrl, sw.Elapsed.TotalMilliseconds);
+
+            Log?.Invoke(this, $"Сборка: выбрано зеркало: {pinnedBaseUrl}");
+            return (pinnedBaseUrl, manifest);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // отмена пользователем/внешним токеном — пробрасываем
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            TouchMirrorFail(baseUrl);
+            Log?.Invoke(this, $"Сборка: таймаут {timeoutSec}s ({baseUrl})");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            TouchMirrorFail(baseUrl);
+            Log?.Invoke(this, $"Сборка: зеркало недоступно ({baseUrl}) — {ex.Message}");
+            return null;
+        }
     }
 
     private async Task DownloadFileFromMirrorsAsync(
@@ -1040,13 +1139,39 @@ public sealed class MinecraftService
         Action<long> onBytes)
     {
         var mirrors = (manifestMirrors is { Length: > 0 } ? manifestMirrors : rootMirrors)
-            .Select(NormalizeBaseUrl)
+            .Select(NormalizeAbsoluteBaseUrl)
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        var ordered = new List<string> { NormalizeBaseUrl(activeBaseUrl) };
-        ordered.AddRange(mirrors.Where(m => !m.Equals(activeBaseUrl, StringComparison.OrdinalIgnoreCase)));
+        // Упорядочивание (релизное):
+        // - Если сайт в этом запуске был ОК -> сайт первым ВСЕГДА.
+        // - Иначе: первым activeBaseUrl (уже выбранный лучший fallback), дальше по статистике.
+        var ordered = new List<string>();
+
+        var primary = NormalizeAbsoluteBaseUrl(_primaryBaseUrlThisRun);
+        var active = NormalizeAbsoluteBaseUrl(activeBaseUrl);
+
+        if (_primaryOkThisRun && !string.IsNullOrWhiteSpace(primary))
+            ordered.Add(primary);
+
+        if (!string.IsNullOrWhiteSpace(active))
+            ordered.Add(active);
+
+        var rest = mirrors
+            .Where(m =>
+                !m.Equals(primary, StringComparison.OrdinalIgnoreCase) &&
+                !m.Equals(active, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        rest = OrderMirrorsByStats(rest);
+        ordered.AddRange(rest);
+
+        ordered = ordered
+            .Select(NormalizeAbsoluteBaseUrl)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
         Exception? last = null;
 
@@ -1066,12 +1191,21 @@ public sealed class MinecraftService
                 var url = CombineUrl(baseUrl, blobRel);
                 Log?.Invoke(this, $"Сборка: download {blobRel} ({FormatBytes(file.Size)})");
 
-                await DownloadToFileAsync(url, localPath, file.Sha256, destRel, ct, Counted);
+                var sw = Stopwatch.StartNew();
+                await DownloadToFileAsync(url, localPath, file.Sha256, destRel, ct, Counted).ConfigureAwait(false);
+                sw.Stop();
+
+                TouchMirrorOk(baseUrl, NormalizeLatencyForSize(sw.Elapsed.TotalMilliseconds, file.Size));
                 return;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
                 last = ex;
+                TouchMirrorFail(baseUrl);
 
                 if (attemptBytes > 0)
                     onBytes(-attemptBytes);
@@ -1098,13 +1232,13 @@ public sealed class MinecraftService
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
 
-        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token);
+        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
 
         using var sha = SHA256.Create();
         var buffer = new byte[128 * 1024];
 
-        await provisioning(resp, reqCts.Token, tmp, buffer, sha, onBytes);
+        await Provisioning(resp, reqCts.Token, tmp, buffer, sha, onBytes).ConfigureAwait(false);
 
         sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
         var actual = Convert.ToHexString(sha.Hash!).ToLowerInvariant();
@@ -1115,7 +1249,7 @@ public sealed class MinecraftService
             throw new InvalidOperationException($"SHA256 mismatch: expected {expectedSha256}, got {actual}");
         }
 
-        var ok = await TryMoveOrReplaceWithRetryAsync(tmp, localPath, ct, attempts: 20, delayMs: 200);
+        var ok = await TryMoveOrReplaceWithRetryAsync(tmp, localPath, ct, attempts: 20, delayMs: 200).ConfigureAwait(false);
         if (ok)
         {
             TryDeleteQuiet(tmp);
@@ -1125,7 +1259,7 @@ public sealed class MinecraftService
         if (IsPendingAllowedDest(destRel))
         {
             var pending = localPath + ".pending";
-            var pendingOk = await TryMoveOrReplaceWithRetryAsync(tmp, pending, ct, attempts: 10, delayMs: 200);
+            var pendingOk = await TryMoveOrReplaceWithRetryAsync(tmp, pending, ct, attempts: 10, delayMs: 200).ConfigureAwait(false);
             if (pendingOk)
             {
                 Log?.Invoke(this, $"Сборка: файл занят, сохранил pending: {destRel}");
@@ -1141,9 +1275,9 @@ public sealed class MinecraftService
         throw new IOException($"Не удалось записать файл сборки (занят другим процессом): {destRel}");
     }
 
-    private static async Task provisioning(HttpResponseMessage resp, CancellationToken token, string tmp, byte[] buffer, SHA256 sha, Action<long> onBytes)
+    private static async Task Provisioning(HttpResponseMessage resp, CancellationToken token, string tmp, byte[] buffer, SHA256 sha, Action<long> onBytes)
     {
-        await using var input = await resp.Content.ReadAsStreamAsync(token);
+        await using var input = await resp.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
         await using var output = new FileStream(
             tmp,
             FileMode.Create,
@@ -1153,14 +1287,14 @@ public sealed class MinecraftService
             options: FileOptions.Asynchronous | FileOptions.SequentialScan);
 
         int read;
-        while ((read = await input.ReadAsync(buffer, 0, buffer.Length, token)) > 0)
+        while ((read = await input.ReadAsync(buffer, 0, buffer.Length, token).ConfigureAwait(false)) > 0)
         {
-            await output.WriteAsync(buffer, 0, read, token);
+            await output.WriteAsync(buffer, 0, read, token).ConfigureAwait(false);
             sha.TransformBlock(buffer, 0, read, null, 0);
             onBytes(read);
         }
 
-        await output.FlushAsync(token);
+        await output.FlushAsync(token).ConfigureAwait(false);
     }
 
     private async Task TryApplyPendingAsync(string destRel, string localPath, string expectedSha256, CancellationToken ct)
@@ -1171,7 +1305,7 @@ public sealed class MinecraftService
 
         try
         {
-            var sha = await ComputeSha256Async(pending, ct);
+            var sha = await ComputeSha256Async(pending, ct).ConfigureAwait(false);
             if (!sha.Equals(expectedSha256, StringComparison.OrdinalIgnoreCase))
             {
                 TryDeleteQuiet(pending);
@@ -1183,7 +1317,7 @@ public sealed class MinecraftService
             return;
         }
 
-        var ok = await TryMoveOrReplaceWithRetryAsync(pending, localPath, ct, attempts: 10, delayMs: 200);
+        var ok = await TryMoveOrReplaceWithRetryAsync(pending, localPath, ct, attempts: 10, delayMs: 200).ConfigureAwait(false);
         if (ok)
         {
             TryDeleteQuiet(pending);
@@ -1216,11 +1350,11 @@ public sealed class MinecraftService
             }
             catch (IOException)
             {
-                await Task.Delay(delayMs, ct);
+                await Task.Delay(delayMs, ct).ConfigureAwait(false);
             }
             catch (UnauthorizedAccessException)
             {
-                await Task.Delay(delayMs, ct);
+                await Task.Delay(delayMs, ct).ConfigureAwait(false);
             }
         }
 
@@ -1345,6 +1479,23 @@ public sealed class MinecraftService
         return url;
     }
 
+    private static string NormalizeAbsoluteBaseUrl(string? url)
+    {
+        url = (url ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(url)) return "";
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return "";
+
+        if (!uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+            !uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+            return "";
+
+        var s = uri.ToString();
+        if (!s.EndsWith("/")) s += "/";
+        return s;
+    }
+
     private static string NormalizeRoot(string root)
     {
         root = NormalizeRelPath(root);
@@ -1430,6 +1581,156 @@ public sealed class MinecraftService
     private static void TryDeleteQuiet(string path)
     {
         try { if (File.Exists(path)) File.Delete(path); } catch { }
+    }
+
+    // =========================
+    // Mirror stats (EWMA)
+    // =========================
+
+    private sealed class MirrorStatsRoot
+    {
+        public Dictionary<string, MirrorStat> Mirrors { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private sealed class MirrorStat
+    {
+        public double EwmaScore { get; set; } = 0; // меньше = лучше
+        public int Ok { get; set; } = 0;
+        public int Fail { get; set; } = 0;
+        public long LastOkUnix { get; set; } = 0;
+    }
+
+    private MirrorStatsRoot LoadMirrorStats()
+    {
+        try
+        {
+            var path = MirrorStatsPath;
+            if (!File.Exists(path))
+                return new MirrorStatsRoot();
+
+            var json = File.ReadAllText(path);
+            var root = JsonSerializer.Deserialize<MirrorStatsRoot>(json) ?? new MirrorStatsRoot();
+
+            if (root.Mirrors is null)
+                root.Mirrors = new Dictionary<string, MirrorStat>(StringComparer.OrdinalIgnoreCase);
+
+            if (!Equals(root.Mirrors.Comparer, StringComparer.OrdinalIgnoreCase))
+                root.Mirrors = new Dictionary<string, MirrorStat>(root.Mirrors, StringComparer.OrdinalIgnoreCase);
+
+            return root;
+        }
+        catch
+        {
+            return new MirrorStatsRoot();
+        }
+    }
+
+    private void SaveMirrorStatsQuiet()
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(MirrorStatsPath);
+            if (!string.IsNullOrWhiteSpace(dir))
+                Directory.CreateDirectory(dir);
+
+            MirrorStatsRoot snapshot;
+            lock (_mirrorStatsLock)
+            {
+                snapshot = _mirrorStats;
+            }
+
+            var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
+
+            var tmp = MirrorStatsPath + ".tmp";
+            File.WriteAllText(tmp, json);
+
+            if (File.Exists(MirrorStatsPath))
+            {
+                var bak = MirrorStatsPath + ".bak";
+                TryDeleteQuiet(bak);
+                File.Replace(tmp, MirrorStatsPath, bak, ignoreMetadataErrors: true);
+                TryDeleteQuiet(bak);
+            }
+            else
+            {
+                File.Move(tmp, MirrorStatsPath, overwrite: true);
+            }
+
+            TryDeleteQuiet(tmp);
+        }
+        catch { }
+    }
+
+    private void TouchMirrorOk(string baseUrl, double score)
+    {
+        baseUrl = NormalizeAbsoluteBaseUrl(baseUrl);
+        if (string.IsNullOrWhiteSpace(baseUrl)) return;
+
+        lock (_mirrorStatsLock)
+        {
+            if (!_mirrorStats.Mirrors.TryGetValue(baseUrl, out var s))
+            {
+                s = new MirrorStat();
+                _mirrorStats.Mirrors[baseUrl] = s;
+            }
+
+            // EWMA: меньше = лучше
+            s.EwmaScore = s.EwmaScore <= 0 ? score : (s.EwmaScore * (1.0 - MirrorEwmaAlpha) + score * MirrorEwmaAlpha);
+            s.Ok++;
+            s.LastOkUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        }
+
+        SaveMirrorStatsQuiet();
+    }
+
+    private void TouchMirrorFail(string baseUrl)
+    {
+        baseUrl = NormalizeAbsoluteBaseUrl(baseUrl);
+        if (string.IsNullOrWhiteSpace(baseUrl)) return;
+
+        lock (_mirrorStatsLock)
+        {
+            if (!_mirrorStats.Mirrors.TryGetValue(baseUrl, out var s))
+            {
+                s = new MirrorStat();
+                _mirrorStats.Mirrors[baseUrl] = s;
+            }
+
+            s.Fail++;
+        }
+
+        SaveMirrorStatsQuiet();
+    }
+
+    private string[] OrderMirrorsByStats(string[] mirrors)
+    {
+        lock (_mirrorStatsLock)
+        {
+            return mirrors
+                .Select(NormalizeAbsoluteBaseUrl)
+                .Where(m => !string.IsNullOrWhiteSpace(m))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(m =>
+                {
+                    if (_mirrorStats.Mirrors.TryGetValue(m, out var s) && s.EwmaScore > 0)
+                        return s.EwmaScore;
+
+                    // неизвестное зеркало: середина
+                    return 99999.0;
+                })
+                .ToArray();
+        }
+    }
+
+    private static double NormalizeLatencyForSize(double ms, long bytes)
+    {
+        // score = ms per MiB (примерно) — так большие файлы не “убивают” зеркало.
+        if (ms <= 0) ms = 1;
+        if (bytes <= 0) return ms;
+
+        var mib = bytes / (1024.0 * 1024.0);
+        if (mib < 1) mib = 1;
+        return ms / mib;
     }
 
     // ===== Pack DTO =====

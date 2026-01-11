@@ -38,7 +38,7 @@ public sealed class SiteAuthService
             Timeout = Timeout.InfiniteTimeSpan
         };
 
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("LegendBornLauncher/0.1.7");
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("LegendBornLauncher/0.1.10");
         return http;
     }
 
