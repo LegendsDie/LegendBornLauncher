@@ -11,23 +11,19 @@ public static class UpdateService
     private const string RepoUrl = "https://github.com/LegendsDie/LegendBornLauncher";
 
     private static GithubSource CreateSource()
-    {
-        return new GithubSource(
-            repoUrl: RepoUrl,
-            accessToken: null,
-            prerelease: false
-        );
-    }
+        => new GithubSource(repoUrl: RepoUrl, accessToken: null, prerelease: false);
 
     public static async Task CheckAndUpdateAsync(bool silent, bool showNoUpdates = false)
     {
-        var mgr = new UpdateManager(CreateSource());
-
-        if (!mgr.IsInstalled)
-            return;
+        UpdateManager? mgr = null;
 
         try
         {
+            mgr = new UpdateManager(CreateSource());
+
+            if (!mgr.IsInstalled)
+                return;
+
             if (mgr.UpdatePendingRestart is { } pending)
             {
                 mgr.ApplyUpdatesAndRestart(pending);
@@ -50,6 +46,19 @@ public static class UpdateService
             }
 
             var target = updates.TargetFullRelease;
+            if (target is null)
+            {
+                if (!silent && showNoUpdates)
+                {
+                    MessageBox.Show(
+                        "Обновлений лаунчера нет.",
+                        "Обновление лаунчера",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                }
+
+                return;
+            }
 
             if (!silent)
             {
@@ -81,7 +90,8 @@ public static class UpdateService
         }
         finally
         {
-            (mgr as IDisposable)?.Dispose();
+            if (mgr is IDisposable d)
+                d.Dispose();
         }
     }
 }

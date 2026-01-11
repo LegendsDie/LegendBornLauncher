@@ -73,12 +73,48 @@ namespace LegendBorn.Properties {
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("")]
+        public string SelectedServerId {
+            get {
+                return ((string)(this["SelectedServerId"]));
+            }
+            set {
+                this["SelectedServerId"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("")]
         public string SiteLogin {
             get {
                 return ((string)(this["SiteLogin"]));
             }
             set {
                 this["SiteLogin"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("0.1.9")]
+        public string ConfigVersion {
+            get {
+                return ((string)(this["ConfigVersion"]));
+            }
+            set {
+                this["ConfigVersion"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool SettingsUpgraded {
+            get {
+                return ((bool)(this["SettingsUpgraded"]));
+            }
+            set {
+                this["SettingsUpgraded"] = value;
             }
         }
     }

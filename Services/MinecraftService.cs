@@ -19,19 +19,20 @@ namespace LegendBorn.Services;
 
 public sealed class MinecraftService
 {
-    private const string LauncherUserAgent = "LegendBornLauncher/0.1.8";
+    private const string LauncherUserAgent = "LegendBornLauncher/0.1.9";
 
     private readonly MinecraftPath _path;
     private readonly MinecraftLauncher _launcher;
 
     private static readonly HttpClient _http = CreateHttp();
 
-    // ✅ 0.1.8: дефолтные зеркала паков (в т.ч. SourceForge)
+    // ✅ 0.1.9: дефолтные зеркала паков
+    // Важно: легендборн первым (если доступен — он обычно быстрее),
+    // SF master — запасной. downloads.sourceforge — убран.
     private static readonly string[] DefaultPackMirrors =
     {
-        "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/",
-        "https://downloads.sourceforge.net/project/legendborn-pack/launcher/pack/",
         "https://legendborn.ru/launcher/pack/",
+        "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/"
     };
 
     private const string ManifestFileName = "manifest.json";
@@ -77,10 +78,6 @@ public sealed class MinecraftService
 
     public sealed record LoaderSpec(string Type, string Version, string InstallerUrl);
 
-    /// <summary>
-    /// Быстрый публичный метод: синхронизировать только сборку (pack) по manifest.
-    /// Не устанавливает Minecraft/лоадер.
-    /// </summary>
     public async Task SyncPackAsync(string[]? packMirrors, CancellationToken ct = default)
     {
         var mirrors = ExpandAndOrderPackMirrors(packMirrors);
@@ -91,9 +88,6 @@ public sealed class MinecraftService
         await EnsurePackUpToDateAsync(mirrors, ct);
     }
 
-    /// <summary>
-    /// Полная подготовка: (опционально) sync pack, установка Minecraft, установка лоадера, возврат versionId для запуска.
-    /// </summary>
     public async Task<string> PrepareAsync(
         string minecraftVersion,
         LoaderSpec loader,
@@ -168,12 +162,16 @@ public sealed class MinecraftService
     }
 
     // =========================
-    // 0.1.8: Mirrors ordering
+    // 0.1.9: Mirrors ordering
     // =========================
 
     private static bool IsLegendbornHost(string? url)
         => !string.IsNullOrWhiteSpace(url) &&
            url.Contains("legendborn.ru", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSourceForgeMaster(string? url)
+        => !string.IsNullOrWhiteSpace(url) &&
+           url.Contains("master.dl.sourceforge.net", StringComparison.OrdinalIgnoreCase);
 
     private static string[] ExpandAndOrderPackMirrors(string[]? packMirrors)
     {
@@ -183,21 +181,19 @@ public sealed class MinecraftService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        // Если есть legendborn — добавим SourceForge, даже если пользователь не указал
-        if (raw.Any(IsLegendbornHost) && !raw.Any(u => u.Contains("sourceforge.net", StringComparison.OrdinalIgnoreCase)))
-        {
-            raw.Insert(0, "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/");
-            raw.Insert(1, "https://downloads.sourceforge.net/project/legendborn-pack/launcher/pack/");
-        }
+        // Если есть legendborn — убедимся, что master.dl есть как fallback
+        if (raw.Any(IsLegendbornHost) && !raw.Any(IsSourceForgeMaster))
+            raw.Add("https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/");
 
-        // Приоритет: master.dl -> sourceforge -> прочие -> legendborn
+        // 0.1.9: приоритет = легендборн (быстро проверяем, но не висим),
+        // затем master.dl, затем прочие.
         var ordered = raw
             .OrderBy(u =>
             {
                 var lu = u.ToLowerInvariant();
-                if (lu.Contains("master.dl.sourceforge.net")) return 0;
-                if (lu.Contains("sourceforge.net")) return 1;
-                if (!lu.Contains("legendborn.ru")) return 2;
+                if (lu.Contains("legendborn.ru")) return 0;
+                if (lu.Contains("master.dl.sourceforge.net")) return 1;
+                if (!lu.Contains("sourceforge.net")) return 2;
                 return 3;
             })
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -252,7 +248,6 @@ public sealed class MinecraftService
         return installedId!;
     }
 
-    // ✅ 0.1.8: если installerUrl указывает на legendborn.ru и он недоступен — пробуем официальный Maven
     private static string? GetOfficialInstallerUrl(string loaderType, string mc, string loaderVersion)
     {
         loaderType = (loaderType ?? "").Trim().ToLowerInvariant();
@@ -277,7 +272,6 @@ public sealed class MinecraftService
         string installerUrl,
         CancellationToken ct)
     {
-        // список кандидатов (первый — что пришёл с сервера)
         var urls = new List<string>();
 
         if (!string.IsNullOrWhiteSpace(installerUrl))
@@ -898,7 +892,6 @@ public sealed class MinecraftService
         catch { }
     }
 
-    // ✅ internal, чтобы source-gen и PackJsonContext видели тип
     internal sealed class PackState
     {
         public string? PackId { get; set; }
@@ -915,31 +908,69 @@ public sealed class MinecraftService
         public long LastWriteUtcTicks { get; set; }
     }
 
+    // =========================
+    // 0.1.9: Manifest download with fast failover + PIN baseUrl after redirect
+    // =========================
+
+    private static string GetFinalBaseUrlFromResponse(HttpResponseMessage resp, string fallbackBaseUrl)
+    {
+        try
+        {
+            var uri = resp.RequestMessage?.RequestUri;
+            if (uri is null)
+                return NormalizeBaseUrl(fallbackBaseUrl);
+
+            var baseUri = new Uri(uri, "./"); // папка, где лежит manifest.json
+            return NormalizeBaseUrl(baseUri.ToString());
+        }
+        catch
+        {
+            return NormalizeBaseUrl(fallbackBaseUrl);
+        }
+    }
+
     private async Task<(string activeBaseUrl, PackManifest manifest)> DownloadManifestFromMirrorsAsync(string[] mirrors, CancellationToken ct)
     {
+        if (mirrors is null || mirrors.Length == 0)
+            throw new InvalidOperationException("Mirrors list is empty");
+
+        var list = mirrors
+            .Select(NormalizeBaseUrl)
+            .Where(u => !string.IsNullOrWhiteSpace(u))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (list.Length == 0)
+            throw new InvalidOperationException("Mirrors list is empty after normalize");
+
+        // primary = legendborn.ru если есть, иначе первый
+        var primary = list.FirstOrDefault(u => u.Contains("legendborn.ru", StringComparison.OrdinalIgnoreCase))
+                      ?? list[0];
+
         Exception? last = null;
 
-        foreach (var baseUrlRaw in mirrors)
+        foreach (var baseUrl in list)
         {
-            var baseUrl = NormalizeBaseUrl(baseUrlRaw);
+            var isPrimary = baseUrl.Equals(primary, StringComparison.OrdinalIgnoreCase);
 
-            // 0.1.8: небольшой ретрай на зеркало
-            for (int attempt = 1; attempt <= 2; attempt++)
+            // 0.1.9: primary не висит вечность, но имеет пару ретраев;
+            // зеркалу даём чуть меньше
+            var timeouts = isPrimary
+                ? new[] { 8, 16, 28 }   // sec
+                : new[] { 10, 18 };     // sec
+
+            foreach (var sec in timeouts)
             {
                 ct.ThrowIfCancellationRequested();
 
+                var url = CombineUrl(baseUrl, ManifestFileName);
+
                 try
                 {
-                    var url = CombineUrl(baseUrl, ManifestFileName);
                     Log?.Invoke(this, $"Сборка: читаю manifest: {url}");
 
-                    var isLegendborn = baseUrl.Contains("legendborn.ru", StringComparison.OrdinalIgnoreCase);
-                    var timeout = isLegendborn
-                        ? TimeSpan.FromSeconds(attempt == 1 ? 18 : 28)
-                        : TimeSpan.FromSeconds(attempt == 1 ? 45 : 70);
-
                     using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    reqCts.CancelAfter(timeout);
+                    reqCts.CancelAfter(TimeSpan.FromSeconds(sec));
 
                     using var req = new HttpRequestMessage(HttpMethod.Get, url);
                     req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
@@ -948,9 +979,11 @@ public sealed class MinecraftService
                     using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token);
                     resp.EnsureSuccessStatusCode();
 
+                    // ✅ PIN: закрепляем финальный хост после редиректа
+                    var pinnedBaseUrl = GetFinalBaseUrlFromResponse(resp, baseUrl);
+
                     await using var stream = await resp.Content.ReadAsStreamAsync(reqCts.Token);
 
-                    // Если зеркало подсунуло HTML — десериализация упадёт, но мы дадим нормальный лог
                     PackManifest? manifest;
                     try
                     {
@@ -970,17 +1003,19 @@ public sealed class MinecraftService
                         {
                             Mirrors = manifest.Mirrors
                                 .Select(NormalizeBaseUrl)
+                                .Where(m => !string.IsNullOrWhiteSpace(m))
                                 .Distinct(StringComparer.OrdinalIgnoreCase)
                                 .ToArray()
                         };
                     }
 
-                    return (baseUrl, manifest);
+                    Log?.Invoke(this, $"Сборка: выбрано зеркало (pinned): {pinnedBaseUrl}");
+                    return (pinnedBaseUrl, manifest);
                 }
                 catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
                 {
                     last = ex;
-                    Log?.Invoke(this, $"Сборка: таймаут зеркала ({baseUrl})");
+                    Log?.Invoke(this, $"Сборка: таймаут {sec}s ({baseUrl})");
                 }
                 catch (Exception ex)
                 {
@@ -1006,6 +1041,7 @@ public sealed class MinecraftService
     {
         var mirrors = (manifestMirrors is { Length: > 0 } ? manifestMirrors : rootMirrors)
             .Select(NormalizeBaseUrl)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
@@ -1364,7 +1400,7 @@ public sealed class MinecraftService
             AutomaticDecompression = DecompressionMethods.All,
             Proxy = WebRequest.DefaultWebProxy,
             UseProxy = true,
-            ConnectTimeout = TimeSpan.FromSeconds(12),
+            ConnectTimeout = TimeSpan.FromSeconds(10),
             PooledConnectionLifetime = TimeSpan.FromMinutes(10),
             AllowAutoRedirect = true,
             MaxConnectionsPerServer = 8

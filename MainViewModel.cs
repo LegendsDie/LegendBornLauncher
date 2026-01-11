@@ -17,6 +17,33 @@ namespace LegendBorn;
 
 public sealed class MainViewModel : ObservableObject
 {
+    // ✅ 0.1.9: версия схемы конфига (НЕ обязана равняться версии лаунчера)
+    private const string ConfigSchemaVersion = "0.1.9";
+
+    // ✅ 0.1.9: один раз переносим user.config при обновлении версии приложения
+    private static void EnsureSettingsMigrated_019()
+    {
+        try
+        {
+            // 1) Upgrade (перенос из прошлой папки user.config)
+            if (!Settings.Default.SettingsUpgraded)
+            {
+                try { Settings.Default.Upgrade(); } catch { }
+                Settings.Default.SettingsUpgraded = true;
+            }
+
+            // 2) Schema marker (на будущее, если понадобится миграция ключей)
+            var cv = (Settings.Default.ConfigVersion ?? "").Trim();
+            if (!cv.Equals(ConfigSchemaVersion, StringComparison.OrdinalIgnoreCase))
+            {
+                Settings.Default.ConfigVersion = ConfigSchemaVersion;
+            }
+
+            Settings.Default.Save();
+        }
+        catch { }
+    }
+
     // ===== UI: Tabs (Auth / Start / Profile / Settings) =====
     private int _selectedMenuIndex;
     public int SelectedMenuIndex
@@ -107,11 +134,9 @@ public sealed class MainViewModel : ObservableObject
         public string Address { get; init; } = "";
         public string MinecraftVersion { get; init; } = "1.21.1";
 
-        // Тип: vanilla / neoforge / forge / fabric...
         public string LoaderName { get; init; } = "vanilla";
         public string LoaderVersion { get; init; } = "";
 
-        // installerUrl обязателен для neoforge/forge
         public string LoaderInstallerUrl { get; init; } = "";
 
         public string ClientVersionId { get; init; } = "";
@@ -261,9 +286,7 @@ public sealed class MainViewModel : ObservableObject
         set
         {
             if (Set(ref _username, value))
-            {
                 RefreshCanStates();
-            }
         }
     }
 
@@ -385,7 +408,7 @@ public sealed class MainViewModel : ObservableObject
     public string LoginButtonText => IsWaitingSiteConfirm ? "Ожидание..." : "Войти через сайт";
 
     // ===== Commands =====
-    public AsyncRelayCommand RefreshVersionsCommand { get; private set; } = null!; // фактически: "Проверить сборку"
+    public AsyncRelayCommand RefreshVersionsCommand { get; private set; } = null!;
     public AsyncRelayCommand PlayCommand { get; private set; } = null!;
     public RelayCommand OpenGameDirCommand { get; private set; } = null!;
     public RelayCommand StopGameCommand { get; private set; } = null!;
@@ -410,6 +433,9 @@ public sealed class MainViewModel : ObservableObject
 
     public MainViewModel()
     {
+        // ✅ 0.1.9: чтобы Settings не сбрасывались при обновлении
+        EnsureSettingsMigrated_019();
+
         SelectedMenuIndex = 0;
 
         _gameDir = Path.Combine(
@@ -427,7 +453,6 @@ public sealed class MainViewModel : ObservableObject
         _mc.ProgressPercent += (_, p) =>
             App.Current?.Dispatcher.Invoke((Action)(() => ProgressPercent = p));
 
-        // ✅ "Проверить сборку" — реально синхронизирует pack по manifest
         RefreshVersionsCommand = new AsyncRelayCommand(CheckPackAsync, () => !IsBusy && !IsWaitingSiteConfirm && SelectedServer is not null);
 
         PlayCommand = new AsyncRelayCommand(PlayAsync, () => CanPlay);
@@ -491,7 +516,6 @@ public sealed class MainViewModel : ObservableObject
         {
             AppendLog("Серверы: загрузка списка...");
 
-            // ✅ 0.1.8: пробуем несколько зеркал списка серверов (если в будущем ты зальёшь servers.json на SourceForge)
             var list = await _servers.GetServersOrDefaultAsync(
                 mirrors: ServerListService.DefaultServersMirrors,
                 ct: CancellationToken.None);
@@ -586,18 +610,21 @@ public sealed class MainViewModel : ObservableObject
     }
 
     // =========================
-    // 0.1.8: Mirror helper (SourceForge -> остальные -> legendborn)
+    // 0.1.9: Mirror helper (baseUrl first, SF master as fallback)
     // =========================
 
     private static readonly string[] SourceForgePackMirrors =
     {
-        "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/",
-        "https://downloads.sourceforge.net/project/legendborn-pack/launcher/pack/"
+        "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/"
     };
 
     private static bool IsLegendbornHost(string? url)
         => !string.IsNullOrWhiteSpace(url) &&
            url.Contains("legendborn.ru", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSourceForgeMaster(string? url)
+        => !string.IsNullOrWhiteSpace(url) &&
+           url.Contains("master.dl.sourceforge.net", StringComparison.OrdinalIgnoreCase);
 
     private static string[] BuildPackMirrors(ServerEntry s)
     {
@@ -608,31 +635,23 @@ public sealed class MainViewModel : ObservableObject
             .Where(u => !string.IsNullOrWhiteSpace(u))
             .ToArray();
 
-        // Собираем кандидатов
-        var all = extra
-            .Concat(new[] { baseUrl })
+        var all = new[] { baseUrl }
+            .Concat(extra)
             .Where(u => !string.IsNullOrWhiteSpace(u))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        // Если основной/кто-то из зеркал legendborn.ru — добавляем SourceForge как страховку
-        if (all.Any(IsLegendbornHost) && !all.Any(u => u.Contains("sourceforge.net", StringComparison.OrdinalIgnoreCase)))
-        {
-            all.InsertRange(0, SourceForgePackMirrors.Select(EnsureSlash));
-        }
+        if (all.Any(IsLegendbornHost) && !all.Any(IsSourceForgeMaster))
+            all.AddRange(SourceForgePackMirrors.Select(EnsureSlash));
 
-        // 0.1.8: порядок приоритета (важно для России)
-        // 1) master.dl.sourceforge
-        // 2) остальные sourceforge
-        // 3) любые не-legendborn
-        // 4) legendborn в конец
         var ordered = all
             .OrderBy(u =>
             {
+                if (u.Equals(baseUrl, StringComparison.OrdinalIgnoreCase)) return 0;
+
                 var lu = u.ToLowerInvariant();
-                if (lu.Contains("master.dl.sourceforge.net")) return 0;
-                if (lu.Contains("sourceforge.net")) return 1;
-                if (!lu.Contains("legendborn.ru")) return 2;
+                if (lu.Contains("legendborn.ru")) return 1;
+                if (lu.Contains("master.dl.sourceforge.net")) return 2;
                 return 3;
             })
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -1031,9 +1050,7 @@ public sealed class MainViewModel : ObservableObject
             StatusText = $"Подготовка {BuildDisplayName}...";
             ProgressPercent = 0;
 
-            // ✅ 0.1.8: зеркала паков с приоритетом SourceForge
             var mirrors = BuildPackMirrors(SelectedServer);
-
             var loader = CreateLoaderSpecFromServer(SelectedServer);
 
             var launchVersionId = await _mc.PrepareAsync(
@@ -1105,7 +1122,6 @@ public sealed class MainViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(loaderVer))
             throw new InvalidOperationException($"Loader '{loaderType}' требует версию (loader.version).");
 
-        // ✅ 0.1.8: если installerUrl пустой — ставим официальный Maven
         if (string.IsNullOrWhiteSpace(installerUrl))
         {
             if (loaderType == "neoforge")
