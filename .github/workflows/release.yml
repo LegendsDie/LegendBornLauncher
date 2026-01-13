@@ -18,7 +18,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # Можно оставить как имя. Workflow сам найдёт реальный путь, если файла тут нет.
   CS_PROJ: LegendBorn.csproj
+
   PACK_ID: LegendBornLauncher
   MAIN_EXE: LegendBorn.exe
   PACK_TITLE: LegendBorn Launcher
@@ -53,25 +55,68 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
+      # 1) Находим правильный csproj (если CS_PROJ не указывает на существующий файл)
+      - name: Resolve csproj path
+        id: csproj
+        shell: pwsh
+        run: |
+          $candidate = "${{ env.CS_PROJ }}".Trim()
+          $resolved = $null
+
+          if (![string]::IsNullOrWhiteSpace($candidate) -and (Test-Path $candidate)) {
+            $resolved = (Resolve-Path $candidate).Path
+          } else {
+            # Ищем по репозиторию:
+            # - сначала точное имя LegendBorn.csproj (частый кейс)
+            # - иначе берём первый *.csproj
+            $exact = Get-ChildItem -Recurse -Filter "LegendBorn.csproj" -File | Select-Object -First 1
+            if ($exact) {
+              $resolved = $exact.FullName
+            } else {
+              $first = Get-ChildItem -Recurse -Filter "*.csproj" -File | Select-Object -First 1
+              if ($first) { $resolved = $first.FullName }
+            }
+          }
+
+          if (-not $resolved) {
+            Write-Host "Found csproj files:"
+            Get-ChildItem -Recurse -Filter "*.csproj" -File | Select-Object FullName | Format-Table -AutoSize | Out-String | Write-Host
+            throw "csproj not found. Set env.CS_PROJ to correct path."
+          }
+
+          "path=$resolved" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Resolved csproj: $resolved"
+
+      # 2) Читаем Version из найденного csproj
       - name: Read Version from csproj
         id: ver
         shell: pwsh
         run: |
-          $proj = "${{ env.CS_PROJ }}"
+          $proj = "${{ steps.csproj.outputs.path }}"
           if (!(Test-Path $proj)) { throw "csproj not found: $proj" }
 
           [xml]$xml = Get-Content -Raw -Path $proj
 
-          # Works with and without XML namespaces
-          $node = $xml.SelectSingleNode("//*[local-name()='Version']")
-          $v = $node?.InnerText?.Trim()
+          # Берём Version из PropertyGroup (fallback: InformationalVersion/AssemblyVersion)
+          $pg = $xml.Project.PropertyGroup
 
-          if ([string]::IsNullOrWhiteSpace($v)) {
-            throw "Version not found in csproj (<Version>...</Version>)"
+          $v = ($pg | Where-Object { $_.Version } | Select-Object -ExpandProperty Version -First 1)
+          if (-not $v) {
+            $v = ($pg | Where-Object { $_.InformationalVersion } | Select-Object -ExpandProperty InformationalVersion -First 1)
+          }
+          if (-not $v) {
+            $v = ($pg | Where-Object { $_.AssemblyVersion } | Select-Object -ExpandProperty AssemblyVersion -First 1)
           }
 
-          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "tag=v$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          if ([string]::IsNullOrWhiteSpace($v)) {
+            throw "Version not found in csproj (Version/InformationalVersion/AssemblyVersion)"
+          }
+
+          # На случай "0.2.0+sha" — отрезаем build metadata
+          $v = $v.ToString().Split('+')[0].Trim()
+
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tag=v$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "Version=$v"
           Write-Host "Tag=v$v"
 
@@ -100,13 +145,13 @@ jobs:
         if: steps.tagcheck.outputs.exists != 'true'
         shell: pwsh
         run: |
-          dotnet restore "${{ env.CS_PROJ }}"
+          dotnet restore "${{ steps.csproj.outputs.path }}"
 
       - name: Publish app
         if: steps.tagcheck.outputs.exists != 'true'
         shell: pwsh
         run: |
-          dotnet publish "${{ env.CS_PROJ }}" -c Release -r win-x64 --self-contained true -o publish
+          dotnet publish "${{ steps.csproj.outputs.path }}" -c Release -r win-x64 --self-contained true -o publish
 
       - name: Install/Update vpk tool
         if: steps.tagcheck.outputs.exists != 'true'
