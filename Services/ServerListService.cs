@@ -34,7 +34,7 @@ public sealed class ServerListService
         SourceForgeMasterServersUrl
     };
 
-    private const string LauncherUserAgent = "LegendBornLauncher/0.1.9";
+    private const string LauncherUserAgent = "LegendBornLauncher/0.2.0";
 
     // Таймауты под РФ (быстрый фейл у primary, затем race на fallback)
     private const int PrimaryTimeoutSec1 = 6;
@@ -453,7 +453,7 @@ public sealed class ServerListService
             Timeout = Timeout.InfiniteTimeSpan // таймауты per-request
         };
 
-        http.DefaultRequestHeaders.UserAgent.ParseAdd(LauncherUserAgent);
+        http.DefaultRequestHeaders.UserAgent.ParseAdd(LauncherIdentity.UserAgent);
         return http;
     }
 

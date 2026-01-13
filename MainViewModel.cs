@@ -5,7 +5,6 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
-using System.Windows;
 using LegendBorn.Mvvm;
 using LegendBorn.Models;
 using LegendBorn.Services;
@@ -26,7 +25,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     // game process state
     private Process? _runningProcess;
-    private int _playGuard;
+    private int _playGuard; // interlocked
 
     // guards
     private bool _commandsReady;
@@ -152,8 +151,16 @@ public sealed partial class MainViewModel : ObservableObject
         get => _ramMb;
         set
         {
-            if (Set(ref _ramMb, value))
-                RefreshCanStates();
+            if (!Set(ref _ramMb, value))
+                return;
+
+            if (!RamOptions.Contains(_ramMb))
+                _ramMb = 4096;
+
+            TrySaveSetting("RamMb", _ramMb);
+            SaveSettingsSafe();
+
+            RefreshCanStates();
         }
     }
 
@@ -200,12 +207,14 @@ public sealed partial class MainViewModel : ObservableObject
                 return url;
 
             if (url.StartsWith("//", StringComparison.Ordinal))
-                return "https:" + url;
+                return revealUrl("https:" + url);
 
             if (url.StartsWith("/", StringComparison.Ordinal))
                 return SiteBaseUrl + url;
 
             return SiteBaseUrl + "/" + url;
+
+            static string revealUrl(string u) => u;
         }
     }
 
@@ -236,8 +245,15 @@ public sealed partial class MainViewModel : ObservableObject
         get => _username;
         set
         {
-            if (Set(ref _username, value))
-                RefreshCanStates();
+            var v = string.IsNullOrWhiteSpace(value) ? "Player" : value.Trim();
+
+            if (!Set(ref _username, v))
+                return;
+
+            TrySaveSetting("Username", _username);
+            SaveSettingsSafe();
+
+            RefreshCanStates();
         }
     }
 
@@ -263,6 +279,7 @@ public sealed partial class MainViewModel : ObservableObject
             }
             else
             {
+                // если мы НЕ в настройках — возвращаем на авторизацию
                 if (SelectedMenuIndex != 3)
                     SelectedMenuIndex = 0;
             }
@@ -347,6 +364,7 @@ public sealed partial class MainViewModel : ObservableObject
     public bool CanStop => _runningProcess is { HasExited: false };
 
     public bool CanPlay =>
+        !_isClosing &&
         !IsBusy &&
         !IsWaitingSiteConfirm &&
         IsLoggedIn &&
@@ -356,7 +374,9 @@ public sealed partial class MainViewModel : ObservableObject
         IsValidMcName(Username);
 
     public string PlayButtonText => IsBusy ? "..." : "Играть";
-    public string LoginButtonText => IsWaitingSiteConfirm ? "Ожидание..." : "Войти через сайт";
+
+    // В XAML у тебя кнопка называется "Авторизация"
+    public string LoginButtonText => IsWaitingSiteConfirm ? "Ожидание..." : "Авторизация";
 
     // ===== Commands =====
     public AsyncRelayCommand RefreshVersionsCommand { get; private set; } = null!;
@@ -379,7 +399,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     public MainViewModel()
     {
-        EnsureSettingsMigrated_019();
+        EnsureSettingsMigrated();
 
         SelectedMenuIndex = 0;
 
@@ -394,10 +414,17 @@ public sealed partial class MainViewModel : ObservableObject
 
         _mc = new MinecraftService(_gameDir);
 
-        _mc.Log += (_, line) => AppendLog(line);
+        _mc.Log += (_, line) =>
+        {
+            if (_isClosing) return;
+            AppendLog(line);
+        };
 
-        // 0.1.10: throttled progress update (instead of Dispatcher.Invoke every tick)
-        _mc.ProgressPercent += (_, p) => OnMinecraftProgress(p);
+        _mc.ProgressPercent += (_, p) =>
+        {
+            if (_isClosing) return;
+            OnMinecraftProgress(p);
+        };
 
         InitCommands();
         _commandsReady = true;
@@ -407,24 +434,24 @@ public sealed partial class MainViewModel : ObservableObject
         if (!RamOptions.Contains(RamMb))
             RamMb = 4096;
 
-        _ = InitializeAsync();
+        _ = InitializeAsyncSafe();
         RefreshCanStates();
     }
 
     private void InitCommands()
     {
         RefreshVersionsCommand = new AsyncRelayCommand(CheckPackAsync,
-            () => !IsBusy && !IsWaitingSiteConfirm && SelectedServer is not null);
+            () => !_isClosing && !IsBusy && !IsWaitingSiteConfirm && SelectedServer is not null);
 
         PlayCommand = new AsyncRelayCommand(PlayAsync, () => CanPlay);
         OpenGameDirCommand = new RelayCommand(OpenGameDir);
-        StopGameCommand = new RelayCommand(StopGame, () => CanStop);
+        StopGameCommand = new RelayCommand(StopGame, () => !_isClosing && CanStop);
 
         LoginViaSiteCommand = new AsyncRelayCommand(LoginViaSiteAsync,
-            () => !IsBusy && !IsLoggedIn && !IsWaitingSiteConfirm);
+            () => !_isClosing && !IsBusy && !IsLoggedIn && !IsWaitingSiteConfirm);
 
         SiteLogoutCommand = new RelayCommand(SiteLogout,
-            () => IsLoggedIn || IsWaitingSiteConfirm);
+            () => !_isClosing && (IsLoggedIn || IsWaitingSiteConfirm));
 
         ClearLogCommand = new RelayCommand(() => LogLines.Clear());
 
@@ -434,13 +461,17 @@ public sealed partial class MainViewModel : ObservableObject
         OpenProfileCommand = new RelayCommand(() =>
         {
             if (IsLoggedIn) SelectedMenuIndex = 2;
-        }, () => IsLoggedIn);
+        }, () => !_isClosing && IsLoggedIn);
 
-        OpenLoginUrlCommand = new RelayCommand(OpenLoginUrl, () => HasLoginUrl);
-        CopyLoginUrlCommand = new RelayCommand(CopyLoginUrl, () => HasLoginUrl);
+        OpenLoginUrlCommand = new RelayCommand(OpenLoginUrl, () => !_isClosing && HasLoginUrl);
+        CopyLoginUrlCommand = new RelayCommand(CopyLoginUrl, () => !_isClosing && HasLoginUrl);
 
         CheckLauncherUpdatesCommand = new AsyncRelayCommand(
-            async () => await UpdateService.CheckAndUpdateAsync(silent: false, showNoUpdates: true),
-            () => !IsBusy);
+            async () =>
+            {
+                if (_isClosing) return;
+                await UpdateService.CheckAndUpdateAsync(silent: false, showNoUpdates: true);
+            },
+            () => !_isClosing && !IsBusy);
     }
 }

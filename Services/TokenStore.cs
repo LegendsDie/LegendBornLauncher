@@ -9,7 +9,15 @@ namespace LegendBorn.Services;
 
 public sealed class TokenStore
 {
+    // ВАЖНО: после релиза не менять, иначе старые токены не расшифруются
     private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("LegendBornLauncher.v1");
+
+    private static readonly JsonSerializerOptions JsonOpts = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = false
+    };
+
     private readonly string _filePath;
 
     public TokenStore(string filePath) => _filePath = filePath;
@@ -18,8 +26,11 @@ public sealed class TokenStore
     {
         try
         {
-            var json = JsonSerializer.Serialize(tokens);
+            if (tokens is null) return;
+
+            var json = JsonSerializer.Serialize(tokens, JsonOpts);
             var data = Encoding.UTF8.GetBytes(json);
+
             var protectedBytes = ProtectedData.Protect(data, Entropy, DataProtectionScope.CurrentUser);
 
             var dir = Path.GetDirectoryName(_filePath);
@@ -30,32 +41,44 @@ public sealed class TokenStore
             File.WriteAllBytes(tmp, protectedBytes);
 
             if (File.Exists(_filePath))
-            {
                 File.Replace(tmp, _filePath, destinationBackupFileName: null, ignoreMetadataErrors: true);
-            }
             else
-            {
                 File.Move(tmp, _filePath);
-            }
         }
         catch
         {
-            // если не смогли — лучше молча, чем убить запуск
+            // не валим запуск
+            try
+            {
+                var tmp = _filePath + ".tmp";
+                if (File.Exists(tmp)) File.Delete(tmp);
+            }
+            catch { }
         }
     }
 
     public AuthTokens? Load()
     {
-        if (!File.Exists(_filePath)) return null;
+        if (!File.Exists(_filePath))
+            return null;
 
         try
         {
             var protectedBytes = File.ReadAllBytes(_filePath);
             var data = ProtectedData.Unprotect(protectedBytes, Entropy, DataProtectionScope.CurrentUser);
-            return JsonSerializer.Deserialize<AuthTokens>(Encoding.UTF8.GetString(data));
+
+            var json = Encoding.UTF8.GetString(data);
+            var tokens = JsonSerializer.Deserialize<AuthTokens>(json, JsonOpts);
+
+            if (tokens is null || string.IsNullOrWhiteSpace(tokens.AccessToken))
+                return null;
+
+            return tokens;
         }
         catch
         {
+            // файл битый — удаляем, чтобы не зацикливать автологин
+            try { File.Delete(_filePath); } catch { }
             return null;
         }
     }
@@ -66,6 +89,10 @@ public sealed class TokenStore
         {
             if (File.Exists(_filePath))
                 File.Delete(_filePath);
+
+            var tmp = _filePath + ".tmp";
+            if (File.Exists(tmp))
+                File.Delete(tmp);
         }
         catch { }
     }

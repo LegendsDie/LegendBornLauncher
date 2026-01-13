@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using LegendBorn.Properties;
 using LegendBorn.Services;
 
 namespace LegendBorn;
@@ -16,7 +15,7 @@ public sealed partial class MainViewModel
         "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/"
     };
 
-    // ✅ Bunny Pull Zone / CDN (то, что ты показал)
+    // ✅ Bunny Pull Zone / CDN
     private const string BunnyPackMirror =
         "https://legendborn-pack.b-cdn.net/launcher/pack/";
 
@@ -42,34 +41,42 @@ public sealed partial class MainViewModel
     private static string[] BuildPackMirrors(ServerEntry s)
     {
         var baseUrl = EnsureSlash(s.PackBaseUrl);
+        if (string.IsNullOrWhiteSpace(baseUrl))
+            baseUrl = EnsureSlash("https://legendborn.ru/launcher/pack/");
 
-        // 1) собираем extras, но выкидываем downloads.sourceforge.net
+        // extras, но выкидываем downloads.sourceforge.net и пустые
         var extra = (s.PackMirrors ?? Array.Empty<string>())
             .Select(EnsureSlash)
             .Where(u => !string.IsNullOrWhiteSpace(u))
             .Where(u => !IsSourceForgeDownloads(u))
             .ToArray();
 
-        // 2) базовый список: baseUrl ВСЕГДА первым
+        // baseUrl всегда первым
         var all = new[] { baseUrl }
             .Concat(extra)
             .Where(u => !string.IsNullOrWhiteSpace(u))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        // 3) если baseUrl = твой сайт -> гарантируем Bunny и SF master как запасные
+        // если baseUrl = твой сайт -> гарантируем Bunny и SF master как запасные
         if (IsLegendbornHost(baseUrl))
         {
             var bunny = EnsureSlash(BunnyPackMirror);
-            if (!all.Any(u => u.Equals(bunny, StringComparison.OrdinalIgnoreCase)))
+            if (!string.IsNullOrWhiteSpace(bunny) &&
+                !all.Any(u => u.Equals(bunny, StringComparison.OrdinalIgnoreCase)))
                 all.Add(bunny);
 
             if (!all.Any(IsSourceForgeMaster))
-                all.AddRange(SourceForgePackMirrors.Select(EnsureSlash));
+                all.AddRange(SourceForgePackMirrors.Select(EnsureSlash).Where(x => !string.IsNullOrWhiteSpace(x)));
         }
 
-        // 4) сортируем ТОЛЬКО после baseUrl:
-        // baseUrl (0) -> Bunny (1) -> SF master (2) -> остальные (3)
+        // если вдруг всё вычистилось — подстрахуемся
+        if (all.Count == 0)
+        {
+            all.Add(EnsureSlash("https://legendborn.ru/launcher/pack/"));
+            all.Add(EnsureSlash(BunnyPackMirror));
+        }
+
         return all
             .OrderBy(u =>
             {
@@ -84,6 +91,8 @@ public sealed partial class MainViewModel
 
     private async Task CheckPackAsync()
     {
+        if (_isClosing) return;
+
         if (SelectedServer is null)
         {
             StatusText = "Сервер не выбран.";
@@ -117,6 +126,8 @@ public sealed partial class MainViewModel
 
     private async Task PlayAsync()
     {
+        if (_isClosing) return;
+
         if (SelectedServer is null)
         {
             StatusText = "Сервер не выбран.";
@@ -153,7 +164,6 @@ public sealed partial class MainViewModel
 
             StatusText = "Запуск игры...";
 
-            // ✅ если пользователь не ввёл ServerIp — используем адрес выбранного сервера
             var ip = !string.IsNullOrWhiteSpace(ServerIp)
                 ? ServerIp.Trim()
                 : (string.IsNullOrWhiteSpace(SelectedServer.Address) ? null : SelectedServer.Address.Trim());
@@ -164,23 +174,10 @@ public sealed partial class MainViewModel
                 ramMb: RamMb,
                 serverIp: ip);
 
-            _runningProcess.EnableRaisingEvents = true;
+            HookProcessExited(_runningProcess);
 
             Raise(nameof(CanStop));
             StopGameCommand.RaiseCanExecuteChanged();
-
-            _runningProcess.Exited += (_, __) =>
-            {
-                PostToUi(() =>
-                {
-                    AppendLog("Игра закрыта.");
-                    _runningProcess = null;
-
-                    Raise(nameof(CanStop));
-                    StopGameCommand.RaiseCanExecuteChanged();
-                    RefreshCanStates();
-                });
-            };
 
             AppendLog("Игра запущена.");
             StatusText = "Игра запущена.";
@@ -195,6 +192,34 @@ public sealed partial class MainViewModel
             IsBusy = false;
             Interlocked.Exchange(ref _playGuard, 0);
             RefreshCanStates();
+        }
+    }
+
+    private void HookProcessExited(Process p)
+    {
+        try
+        {
+            p.EnableRaisingEvents = true;
+            p.Exited += (_, __) =>
+            {
+                if (_isClosing) return;
+
+                PostToUi(() =>
+                {
+                    if (_isClosing) return;
+
+                    AppendLog("Игра закрыта.");
+                    _runningProcess = null;
+
+                    Raise(nameof(CanStop));
+                    StopGameCommand.RaiseCanExecuteChanged();
+                    RefreshCanStates();
+                });
+            };
+        }
+        catch
+        {
+            // ignore
         }
     }
 
@@ -213,13 +238,19 @@ public sealed partial class MainViewModel
         if (string.IsNullOrWhiteSpace(installerUrl))
         {
             if (loaderType == "neoforge")
+            {
                 installerUrl =
                     $"https://maven.neoforged.net/releases/net/neoforged/neoforge/{loaderVer}/neoforge-{loaderVer}-installer.jar";
+            }
             else if (loaderType == "forge")
+            {
                 installerUrl =
                     $"https://maven.minecraftforge.net/net/minecraftforge/forge/{s.MinecraftVersion}-{loaderVer}/forge-{s.MinecraftVersion}-{loaderVer}-installer.jar";
+            }
             else
+            {
                 throw new InvalidOperationException($"Неизвестный loader '{loaderType}' (нет installerUrl).");
+            }
         }
 
         return new MinecraftService.LoaderSpec(loaderType, loaderVer, installerUrl);
@@ -241,7 +272,8 @@ public sealed partial class MainViewModel
     {
         try
         {
-            if (_runningProcess is null || _runningProcess.HasExited) return;
+            if (_runningProcess is null || _runningProcess.HasExited)
+                return;
 
             _runningProcess.Kill(entireProcessTree: true);
             AppendLog("Процесс игры остановлен.");
@@ -252,6 +284,8 @@ public sealed partial class MainViewModel
         }
         finally
         {
+            _runningProcess = null;
+
             Raise(nameof(CanStop));
             StopGameCommand.RaiseCanExecuteChanged();
             RefreshCanStates();

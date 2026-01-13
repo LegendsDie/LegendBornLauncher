@@ -1,15 +1,14 @@
 ﻿using System;
 using System.ComponentModel;
-using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using LegendBorn.Services;
+using System.Windows.Controls;
 
 namespace LegendBorn;
 
@@ -18,7 +17,7 @@ public partial class MainWindow : Window
     private bool _updatesChecked;
     private bool _isClosing;
 
-    // ===== 0.1.7 prefs =====
+    // ===== prefs =====
     private enum LauncherGameUiMode { Hide, Minimize, None }
 
     private LauncherGameUiMode _gameUiMode = LauncherGameUiMode.Hide; // default
@@ -38,6 +37,7 @@ public partial class MainWindow : Window
         get => (bool)GetValue(GameUiModeHideProperty);
         set => SetValue(GameUiModeHideProperty, value);
     }
+
     public static readonly DependencyProperty GameUiModeHideProperty =
         DependencyProperty.Register(nameof(GameUiModeHide), typeof(bool), typeof(MainWindow),
             new PropertyMetadata(false, OnGameUiModeFlagChanged));
@@ -47,6 +47,7 @@ public partial class MainWindow : Window
         get => (bool)GetValue(GameUiModeMinimizeProperty);
         set => SetValue(GameUiModeMinimizeProperty, value);
     }
+
     public static readonly DependencyProperty GameUiModeMinimizeProperty =
         DependencyProperty.Register(nameof(GameUiModeMinimize), typeof(bool), typeof(MainWindow),
             new PropertyMetadata(false, OnGameUiModeFlagChanged));
@@ -56,6 +57,7 @@ public partial class MainWindow : Window
         get => (bool)GetValue(GameUiModeNoneProperty);
         set => SetValue(GameUiModeNoneProperty, value);
     }
+
     public static readonly DependencyProperty GameUiModeNoneProperty =
         DependencyProperty.Register(nameof(GameUiModeNone), typeof(bool), typeof(MainWindow),
             new PropertyMetadata(false, OnGameUiModeFlagChanged));
@@ -146,13 +148,18 @@ public partial class MainWindow : Window
                 if (!IsVisible)
                     Show();
 
-                WindowState = _preGameWindowState == WindowState.Minimized ? WindowState.Normal : _preGameWindowState;
+                WindowState = _preGameWindowState == WindowState.Minimized
+                    ? WindowState.Normal
+                    : _preGameWindowState;
 
                 Activate();
                 Topmost = true;
                 Topmost = false;
             }
-            catch { }
+            catch
+            {
+                // ignore
+            }
         });
     }
 
@@ -228,7 +235,10 @@ public partial class MainWindow : Window
             else
                 File.Move(tmp, PrefsPath);
         }
-        catch { }
+        catch
+        {
+            // ignore
+        }
     }
 
     private void MainWindow_OnLoaded(object sender, RoutedEventArgs e)
@@ -237,7 +247,6 @@ public partial class MainWindow : Window
             return;
 
         _updatesChecked = true;
-
         _ = RunUpdateCheckSafeAsync();
     }
 
@@ -252,10 +261,11 @@ public partial class MainWindow : Window
         }
         catch
         {
-            // апдейтер не должен ломать запуск
+            // updater must not break launch
         }
     }
 
+    // ===== XAML handlers =====
     private void Close_OnClick(object sender, RoutedEventArgs e) => Close();
 
     private void Minimize_OnClick(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
@@ -283,7 +293,6 @@ public partial class MainWindow : Window
         {
             if (d is ButtonBase) return true;
             if (d is TextBoxBase) return true;
-            if (d is PasswordBox) return true;
             if (d is Selector) return true;
             if (d is Thumb) return true;
             if (d is ScrollBar) return true;
@@ -292,5 +301,94 @@ public partial class MainWindow : Window
             d = VisualTreeHelper.GetParent(d);
         }
         return false;
+    }
+
+    // ===== One button: Play OR Stop (XAML: Click="PlayOrStop_OnClick") =====
+    private void PlayOrStop_OnClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (DataContext is not MainViewModel vm)
+                return;
+
+            if (vm.CanStop)
+            {
+                if (vm.StopGameCommand?.CanExecute(null) == true)
+                    vm.StopGameCommand.Execute(null);
+                return;
+            }
+
+            if (vm.PlayCommand?.CanExecute(null) == true)
+                vm.PlayCommand.Execute(null);
+        }
+        catch
+        {
+            // ignore; VM logs errors
+        }
+    }
+
+    // ===== Copy link button also regenerates if missing (XAML: Click="CopyOrRegenLoginLink_OnClick") =====
+    private async void CopyOrRegenLoginLink_OnClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (DataContext is not MainViewModel vm)
+                return;
+
+            // If link exists -> just copy
+            if (vm.HasLoginUrl)
+            {
+                if (vm.CopyLoginUrlCommand?.CanExecute(null) == true)
+                    vm.CopyLoginUrlCommand.Execute(null);
+                return;
+            }
+
+            // No link: try to re-start login flow, then copy when URL appears.
+            if (vm.LoginViaSiteCommand?.CanExecute(null) == true)
+                vm.LoginViaSiteCommand.Execute(null);
+
+            // Wait for VM to receive connectUrl (up to ~4.5 sec)
+            for (var i = 0; i < 30; i++)
+            {
+                await Task.Delay(150);
+
+                if (vm.HasLoginUrl)
+                {
+                    if (vm.CopyLoginUrlCommand?.CanExecute(null) == true)
+                        vm.CopyLoginUrlCommand.Execute(null);
+                    return;
+                }
+            }
+
+            MessageBox.Show(
+                "Не удалось получить ссылку авторизации. Попробуйте ещё раз.",
+                "Авторизация",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch
+        {
+            // silent; do not break UI
+        }
+    }
+
+    // ===== Copy logs (XAML: Click="CopyLogs_OnClick") =====
+    private void CopyLogs_OnClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (DataContext is not MainViewModel vm)
+                return;
+
+            if (vm.LogLines is null || vm.LogLines.Count == 0)
+                return;
+
+            var text = string.Join(Environment.NewLine, vm.LogLines);
+            Clipboard.SetText(text);
+        }
+        catch
+        {
+            // ignore
+        }
     }
 }

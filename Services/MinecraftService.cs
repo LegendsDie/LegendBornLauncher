@@ -1,3 +1,4 @@
+// MinecraftService.cs
 using CmlLib.Core;
 using CmlLib.Core.Auth;
 using CmlLib.Core.ProcessBuilder;
@@ -19,10 +20,11 @@ namespace LegendBorn.Services;
 
 public sealed class MinecraftService
 {
-    private const string LauncherUserAgent = "LegendBornLauncher/0.1.9";
+    private const string LauncherUserAgent = "LegendBornLauncher/0.2.0";
 
     private readonly MinecraftPath _path;
     private readonly MinecraftLauncher _launcher;
+    private readonly LoaderInstaller _loaderInstaller;
 
     private static readonly HttpClient _http = CreateHttp();
 
@@ -32,7 +34,6 @@ public sealed class MinecraftService
     // 3) SourceForge master (fallback)
     //
     // Важно: baseUrl должен указывать на ПАПКУ, где лежат manifest.json и blobs/
-    // (см. пояснение в конце про Bunny)
     private static readonly string[] DefaultPackMirrors =
     {
         "https://legendborn.ru/launcher/pack/",
@@ -49,6 +50,10 @@ public sealed class MinecraftService
     private const int MirrorFallbackTimeoutSec = 18;  // таймаут для Bunny/SF
     private const int MirrorProbeMaxManifestBytes = 5 * 1024 * 1024; // safety (если Content-Length есть)
     private const double MirrorEwmaAlpha = 0.30;      // 30% новое, 70% старое
+
+    // не спамим диск при больших паках
+    private const int MirrorStatsSaveMinIntervalMs = 1500;
+    private long _mirrorStatsLastSaveUnixMs;
 
     private static readonly string[] AllowedDestPrefixes =
     {
@@ -67,6 +72,20 @@ public sealed class MinecraftService
     private readonly object _mirrorStatsLock = new();
     private MirrorStatsRoot _mirrorStats = new();
 
+    // I/O locks: чтобы два потока не писали один и тот же файл одновременно
+    private readonly object _mirrorStatsIoLock = new();
+    private readonly object _packStateIoLock = new();
+
+    // tolerant json для mirror_stats.json (чтобы не падать на кейс/комменты/запятые)
+    private static readonly JsonSerializerOptions MirrorStatsJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        AllowTrailingCommas = true,
+        ReadCommentHandling = JsonCommentHandling.Skip,
+        WriteIndented = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault
+    };
+
     // “состояние текущего запуска”
     private string? _primaryBaseUrlThisRun;
     private bool _primaryOkThisRun;
@@ -81,6 +100,12 @@ public sealed class MinecraftService
         _mirrorStats = LoadMirrorStats();
 
         _launcher = new MinecraftLauncher(_path);
+
+        // LoaderInstaller вынесен отдельно
+        _loaderInstaller = new LoaderInstaller(
+            _path,
+            _http,
+            log: msg => Log?.Invoke(this, msg));
 
         _launcher.FileProgressChanged += (_, args) =>
         {
@@ -138,12 +163,12 @@ public sealed class MinecraftService
         await _launcher.InstallAsync(mc); // библиотека не принимает ct
         ct.ThrowIfCancellationRequested();
 
-        var launchVersionId = await EnsureLoaderInstalledAsync(
-            mc,
-            loaderType,
-            loaderVersion,
-            installerUrl,
-            ct);
+        var launchVersionId = await _loaderInstaller.EnsureInstalledAsync(
+            minecraftVersion: mc,
+            loaderType: loaderType,
+            loaderVersion: loaderVersion,
+            installerUrl: installerUrl,
+            ct: ct);
 
         ct.ThrowIfCancellationRequested();
 
@@ -226,478 +251,6 @@ public sealed class MinecraftService
     }
 
     // =========================
-    // Loader install (оставляем как у тебя)
-    // =========================
-
-    private async Task<string> EnsureLoaderInstalledAsync(
-        string minecraftVersion,
-        string loaderType,
-        string loaderVersion,
-        string installerUrl,
-        CancellationToken ct)
-    {
-        loaderType = (loaderType ?? "vanilla").Trim().ToLowerInvariant();
-
-        if (loaderType == "vanilla")
-            return minecraftVersion;
-
-        if (string.IsNullOrWhiteSpace(loaderVersion))
-            throw new InvalidOperationException($"Loader '{loaderType}' требует версию (loader.version).");
-
-        if (string.IsNullOrWhiteSpace(installerUrl))
-            throw new InvalidOperationException($"Loader '{loaderType}' требует installerUrl.");
-
-        var expectedId = GetExpectedLoaderVersionId(minecraftVersion, loaderType, loaderVersion);
-
-        if (IsVersionPresent(expectedId))
-        {
-            Log?.Invoke(this, $"Loader: уже установлен -> {expectedId}");
-            return expectedId;
-        }
-
-        var installerPath = await DownloadInstallerAsync(loaderType, minecraftVersion, loaderVersion, installerUrl, ct);
-
-        var installedId = await InstallLoaderIntoGameDirAsync(
-            installerPath,
-            minecraftVersion,
-            loaderType,
-            loaderVersion,
-            expectedId,
-            ct);
-
-        if (string.IsNullOrWhiteSpace(installedId))
-            throw new InvalidOperationException("Installer отработал, но версия лоадера не найдена.");
-
-        return installedId!;
-    }
-
-    private static string? GetOfficialInstallerUrl(string loaderType, string mc, string loaderVersion)
-    {
-        loaderType = (loaderType ?? "").Trim().ToLowerInvariant();
-        loaderVersion = (loaderVersion ?? "").Trim();
-        mc = (mc ?? "").Trim();
-
-        if (string.IsNullOrWhiteSpace(loaderType) || string.IsNullOrWhiteSpace(loaderVersion))
-            return null;
-
-        return loaderType switch
-        {
-            "neoforge" => $"https://maven.neoforged.net/releases/net/neoforged/neoforge/{loaderVersion}/neoforge-{loaderVersion}-installer.jar",
-            "forge" => $"https://maven.minecraftforge.net/net/minecraftforge/forge/{mc}-{loaderVersion}/forge-{mc}-{loaderVersion}-installer.jar",
-            _ => null
-        };
-    }
-
-    private async Task<string> DownloadInstallerAsync(
-        string loaderType,
-        string minecraftVersion,
-        string loaderVersion,
-        string installerUrl,
-        CancellationToken ct)
-    {
-        var urls = new List<string>();
-
-        if (!string.IsNullOrWhiteSpace(installerUrl))
-            urls.Add(installerUrl.Trim());
-
-        var official = GetOfficialInstallerUrl(loaderType, minecraftVersion, loaderVersion);
-        if (!string.IsNullOrWhiteSpace(official) &&
-            !urls.Any(u => u.Equals(official, StringComparison.OrdinalIgnoreCase)))
-        {
-            urls.Add(official);
-        }
-
-        Exception? last = null;
-
-        foreach (var urlTry in urls)
-        {
-            ct.ThrowIfCancellationRequested();
-
-            try
-            {
-                if (!Uri.TryCreate(urlTry, UriKind.Absolute, out var uri))
-                    throw new InvalidOperationException($"installerUrl is not a valid absolute url: {urlTry}");
-
-                var cacheDir = Path.Combine(_path.BasePath, "launcher", "installers", loaderType, minecraftVersion, loaderVersion);
-                Directory.CreateDirectory(cacheDir);
-
-                var fileName = Path.GetFileName(uri.AbsolutePath);
-                if (string.IsNullOrWhiteSpace(fileName))
-                    fileName = $"{loaderType}-{loaderVersion}-installer.jar";
-
-                var local = Path.Combine(cacheDir, fileName);
-                if (File.Exists(local) && new FileInfo(local).Length > 0)
-                    return local;
-
-                var tmp = local + ".tmp";
-                TryDeleteQuiet(tmp);
-
-                Log?.Invoke(this, $"Loader: скачиваю installer: {urlTry}");
-
-                using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                reqCts.CancelAfter(TimeSpan.FromMinutes(3));
-
-                using var req = new HttpRequestMessage(HttpMethod.Get, urlTry);
-                req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/java-archive"));
-                req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
-
-                using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token);
-                resp.EnsureSuccessStatusCode();
-
-                await using (var input = await resp.Content.ReadAsStreamAsync(reqCts.Token))
-                await using (var output = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
-                {
-                    await input.CopyToAsync(output, reqCts.Token);
-                    await output.FlushAsync(reqCts.Token);
-                }
-
-                var ok = await TryMoveOrReplaceWithRetryAsync(tmp, local, ct, attempts: 20, delayMs: 200);
-                TryDeleteQuiet(tmp);
-
-                if (!ok)
-                    throw new IOException("Не удалось сохранить installer.jar (файл занят/нет доступа).");
-
-                return local;
-            }
-            catch (Exception ex)
-            {
-                last = ex;
-                Log?.Invoke(this, $"Loader: не удалось скачать installer ({urlTry}) — {ex.Message}");
-            }
-        }
-
-        throw new InvalidOperationException("Не удалось скачать installer ни по одному URL.", last);
-    }
-
-    private async Task<string?> InstallLoaderIntoGameDirAsync(
-        string installerPath,
-        string minecraftVersion,
-        string loaderType,
-        string loaderVersion,
-        string expectedId,
-        CancellationToken ct)
-    {
-        var javaExe = FindJavaExecutable();
-
-        Directory.CreateDirectory(Path.Combine(_path.BasePath, "versions"));
-
-        var beforeGame = SnapshotVersionIds(_path.BasePath);
-
-        var argTries = new List<string[]>
-        {
-            new[] { "-jar", installerPath, "--installClient", "--installDir", _path.BasePath },
-            new[] { "-jar", installerPath, "--installClient", "--install-dir", _path.BasePath },
-        };
-
-        foreach (var args in argTries)
-        {
-            var res = await RunJavaAsync(javaExe, args, workingDir: _path.BasePath, ct, env: null);
-            if (res.ExitCode == 0)
-            {
-                if (IsVersionPresent(expectedId))
-                    return expectedId;
-
-                var afterGame = SnapshotVersionIds(_path.BasePath);
-                var created = afterGame.Except(beforeGame, StringComparer.OrdinalIgnoreCase).ToList();
-                var picked = PickInstalledVersionId(created, minecraftVersion, loaderType, loaderVersion);
-                if (!string.IsNullOrWhiteSpace(picked))
-                    return picked;
-            }
-
-            if (LooksLikeUnrecognizedOption(res.StdErr) || LooksLikeUnrecognizedOption(res.StdOut))
-                continue;
-        }
-
-        if (!OperatingSystem.IsWindows())
-        {
-            var res = await RunJavaAsync(javaExe, new[] { "-jar", installerPath, "--installClient" }, workingDir: _path.BasePath, ct, env: null);
-            if (res.ExitCode != 0)
-                throw new InvalidOperationException($"Installer завершился с ошибкой.\n{(string.IsNullOrWhiteSpace(res.StdErr) ? res.StdOut : res.StdErr)}");
-
-            if (IsVersionPresent(expectedId))
-                return expectedId;
-
-            return FindInstalledVersionId(minecraftVersion, loaderType, loaderVersion);
-        }
-
-        var tempAppData = Path.Combine(_path.BasePath, "launcher", "tmp", "appdata");
-        var tempMc = Path.Combine(tempAppData, ".minecraft");
-
-        try
-        {
-            Directory.CreateDirectory(tempAppData);
-            Directory.CreateDirectory(tempMc);
-            EnsureLauncherProfileStub(tempMc);
-
-            var beforeTemp = SnapshotVersionIds(tempMc);
-
-            Log?.Invoke(this, "Loader: installer требует .minecraft, ставлю во временный APPDATA и переношу в лаунчер...");
-
-            var env = new Dictionary<string, string>
-            {
-                ["APPDATA"] = tempAppData,
-                ["LOCALAPPDATA"] = tempAppData
-            };
-
-            var res2 = await RunJavaAsync(javaExe, new[] { "-jar", installerPath, "--installClient" }, workingDir: _path.BasePath, ct, env);
-            if (res2.ExitCode != 0)
-            {
-                throw new InvalidOperationException(
-                    $"Installer завершился с ошибкой (code {res2.ExitCode}).\n" +
-                    $"{(string.IsNullOrWhiteSpace(res2.StdErr) ? res2.StdOut : res2.StdErr)}");
-            }
-
-            var afterTemp = SnapshotVersionIds(tempMc);
-            var createdTemp = afterTemp.Except(beforeTemp, StringComparer.OrdinalIgnoreCase).ToList();
-
-            var tempPicked = PickInstalledVersionId(createdTemp, minecraftVersion, loaderType, loaderVersion)
-                             ?? FindInstalledVersionIdInBase(tempMc, minecraftVersion, loaderType, loaderVersion);
-
-            MergeDir(Path.Combine(tempMc, "versions"), Path.Combine(_path.BasePath, "versions"));
-            MergeDir(Path.Combine(tempMc, "libraries"), Path.Combine(_path.BasePath, "libraries"));
-            MergeDir(Path.Combine(tempMc, "assets"), Path.Combine(_path.BasePath, "assets"));
-
-            if (!string.IsNullOrWhiteSpace(tempPicked) && IsVersionPresent(tempPicked!))
-                return tempPicked;
-
-            if (IsVersionPresent(expectedId))
-                return expectedId;
-
-            return FindInstalledVersionId(minecraftVersion, loaderType, loaderVersion);
-        }
-        finally
-        {
-            try
-            {
-                if (Directory.Exists(tempAppData))
-                    Directory.Delete(tempAppData, recursive: true);
-            }
-            catch { }
-        }
-    }
-
-    private static HashSet<string> SnapshotVersionIds(string baseDir)
-    {
-        var versionsDir = Path.Combine(baseDir, "versions");
-        if (!Directory.Exists(versionsDir))
-            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        return Directory.EnumerateDirectories(versionsDir)
-            .Select(Path.GetFileName)
-            .Where(n => !string.IsNullOrWhiteSpace(n))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-    }
-
-    private static string? PickInstalledVersionId(
-        List<string> candidates,
-        string minecraftVersion,
-        string loaderType,
-        string loaderVersion)
-    {
-        foreach (var id in candidates)
-        {
-            if (string.IsNullOrWhiteSpace(id)) continue;
-
-            var keyword = loaderType switch
-            {
-                "neoforge" => "neoforge",
-                "forge" => "forge",
-                _ => loaderType
-            };
-
-            if (id.Contains(keyword, StringComparison.OrdinalIgnoreCase) &&
-                (string.IsNullOrWhiteSpace(loaderVersion) || id.Contains(loaderVersion, StringComparison.OrdinalIgnoreCase)))
-                return id;
-        }
-
-        return null;
-    }
-
-    private static string GetExpectedLoaderVersionId(string mc, string loaderType, string loaderVersion)
-    {
-        loaderType = (loaderType ?? "vanilla").Trim().ToLowerInvariant();
-        loaderVersion = (loaderVersion ?? "").Trim();
-
-        return loaderType switch
-        {
-            "neoforge" => $"{mc}-neoforge-{loaderVersion}",
-            "forge" => $"{mc}-forge-{loaderVersion}",
-            _ => $"{mc}-{loaderType}-{loaderVersion}"
-        };
-    }
-
-    private bool IsVersionPresent(string versionId)
-    {
-        var json = Path.Combine(_path.BasePath, "versions", versionId, versionId + ".json");
-        return File.Exists(json);
-    }
-
-    private static bool LooksLikeUnrecognizedOption(string? s)
-    {
-        if (string.IsNullOrWhiteSpace(s)) return false;
-        return s.Contains("UnrecognizedOptionException", StringComparison.OrdinalIgnoreCase) ||
-               s.Contains("is not a recognized option", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private string FindJavaExecutable()
-    {
-        var runtimeDir = Path.Combine(_path.BasePath, "runtime");
-        if (Directory.Exists(runtimeDir))
-        {
-            var candidates = Directory.EnumerateFiles(runtimeDir, "java.exe", SearchOption.AllDirectories)
-                .Concat(Directory.EnumerateFiles(runtimeDir, "javaw.exe", SearchOption.AllDirectories))
-                .ToList();
-
-            var pick = candidates.FirstOrDefault();
-            if (!string.IsNullOrWhiteSpace(pick))
-                return pick!;
-        }
-
-        var javaHome = Environment.GetEnvironmentVariable("JAVA_HOME");
-        if (!string.IsNullOrWhiteSpace(javaHome))
-        {
-            var p1 = Path.Combine(javaHome!, "bin", "java.exe");
-            if (File.Exists(p1)) return p1;
-
-            var p2 = Path.Combine(javaHome!, "bin", "java");
-            if (File.Exists(p2)) return p2;
-        }
-
-        return "java";
-    }
-
-    private string? FindInstalledVersionId(string minecraftVersion, string loaderType, string loaderVersion)
-        => FindInstalledVersionIdInBase(_path.BasePath, minecraftVersion, loaderType, loaderVersion);
-
-    private static string? FindInstalledVersionIdInBase(string baseDir, string minecraftVersion, string loaderType, string loaderVersion)
-    {
-        var versionsDir = Path.Combine(baseDir, "versions");
-        if (!Directory.Exists(versionsDir))
-            return null;
-
-        foreach (var dir in Directory.EnumerateDirectories(versionsDir))
-        {
-            var id = Path.GetFileName(dir);
-            if (string.IsNullOrWhiteSpace(id))
-                continue;
-
-            if (id.Contains(loaderType, StringComparison.OrdinalIgnoreCase) &&
-                (string.IsNullOrWhiteSpace(loaderVersion) || id.Contains(loaderVersion, StringComparison.OrdinalIgnoreCase)))
-                return id;
-        }
-
-        return null;
-    }
-
-    private static void MergeDir(string src, string dst)
-    {
-        if (!Directory.Exists(src))
-            return;
-
-        Directory.CreateDirectory(dst);
-
-        foreach (var dir in Directory.EnumerateDirectories(src, "*", SearchOption.AllDirectories))
-        {
-            var rel = Path.GetRelativePath(src, dir);
-            Directory.CreateDirectory(Path.Combine(dst, rel));
-        }
-
-        foreach (var file in Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories))
-        {
-            var rel = Path.GetRelativePath(src, file);
-            var target = Path.Combine(dst, rel);
-            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            File.Copy(file, target, overwrite: true);
-        }
-    }
-
-    private static void EnsureLauncherProfileStub(string mcDir)
-    {
-        try
-        {
-            Directory.CreateDirectory(mcDir);
-
-            var p1 = Path.Combine(mcDir, "launcher_profiles.json");
-            if (!File.Exists(p1))
-            {
-                var stub = new
-                {
-                    profiles = new Dictionary<string, object>(),
-                    settings = new Dictionary<string, object>(),
-                    selectedProfile = "",
-                    authenticationDatabase = new Dictionary<string, object>(),
-                    launcherVersion = new { name = "LegendBorn", format = 21 }
-                };
-
-                File.WriteAllText(p1, JsonSerializer.Serialize(stub, new JsonSerializerOptions { WriteIndented = true }));
-            }
-
-            var p2 = Path.Combine(mcDir, "launcher_profiles_microsoft_store.json");
-            if (!File.Exists(p2))
-                File.WriteAllText(p2, File.ReadAllText(p1));
-        }
-        catch { }
-    }
-
-    private async Task<(int ExitCode, string StdOut, string StdErr)> RunJavaAsync(
-        string javaExe,
-        IEnumerable<string> args,
-        string workingDir,
-        CancellationToken ct,
-        IDictionary<string, string>? env)
-    {
-        var psi = new ProcessStartInfo
-        {
-            FileName = javaExe,
-            WorkingDirectory = workingDir,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-
-        foreach (var a in args)
-            psi.ArgumentList.Add(a);
-
-        if (env is not null)
-        {
-            foreach (var kv in env)
-                psi.Environment[kv.Key] = kv.Value;
-        }
-
-        using var p = Process.Start(psi) ?? throw new InvalidOperationException("Не удалось запустить java для installer.");
-
-        var stdoutTask = p.StandardOutput.ReadToEndAsync();
-        var stderrTask = p.StandardError.ReadToEndAsync();
-
-        try
-        {
-            await p.WaitForExitAsync(ct);
-        }
-        catch (OperationCanceledException)
-        {
-            try
-            {
-                if (!p.HasExited)
-                    p.Kill(entireProcessTree: true);
-            }
-            catch { }
-            throw;
-        }
-
-        var stdout = (await stdoutTask).Trim();
-        var stderr = (await stderrTask).Trim();
-
-        if (!string.IsNullOrWhiteSpace(stdout))
-            Log?.Invoke(this, stdout);
-
-        if (!string.IsNullOrWhiteSpace(stderr))
-            Log?.Invoke(this, stderr);
-
-        return (p.ExitCode, stdout, stderr);
-    }
-
-    // =========================
     // Pack sync
     // =========================
 
@@ -710,6 +263,7 @@ public sealed class MinecraftService
         if (manifest.Files is null || manifest.Files.Count == 0)
         {
             Log?.Invoke(this, "Сборка: manifest пустой — пропускаю синхронизацию.");
+            SaveMirrorStatsQuiet(force: true);
             return;
         }
 
@@ -825,6 +379,9 @@ public sealed class MinecraftService
 
         Log?.Invoke(this, $"Сборка: актуальна (версия {manifest.Version}).");
         ProgressPercent?.Invoke(this, 100);
+
+        // один “финальный” flush статистики
+        SaveMirrorStatsQuiet(force: true);
     }
 
     private enum FileCheckResult { MissingOrDifferent, Match }
@@ -881,19 +438,22 @@ public sealed class MinecraftService
     {
         try
         {
-            var path = Path.Combine(_path.BasePath, "launcher", PackStateFileName);
-            if (!File.Exists(path))
-                return new PackState();
+            lock (_packStateIoLock)
+            {
+                var path = Path.Combine(_path.BasePath, "launcher", PackStateFileName);
+                if (!File.Exists(path))
+                    return new PackState();
 
-            var json = File.ReadAllText(path);
-            var st = JsonSerializer.Deserialize(json, PackJsonContext.Default.PackState) ?? new PackState();
+                var json = File.ReadAllText(path);
+                var st = JsonSerializer.Deserialize(json, PackJsonContext.Default.PackState) ?? new PackState();
 
-            if (st.Files is null)
-                st.Files = new Dictionary<string, PackStateEntry>(StringComparer.OrdinalIgnoreCase);
-            else if (!Equals(st.Files.Comparer, StringComparer.OrdinalIgnoreCase))
-                st.Files = new Dictionary<string, PackStateEntry>(st.Files, StringComparer.OrdinalIgnoreCase);
+                if (st.Files is null)
+                    st.Files = new Dictionary<string, PackStateEntry>(StringComparer.OrdinalIgnoreCase);
+                else if (!Equals(st.Files.Comparer, StringComparer.OrdinalIgnoreCase))
+                    st.Files = new Dictionary<string, PackStateEntry>(st.Files, StringComparer.OrdinalIgnoreCase);
 
-            return st;
+                return st;
+            }
         }
         catch
         {
@@ -901,15 +461,25 @@ public sealed class MinecraftService
         }
     }
 
+    // ✅ атомарно + lock + кроссплатформенно
     private void SavePackState(PackState state)
     {
         try
         {
-            var dir = Path.Combine(_path.BasePath, "launcher");
-            Directory.CreateDirectory(dir);
+            lock (_packStateIoLock)
+            {
+                var dir = Path.Combine(_path.BasePath, "launcher");
+                Directory.CreateDirectory(dir);
 
-            var path = Path.Combine(dir, PackStateFileName);
-            File.WriteAllText(path, JsonSerializer.Serialize(state, PackJsonContext.Default.PackState));
+                var path = Path.Combine(dir, PackStateFileName);
+                var tmp = path + ".tmp";
+
+                File.WriteAllText(tmp, JsonSerializer.Serialize(state, PackJsonContext.Default.PackState));
+
+                ReplaceOrMoveAtomic(tmp, path);
+
+                TryDeleteQuiet(tmp);
+            }
         }
         catch { }
     }
@@ -974,14 +544,20 @@ public sealed class MinecraftService
         _primaryOkThisRun = false;
 
         // 1) СНАЧАЛА — сайт (короткие таймауты)
-        var primaryRes = await TryFetchManifestFromBaseAsync(primary, ct, MirrorPrimaryTimeoutSec1).ConfigureAwait(false)
-                      ?? await TryFetchManifestFromBaseAsync(primary, ct, MirrorPrimaryTimeoutSec2).ConfigureAwait(false);
+        // ✅ без двойного штрафа: два прогона без countFail, затем один общий fail
+        var primaryRes =
+            await TryFetchManifestFromBaseAsync(primary, ct, MirrorPrimaryTimeoutSec1, countFail: false).ConfigureAwait(false)
+            ?? await TryFetchManifestFromBaseAsync(primary, ct, MirrorPrimaryTimeoutSec2, countFail: false).ConfigureAwait(false);
 
         if (primaryRes is not null)
         {
             _primaryOkThisRun = true;
+            SaveMirrorStatsQuiet(force: true);
             return primaryRes.Value;
         }
+
+        // один штраф за запуск (а не два)
+        TouchMirrorFailManifest(primary);
 
         // 2) сайт не доступен -> выбираем лучший fallback автоматически (race)
         var fallbacks = list
@@ -991,7 +567,7 @@ public sealed class MinecraftService
         if (fallbacks.Length == 0)
             throw new InvalidOperationException("Primary mirror failed and no fallbacks are available.");
 
-        fallbacks = OrderMirrorsByStats(fallbacks);
+        fallbacks = OrderMirrorsByStats(fallbacks, MirrorScoreKind.Manifest);
 
         using var raceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
@@ -1010,10 +586,9 @@ public sealed class MinecraftService
                 if (res is not null)
                 {
                     raceCts.Cancel(); // гасим остальных
-
-                    // важно: “съедаем” отменённые таски, чтобы не было unobserved exceptions
                     try { await Task.WhenAll(tasks).ConfigureAwait(false); } catch { }
 
+                    SaveMirrorStatsQuiet(force: true);
                     return res.Value;
                 }
             }
@@ -1026,7 +601,11 @@ public sealed class MinecraftService
         throw new InvalidOperationException("Не удалось скачать manifest ни с одного зеркала (site + fallbacks).");
     }
 
-    private async Task<(string activeBaseUrl, PackManifest manifest)?> TryFetchManifestFromBaseAsync(string baseUrl, CancellationToken ct, int timeoutSec)
+    private async Task<(string activeBaseUrl, PackManifest manifest)?> TryFetchManifestFromBaseAsync(
+        string baseUrl,
+        CancellationToken ct,
+        int timeoutSec,
+        bool countFail = true)
     {
         baseUrl = NormalizeAbsoluteBaseUrl(baseUrl);
         if (string.IsNullOrWhiteSpace(baseUrl))
@@ -1051,21 +630,21 @@ public sealed class MinecraftService
 
             if (!resp.IsSuccessStatusCode)
             {
-                TouchMirrorFail(baseUrl);
+                if (countFail) TouchMirrorFailManifest(baseUrl);
                 return null;
             }
 
             var media = resp.Content.Headers.ContentType?.MediaType ?? "";
             if (media.Contains("text/html", StringComparison.OrdinalIgnoreCase))
             {
-                TouchMirrorFail(baseUrl);
+                if (countFail) TouchMirrorFailManifest(baseUrl);
                 return null;
             }
 
             var len = resp.Content.Headers.ContentLength;
             if (len.HasValue && len.Value > MirrorProbeMaxManifestBytes)
             {
-                TouchMirrorFail(baseUrl);
+                if (countFail) TouchMirrorFailManifest(baseUrl);
                 return null;
             }
 
@@ -1080,13 +659,13 @@ public sealed class MinecraftService
             }
             catch
             {
-                TouchMirrorFail(baseUrl);
+                if (countFail) TouchMirrorFailManifest(baseUrl);
                 return null;
             }
 
             if (manifest is null)
             {
-                TouchMirrorFail(baseUrl);
+                if (countFail) TouchMirrorFailManifest(baseUrl);
                 return null;
             }
 
@@ -1103,25 +682,30 @@ public sealed class MinecraftService
             }
 
             sw.Stop();
-            TouchMirrorOk(baseUrl, sw.Elapsed.TotalMilliseconds);
+
+            // ✅ score = ms per MiB
+            var manifestBytes = resp.Content.Headers.ContentLength ?? (64 * 1024);
+            var score = NormalizeLatencyForSize(sw.Elapsed.TotalMilliseconds, manifestBytes);
+
+            // ✅ ОК пишем на pinnedBaseUrl (после редиректа)
+            TouchMirrorOkManifest(pinnedBaseUrl, score);
 
             Log?.Invoke(this, $"Сборка: выбрано зеркало: {pinnedBaseUrl}");
             return (pinnedBaseUrl, manifest);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // отмена пользователем/внешним токеном — пробрасываем
             throw;
         }
         catch (OperationCanceledException)
         {
-            TouchMirrorFail(baseUrl);
+            if (countFail) TouchMirrorFailManifest(baseUrl);
             Log?.Invoke(this, $"Сборка: таймаут {timeoutSec}s ({baseUrl})");
             return null;
         }
         catch (Exception ex)
         {
-            TouchMirrorFail(baseUrl);
+            if (countFail) TouchMirrorFailManifest(baseUrl);
             Log?.Invoke(this, $"Сборка: зеркало недоступно ({baseUrl}) — {ex.Message}");
             return null;
         }
@@ -1144,9 +728,9 @@ public sealed class MinecraftService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        // Упорядочивание (релизное):
+        // Упорядочивание:
         // - Если сайт в этом запуске был ОК -> сайт первым ВСЕГДА.
-        // - Иначе: первым activeBaseUrl (уже выбранный лучший fallback), дальше по статистике.
+        // - Иначе: первым activeBaseUrl, дальше по статистике (blob-score).
         var ordered = new List<string>();
 
         var primary = NormalizeAbsoluteBaseUrl(_primaryBaseUrlThisRun);
@@ -1164,7 +748,7 @@ public sealed class MinecraftService
                 !m.Equals(active, StringComparison.OrdinalIgnoreCase))
             .ToArray();
 
-        rest = OrderMirrorsByStats(rest);
+        rest = OrderMirrorsByStats(rest, MirrorScoreKind.Blob);
         ordered.AddRange(rest);
 
         ordered = ordered
@@ -1189,13 +773,13 @@ public sealed class MinecraftService
             try
             {
                 var url = CombineUrl(baseUrl, blobRel);
-                Log?.Invoke(this, $"Сборка: download {blobRel} ({FormatBytes(file.Size)})");
+                Log?.Invoke(this, $"Сборка: download {destRel} <- {baseUrl} ({FormatBytes(file.Size)})");
 
                 var sw = Stopwatch.StartNew();
-                await DownloadToFileAsync(url, localPath, file.Sha256, destRel, ct, Counted).ConfigureAwait(false);
+                await DownloadToFileAsync(url, localPath, file.Size, file.Sha256, destRel, ct, Counted).ConfigureAwait(false);
                 sw.Stop();
 
-                TouchMirrorOk(baseUrl, NormalizeLatencyForSize(sw.Elapsed.TotalMilliseconds, file.Size));
+                TouchMirrorOkBlob(baseUrl, NormalizeLatencyForSize(sw.Elapsed.TotalMilliseconds, file.Size));
                 return;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -1205,7 +789,7 @@ public sealed class MinecraftService
             catch (Exception ex)
             {
                 last = ex;
-                TouchMirrorFail(baseUrl);
+                TouchMirrorFailBlob(baseUrl);
 
                 if (attemptBytes > 0)
                     onBytes(-attemptBytes);
@@ -1217,7 +801,14 @@ public sealed class MinecraftService
         throw new InvalidOperationException($"Не удалось скачать blob: {blobRel}", last);
     }
 
-    private async Task DownloadToFileAsync(string url, string localPath, string expectedSha256, string destRel, CancellationToken ct, Action<long> onBytes)
+    private async Task DownloadToFileAsync(
+        string url,
+        string localPath,
+        long expectedSize,
+        string expectedSha256,
+        string destRel,
+        CancellationToken ct,
+        Action<long> onBytes)
     {
         var dir = Path.GetDirectoryName(localPath);
         if (!string.IsNullOrWhiteSpace(dir))
@@ -1234,6 +825,20 @@ public sealed class MinecraftService
 
         using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
+
+        var media = resp.Content.Headers.ContentType?.MediaType ?? "";
+        if (media.Contains("text/html", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Зеркало вернуло HTML вместо файла (возможна блокировка/страница ошибки).");
+
+        // консервативная защита: ловим явно “слишком маленький” ответ (часто капча/ошибка)
+        var len = resp.Content.Headers.ContentLength;
+        if (expectedSize > 0 && len.HasValue && len.Value > 0)
+        {
+            var threshold = Math.Min(16_384L, Math.Max(1L, expectedSize / 10));
+            if (len.Value < threshold)
+                throw new InvalidOperationException(
+                    $"Зеркало вернуло подозрительно маленький ответ (Content-Length={len.Value}, ожидается около {expectedSize}).");
+        }
 
         using var sha = SHA256.Create();
         var buffer = new byte[128 * 1024];
@@ -1333,19 +938,7 @@ public sealed class MinecraftService
 
             try
             {
-                if (File.Exists(dest))
-                {
-                    var backup = dest + ".bak";
-                    TryDeleteQuiet(backup);
-
-                    File.Replace(source, dest, backup, ignoreMetadataErrors: true);
-                    TryDeleteQuiet(backup);
-                }
-                else
-                {
-                    File.Move(source, dest, overwrite: true);
-                }
-
+                ReplaceOrMoveAtomic(source, dest);
                 return true;
             }
             catch (IOException)
@@ -1564,7 +1157,7 @@ public sealed class MinecraftService
             DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower
         };
 
-        http.DefaultRequestHeaders.UserAgent.ParseAdd(LauncherUserAgent);
+        http.DefaultRequestHeaders.UserAgent.ParseAdd(LauncherIdentity.UserAgent);
         return http;
     }
 
@@ -1583,18 +1176,55 @@ public sealed class MinecraftService
         try { if (File.Exists(path)) File.Delete(path); } catch { }
     }
 
+    private static void ReplaceOrMoveAtomic(string sourceTmp, string destPath)
+    {
+        // tmp и dest должны быть в одной папке/томе — тогда Move/Replace будет атомарным.
+        if (OperatingSystem.IsWindows() && File.Exists(destPath))
+        {
+            var backup = destPath + ".bak";
+            try
+            {
+                TryDeleteQuiet(backup);
+                File.Replace(sourceTmp, destPath, backup, ignoreMetadataErrors: true);
+            }
+            finally
+            {
+                TryDeleteQuiet(backup);
+            }
+            return;
+        }
+
+        // На не-Windows: Move(overwrite) обычно самый надёжный
+        File.Move(sourceTmp, destPath, overwrite: true);
+    }
+
     // =========================
     // Mirror stats (EWMA)
     // =========================
 
+    private enum MirrorScoreKind { Manifest, Blob }
+
     private sealed class MirrorStatsRoot
     {
+        public int Version { get; set; } = 2;
         public Dictionary<string, MirrorStat> Mirrors { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
     private sealed class MirrorStat
     {
-        public double EwmaScore { get; set; } = 0; // меньше = лучше
+        // новые поля (v2)
+        public double ManifestEwmaScore { get; set; } = 0;
+        public int ManifestOk { get; set; } = 0;
+        public int ManifestFail { get; set; } = 0;
+        public long ManifestLastOkUnix { get; set; } = 0;
+
+        public double BlobEwmaScore { get; set; } = 0;
+        public int BlobOk { get; set; } = 0;
+        public int BlobFail { get; set; } = 0;
+        public long BlobLastOkUnix { get; set; } = 0;
+
+        // legacy (v1)
+        public double EwmaScore { get; set; } = 0;
         public int Ok { get; set; } = 0;
         public int Fail { get; set; } = 0;
         public long LastOkUnix { get; set; } = 0;
@@ -1604,20 +1234,50 @@ public sealed class MinecraftService
     {
         try
         {
-            var path = MirrorStatsPath;
-            if (!File.Exists(path))
-                return new MirrorStatsRoot();
+            lock (_mirrorStatsIoLock)
+            {
+                var path = MirrorStatsPath;
+                if (!File.Exists(path))
+                    return new MirrorStatsRoot();
 
-            var json = File.ReadAllText(path);
-            var root = JsonSerializer.Deserialize<MirrorStatsRoot>(json) ?? new MirrorStatsRoot();
+                var json = File.ReadAllText(path);
+                var root = JsonSerializer.Deserialize<MirrorStatsRoot>(json, MirrorStatsJsonOptions) ?? new MirrorStatsRoot();
 
-            if (root.Mirrors is null)
-                root.Mirrors = new Dictionary<string, MirrorStat>(StringComparer.OrdinalIgnoreCase);
+                if (root.Mirrors is null)
+                    root.Mirrors = new Dictionary<string, MirrorStat>(StringComparer.OrdinalIgnoreCase);
 
-            if (!Equals(root.Mirrors.Comparer, StringComparer.OrdinalIgnoreCase))
-                root.Mirrors = new Dictionary<string, MirrorStat>(root.Mirrors, StringComparer.OrdinalIgnoreCase);
+                if (!Equals(root.Mirrors.Comparer, StringComparer.OrdinalIgnoreCase))
+                    root.Mirrors = new Dictionary<string, MirrorStat>(root.Mirrors, StringComparer.OrdinalIgnoreCase);
 
-            return root;
+                // миграция v1 -> v2
+                foreach (var kv in root.Mirrors)
+                {
+                    var s = kv.Value;
+                    if (s is null) continue;
+
+                    if (s.EwmaScore > 0 && s.ManifestEwmaScore <= 0 && s.BlobEwmaScore <= 0)
+                    {
+                        s.ManifestEwmaScore = s.EwmaScore;
+                        s.BlobEwmaScore = s.EwmaScore;
+                    }
+
+                    if (s.Ok > 0 && s.ManifestOk == 0 && s.BlobOk == 0)
+                        s.BlobOk = s.Ok;
+
+                    if (s.Fail > 0 && s.ManifestFail == 0 && s.BlobFail == 0)
+                        s.BlobFail = s.Fail;
+
+                    if (s.LastOkUnix > 0 && s.ManifestLastOkUnix == 0 && s.BlobLastOkUnix == 0)
+                        s.BlobLastOkUnix = s.LastOkUnix;
+
+                    s.EwmaScore = 0;
+                    s.Ok = 0;
+                    s.Fail = 0;
+                    s.LastOkUnix = 0;
+                }
+
+                return root;
+            }
         }
         catch
         {
@@ -1625,84 +1285,150 @@ public sealed class MinecraftService
         }
     }
 
-    private void SaveMirrorStatsQuiet()
+    private void SaveMirrorStatsQuiet(bool force = false)
     {
         try
         {
-            var dir = Path.GetDirectoryName(MirrorStatsPath);
-            if (!string.IsNullOrWhiteSpace(dir))
-                Directory.CreateDirectory(dir);
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            if (!force)
+            {
+                var last = Interlocked.Read(ref _mirrorStatsLastSaveUnixMs);
+                if (nowMs - last < MirrorStatsSaveMinIntervalMs)
+                    return;
+
+                Interlocked.Exchange(ref _mirrorStatsLastSaveUnixMs, nowMs);
+            }
+            else
+            {
+                Interlocked.Exchange(ref _mirrorStatsLastSaveUnixMs, nowMs);
+            }
 
             MirrorStatsRoot snapshot;
             lock (_mirrorStatsLock)
             {
-                snapshot = _mirrorStats;
+                snapshot = new MirrorStatsRoot
+                {
+                    Version = _mirrorStats.Version,
+                    Mirrors = new Dictionary<string, MirrorStat>(_mirrorStats.Mirrors.Count, StringComparer.OrdinalIgnoreCase)
+                };
+
+                foreach (var kv in _mirrorStats.Mirrors)
+                {
+                    var v = kv.Value ?? new MirrorStat();
+                    snapshot.Mirrors[kv.Key] = new MirrorStat
+                    {
+                        ManifestEwmaScore = v.ManifestEwmaScore,
+                        ManifestOk = v.ManifestOk,
+                        ManifestFail = v.ManifestFail,
+                        ManifestLastOkUnix = v.ManifestLastOkUnix,
+
+                        BlobEwmaScore = v.BlobEwmaScore,
+                        BlobOk = v.BlobOk,
+                        BlobFail = v.BlobFail,
+                        BlobLastOkUnix = v.BlobLastOkUnix,
+
+                        EwmaScore = 0,
+                        Ok = 0,
+                        Fail = 0,
+                        LastOkUnix = 0
+                    };
+                }
             }
 
-            var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
+            var json = JsonSerializer.Serialize(snapshot, MirrorStatsJsonOptions);
 
-            var tmp = MirrorStatsPath + ".tmp";
-            File.WriteAllText(tmp, json);
-
-            if (File.Exists(MirrorStatsPath))
+            lock (_mirrorStatsIoLock)
             {
-                var bak = MirrorStatsPath + ".bak";
-                TryDeleteQuiet(bak);
-                File.Replace(tmp, MirrorStatsPath, bak, ignoreMetadataErrors: true);
-                TryDeleteQuiet(bak);
-            }
-            else
-            {
-                File.Move(tmp, MirrorStatsPath, overwrite: true);
-            }
+                var dir = Path.GetDirectoryName(MirrorStatsPath);
+                if (!string.IsNullOrWhiteSpace(dir))
+                    Directory.CreateDirectory(dir);
 
-            TryDeleteQuiet(tmp);
+                var tmp = MirrorStatsPath + ".tmp";
+                File.WriteAllText(tmp, json);
+
+                ReplaceOrMoveAtomic(tmp, MirrorStatsPath);
+
+                TryDeleteQuiet(tmp);
+            }
         }
         catch { }
     }
 
-    private void TouchMirrorOk(string baseUrl, double score)
+    private static double Ewma(double prev, double next)
+        => prev <= 0 ? next : (prev * (1.0 - MirrorEwmaAlpha) + next * MirrorEwmaAlpha);
+
+    private MirrorStat GetOrCreateMirrorStatLocked(string baseUrl)
+    {
+        if (!_mirrorStats.Mirrors.TryGetValue(baseUrl, out var s) || s is null)
+        {
+            s = new MirrorStat();
+            _mirrorStats.Mirrors[baseUrl] = s;
+        }
+        return s;
+    }
+
+    private void TouchMirrorOkManifest(string baseUrl, double score)
     {
         baseUrl = NormalizeAbsoluteBaseUrl(baseUrl);
         if (string.IsNullOrWhiteSpace(baseUrl)) return;
 
         lock (_mirrorStatsLock)
         {
-            if (!_mirrorStats.Mirrors.TryGetValue(baseUrl, out var s))
-            {
-                s = new MirrorStat();
-                _mirrorStats.Mirrors[baseUrl] = s;
-            }
-
-            // EWMA: меньше = лучше
-            s.EwmaScore = s.EwmaScore <= 0 ? score : (s.EwmaScore * (1.0 - MirrorEwmaAlpha) + score * MirrorEwmaAlpha);
-            s.Ok++;
-            s.LastOkUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var s = GetOrCreateMirrorStatLocked(baseUrl);
+            s.ManifestEwmaScore = Ewma(s.ManifestEwmaScore, score);
+            s.ManifestOk++;
+            s.ManifestLastOkUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         }
 
         SaveMirrorStatsQuiet();
     }
 
-    private void TouchMirrorFail(string baseUrl)
+    private void TouchMirrorFailManifest(string baseUrl)
     {
         baseUrl = NormalizeAbsoluteBaseUrl(baseUrl);
         if (string.IsNullOrWhiteSpace(baseUrl)) return;
 
         lock (_mirrorStatsLock)
         {
-            if (!_mirrorStats.Mirrors.TryGetValue(baseUrl, out var s))
-            {
-                s = new MirrorStat();
-                _mirrorStats.Mirrors[baseUrl] = s;
-            }
-
-            s.Fail++;
+            var s = GetOrCreateMirrorStatLocked(baseUrl);
+            s.ManifestFail++;
         }
 
         SaveMirrorStatsQuiet();
     }
 
-    private string[] OrderMirrorsByStats(string[] mirrors)
+    private void TouchMirrorOkBlob(string baseUrl, double score)
+    {
+        baseUrl = NormalizeAbsoluteBaseUrl(baseUrl);
+        if (string.IsNullOrWhiteSpace(baseUrl)) return;
+
+        lock (_mirrorStatsLock)
+        {
+            var s = GetOrCreateMirrorStatLocked(baseUrl);
+            s.BlobEwmaScore = Ewma(s.BlobEwmaScore, score);
+            s.BlobOk++;
+            s.BlobLastOkUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        }
+
+        SaveMirrorStatsQuiet();
+    }
+
+    private void TouchMirrorFailBlob(string baseUrl)
+    {
+        baseUrl = NormalizeAbsoluteBaseUrl(baseUrl);
+        if (string.IsNullOrWhiteSpace(baseUrl)) return;
+
+        lock (_mirrorStatsLock)
+        {
+            var s = GetOrCreateMirrorStatLocked(baseUrl);
+            s.BlobFail++;
+        }
+
+        SaveMirrorStatsQuiet();
+    }
+
+    private string[] OrderMirrorsByStats(string[] mirrors, MirrorScoreKind kind)
     {
         lock (_mirrorStatsLock)
         {
@@ -1712,10 +1438,13 @@ public sealed class MinecraftService
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(m =>
                 {
-                    if (_mirrorStats.Mirrors.TryGetValue(m, out var s) && s.EwmaScore > 0)
-                        return s.EwmaScore;
+                    if (_mirrorStats.Mirrors.TryGetValue(m, out var s) && s is not null)
+                    {
+                        var score = kind == MirrorScoreKind.Manifest ? s.ManifestEwmaScore : s.BlobEwmaScore;
+                        if (score > 0)
+                            return score;
+                    }
 
-                    // неизвестное зеркало: середина
                     return 99999.0;
                 })
                 .ToArray();
@@ -1724,7 +1453,7 @@ public sealed class MinecraftService
 
     private static double NormalizeLatencyForSize(double ms, long bytes)
     {
-        // score = ms per MiB (примерно) — так большие файлы не “убивают” зеркало.
+        // score = ms per MiB
         if (ms <= 0) ms = 1;
         if (bytes <= 0) return ms;
 

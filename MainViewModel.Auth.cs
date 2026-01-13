@@ -23,33 +23,19 @@ public sealed partial class MainViewModel
         try { cts.Dispose(); } catch { }
     }
 
-    private static bool IsExpired(AuthTokens t)
-    {
-        if (t.ExpiresAtUnix <= 0) return false;
-
-        try
-        {
-            var exp = DateTimeOffset.FromUnixTimeSeconds(t.ExpiresAtUnix).AddSeconds(-30);
-            return DateTimeOffset.UtcNow >= exp;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
     private async Task TrySendDailyLauncherLoginEventAsync()
     {
         try
         {
-            if (_tokens is null || string.IsNullOrWhiteSpace(_tokens.AccessToken))
+            if (_isClosing) return;
+            if (_tokens is null || !_tokens.HasAccessToken)
                 return;
 
             var key = "launcher_login";
             var idem = $"launcher_login:{DateTime.UtcNow:yyyy-MM-dd}";
 
             await _site.SendLauncherEventAsync(
-                _tokens.AccessToken,
+                _tokens.SafeAccessToken,
                 key,
                 idem,
                 payload: new { client = "LegendBornLauncher", v = "1" },
@@ -60,11 +46,13 @@ public sealed partial class MainViewModel
 
     private async Task TryAutoLoginAsync()
     {
+        if (_isClosing) return;
+
         var saved = _tokenStore.Load();
-        if (saved is null || string.IsNullOrWhiteSpace(saved.AccessToken))
+        if (saved is null || !saved.HasAccessToken)
             return;
 
-        if (IsExpired(saved))
+        if (saved.IsExpired())
         {
             _tokenStore.Clear();
             return;
@@ -77,13 +65,13 @@ public sealed partial class MainViewModel
 
             _tokens = saved;
 
-            var me = await _site.GetMeAsync(_tokens.AccessToken, CancellationToken.None);
+            var me = await _site.GetMeAsync(_tokens.SafeAccessToken, CancellationToken.None);
             Profile = me;
 
-            SiteUserName = me.UserName;
+            SiteUserName = string.IsNullOrWhiteSpace(me.UserName) ? "Пользователь" : me.UserName;
             IsLoggedIn = true;
 
-            var mcName = string.IsNullOrWhiteSpace(me.MinecraftName) ? me.UserName : me.MinecraftName;
+            var mcName = string.IsNullOrWhiteSpace(me.MinecraftName) ? SiteUserName : me.MinecraftName;
             Username = MakeValidMcName(mcName);
 
             await TrySendDailyLauncherLoginEventAsync();
@@ -125,6 +113,8 @@ public sealed partial class MainViewModel
 
     private async Task LoginViaSiteAsync()
     {
+        if (_isClosing) return;
+
         CancelLoginWait();
         _loginCts = new CancellationTokenSource();
 
@@ -132,19 +122,20 @@ public sealed partial class MainViewModel
         {
             IsWaitingSiteConfirm = true;
             LoginUrl = null;
-
             StatusText = "Запрос входа...";
             ProgressPercent = 0;
 
             IsBusy = true;
-            var (deviceId, connectUrl, expiresAtUnix) = await _site.StartLauncherLoginAsync(_loginCts.Token);
+
+            var (deviceId, connectUrl, expiresAtUnix) =
+                await _site.StartLauncherLoginAsync(_loginCts.Token);
+
             IsBusy = false;
 
-            var path = string.IsNullOrWhiteSpace(connectUrl) ? "/launcher/connect" : connectUrl;
-
+            var path = string.IsNullOrWhiteSpace(connectUrl) ? "/launcher/connect" : connectUrl.Trim();
             var fullUrl = path.StartsWith("http", StringComparison.OrdinalIgnoreCase)
                 ? path
-                : SiteBaseUrl + path;
+                : SiteBaseUrl + (path.StartsWith("/") ? path : "/" + path);
 
             if (!fullUrl.Contains("deviceId=", StringComparison.OrdinalIgnoreCase) &&
                 !fullUrl.Contains("deviceid=", StringComparison.OrdinalIgnoreCase))
@@ -158,18 +149,18 @@ public sealed partial class MainViewModel
             if (!TryOpenUrlInBrowser(fullUrl, out var openError))
             {
                 AppendLog(openError);
-                StatusText = "Если сайт не открылся — нажми «Открыть принудительно» или «Скопировать ссылку».";
+                StatusText = "Сайт не открылся. Нажми «Скопировать ссылку» и открой вручную.";
             }
             else
             {
-                StatusText = "Открой сайт и нажми «В путь». Если не открылся — используй кнопки ниже.";
+                StatusText = "Подтверди вход на сайте.";
             }
 
             var hardDeadline = expiresAtUnix > 0
                 ? DateTimeOffset.FromUnixTimeSeconds(expiresAtUnix)
                 : DateTimeOffset.UtcNow.AddMinutes(10);
 
-            while (!_loginCts.IsCancellationRequested)
+            while (!_loginCts.IsCancellationRequested && !_isClosing)
             {
                 if (DateTimeOffset.UtcNow > hardDeadline)
                 {
@@ -181,19 +172,27 @@ public sealed partial class MainViewModel
                 await Task.Delay(1200, _loginCts.Token);
 
                 var tokens = await _site.PollLauncherLoginAsync(deviceId, _loginCts.Token);
-                if (tokens is null)
+                if (tokens is null || !tokens.HasAccessToken)
                     continue;
+
+                // релизно: если сервер внезапно отдал уже протухший токен — не сохраняем
+                if (tokens.IsExpired())
+                {
+                    AppendLog("Сайт вернул просроченный токен. Попробуй снова.");
+                    StatusText = "Ошибка входа. Попробуй снова.";
+                    continue;
+                }
 
                 _tokens = tokens;
                 _tokenStore.Save(tokens);
 
-                var me = await _site.GetMeAsync(tokens.AccessToken, _loginCts.Token);
+                var me = await _site.GetMeAsync(tokens.SafeAccessToken, _loginCts.Token);
                 Profile = me;
 
-                SiteUserName = me.UserName;
+                SiteUserName = string.IsNullOrWhiteSpace(me.UserName) ? "Пользователь" : me.UserName;
                 IsLoggedIn = true;
 
-                var mcName = string.IsNullOrWhiteSpace(me.MinecraftName) ? me.UserName : me.MinecraftName;
+                var mcName = string.IsNullOrWhiteSpace(me.MinecraftName) ? SiteUserName : me.MinecraftName;
                 Username = MakeValidMcName(mcName);
 
                 await TrySendDailyLauncherLoginEventAsync();
@@ -258,8 +257,8 @@ public sealed partial class MainViewModel
 
         try
         {
-            App.Current?.Dispatcher.Invoke((Action)(() => Clipboard.SetText(url)));
-            StatusText = "Ссылка скопирована в буфер обмена.";
+            InvokeOnUi(() => Clipboard.SetText(url));
+            StatusText = "Ссылка скопирована.";
             AppendLog("Ссылка скопирована.");
         }
         catch (Exception ex)

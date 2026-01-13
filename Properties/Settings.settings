@@ -13,30 +13,20 @@
             <Value Profile="(Default)">legendcraft.minerent.io</Value>
         </Setting>
 
-        <Setting Name="SelectedVersion" Type="System.String" Scope="User">
-            <Value Profile="(Default)"></Value>
-        </Setting>
-
         <Setting Name="RamMb" Type="System.Int32" Scope="User">
             <Value Profile="(Default)">4096</Value>
         </Setting>
 
-        <!-- ✅ 0.1.9: реально сохраняем выбранный сервер -->
         <Setting Name="SelectedServerId" Type="System.String" Scope="User">
             <Value Profile="(Default)"></Value>
         </Setting>
 
-        <!-- (опционально) можно удалить, если не используешь -->
-        <Setting Name="SiteLogin" Type="System.String" Scope="User">
-            <Value Profile="(Default)"></Value>
-        </Setting>
-
-        <!-- ✅ 0.1.9: config schema version (НЕ равно версии лаунчера) -->
+        <!-- ✅ 0.2.0: config schema version (НЕ равно версии лаунчера) -->
         <Setting Name="ConfigVersion" Type="System.String" Scope="User">
-            <Value Profile="(Default)">0.1.9</Value>
+            <Value Profile="(Default)">0.2.0</Value>
         </Setting>
 
-        <!-- ✅ 0.1.9: флаг для Settings.Upgrade() -->
+        <!-- ✅ флаг для Settings.Upgrade() -->
         <Setting Name="SettingsUpgraded" Type="System.Boolean" Scope="User">
             <Value Profile="(Default)">False</Value>
         </Setting>

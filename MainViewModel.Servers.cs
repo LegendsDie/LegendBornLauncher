@@ -27,6 +27,8 @@ public sealed partial class MainViewModel
 
     private void OnSelectedServerChanged(ServerEntry? value)
     {
+        if (_isClosing) return;
+
         if (value is null)
         {
             RaisePackPresentation();
@@ -49,6 +51,8 @@ public sealed partial class MainViewModel
 
     private async Task LoadServersAsync()
     {
+        if (_isClosing) return;
+
         try
         {
             AppendLog("Серверы: загрузка списка...");
@@ -57,9 +61,8 @@ public sealed partial class MainViewModel
                 mirrors: ServerListService.DefaultServersMirrors,
                 ct: CancellationToken.None);
 
-            int count = 0;
-
-            PostToUi(() =>
+            // ВАЖНО: применяем список СИНХРОННО на UI-потоке, иначе гонки/нулевые count
+            InvokeOnUi(() =>
             {
                 Servers.Clear();
 
@@ -100,13 +103,11 @@ public sealed partial class MainViewModel
                     _suppressSelectedServerSideEffects = false;
                 }
 
-                // now run side-effects once
+                // run side-effects once
                 OnSelectedServerChanged(SelectedServer);
-
-                count = Servers.Count;
             });
 
-            AppendLog($"Серверы: загружено {count} шт.");
+            AppendLog($"Серверы: загружено {Servers.Count} шт.");
         }
         catch (Exception ex)
         {

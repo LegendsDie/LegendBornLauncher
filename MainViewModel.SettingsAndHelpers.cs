@@ -1,9 +1,9 @@
 using System;
 using System.Configuration;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Windows;
 using System.Windows.Threading;
 using LegendBorn.Properties;
 
@@ -11,11 +11,23 @@ namespace LegendBorn;
 
 public sealed partial class MainViewModel
 {
-    // 0.1.10: config schema version (НЕ равно версии лаунчера)
-    private const string ConfigSchemaVersion = "0.1.10";
+    // Config schema version (НЕ равно версии лаунчера)
+    private const string ConfigSchemaVersion = "0.2.0";
+
+    // ===== Release-safety flags =====
+    private volatile bool _isClosing;
+
+    /// <summary>
+    /// Вызови в MainWindow.Closing, чтобы остановить любые фоновые UI-обновления.
+    /// </summary>
+    public void MarkClosing()
+    {
+        _isClosing = true;
+        CancelLoginWait();
+    }
 
     // ===== Settings migration =====
-    private static void EnsureSettingsMigrated_019()
+    private static void EnsureSettingsMigrated()
     {
         try
         {
@@ -26,6 +38,10 @@ public sealed partial class MainViewModel
             }
 
             var cv = (Settings.Default.ConfigVersion ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(cv)) cv = "0.0.0";
+
+            // тут можно добавлять реальные миграции по мере расширения схемы
+
             if (!cv.Equals(ConfigSchemaVersion, StringComparison.OrdinalIgnoreCase))
                 Settings.Default.ConfigVersion = ConfigSchemaVersion;
 
@@ -45,6 +61,8 @@ public sealed partial class MainViewModel
     {
         try
         {
+            if (_isClosing) return;
+
             var disp = App.Current?.Dispatcher;
             if (disp is null) return;
 
@@ -54,7 +72,23 @@ public sealed partial class MainViewModel
         catch { }
     }
 
-    // ===== Progress throttle (0.1.10) =====
+    // Синхронный UI-вызов — критичен для загрузки серверов/инициализации (избегаем гонок).
+    private void InvokeOnUi(Action action, DispatcherPriority priority = DispatcherPriority.Send)
+    {
+        try
+        {
+            if (_isClosing) return;
+
+            var disp = App.Current?.Dispatcher;
+            if (disp is null) return;
+
+            if (disp.CheckAccess()) action();
+            else disp.Invoke(action, priority);
+        }
+        catch { }
+    }
+
+    // ===== Progress throttle (release-safe) =====
     private const int ProgressUiMinIntervalMs = 80; // ~12.5 fps
 
     private int _pendingProgress = -1;
@@ -63,6 +97,8 @@ public sealed partial class MainViewModel
 
     private void OnMinecraftProgress(int p)
     {
+        if (_isClosing) return;
+
         if (p < 0) p = 0;
         if (p > 100) p = 100;
 
@@ -96,6 +132,8 @@ public sealed partial class MainViewModel
 
     private void PumpProgressToUi()
     {
+        if (_isClosing) return;
+
         var p = Interlocked.Exchange(ref _pendingProgress, -1);
         if (p < 0) return;
 
@@ -108,8 +146,21 @@ public sealed partial class MainViewModel
     private static string EnsureSlash(string url)
     {
         url = (url ?? "").Trim();
-        if (!url.EndsWith("/")) url += "/";
-        return url;
+        if (string.IsNullOrWhiteSpace(url))
+            return "";
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return "";
+
+        if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            return "";
+
+        var normalized = uri.ToString();
+        if (!normalized.EndsWith("/", StringComparison.Ordinal))
+            normalized += "/";
+
+        return normalized;
     }
 
     private static string FormatLoaderName(string? loaderType)
@@ -150,20 +201,71 @@ public sealed partial class MainViewModel
         return $"AUTO • {L(loaderType)} {lver} ({mc})";
     }
 
+    // ===== Logs =====
+    private const int MaxLogLines = 500;
+
+    private static readonly string LogDir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "LegendBorn", "logs");
+
+    private static readonly string LogFile = Path.Combine(LogDir, "launcher.log");
+    private long _lastFileLogTick;
+
     private void AppendLog(string text)
     {
-        // 0.1.10: BeginInvoke instead of Invoke (do not block background threads)
+        if (_isClosing) return;
+
+        var line = $"[{DateTime.Now:HH:mm:ss}] {text}";
+
         PostToUi(() =>
         {
-            LogLines.Add($"[{DateTime.Now:HH:mm:ss}] {text}");
-            while (LogLines.Count > 500)
+            if (_isClosing) return;
+
+            LogLines.Add(line);
+            while (LogLines.Count > MaxLogLines)
                 LogLines.RemoveAt(0);
         });
+
+        TryAppendLogToFile(line);
     }
 
-    // 0.1.10: lighter refresh (no tabs / no pack fields every time)
+    private void TryAppendLogToFile(string line)
+    {
+        try
+        {
+            if (_isClosing) return;
+
+            var now = Environment.TickCount64;
+            var elapsed = now - Interlocked.Read(ref _lastFileLogTick);
+            if (elapsed < 10) return;
+            Interlocked.Exchange(ref _lastFileLogTick, now);
+
+            Directory.CreateDirectory(LogDir);
+
+            try
+            {
+                if (File.Exists(LogFile))
+                {
+                    var fi = new FileInfo(LogFile);
+                    if (fi.Length > 2_000_000)
+                    {
+                        var bak = Path.Combine(LogDir, $"launcher_{DateTime.Now:yyyyMMdd_HHmmss}.log");
+                        File.Move(LogFile, bak, overwrite: true);
+                    }
+                }
+            }
+            catch { }
+
+            File.AppendAllText(LogFile, line + Environment.NewLine);
+        }
+        catch { }
+    }
+
+    // ===== CanExecute refresh =====
     private void RefreshCanStates()
     {
+        if (_isClosing) return;
+
         Raise(nameof(CanPlay));
         Raise(nameof(CanStop));
         Raise(nameof(PlayButtonText));
@@ -210,6 +312,7 @@ public sealed partial class MainViewModel
         }
     }
 
+    // ===== MC name helpers =====
     private static bool IsValidMcName(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return false;
@@ -231,7 +334,7 @@ public sealed partial class MainViewModel
 
     private static string MakeValidMcName(string name)
     {
-        var cleaned = new string(name.Where(ch =>
+        var cleaned = new string((name ?? "").Where(ch =>
             (ch >= 'a' && ch <= 'z') ||
             (ch >= 'A' && ch <= 'Z') ||
             (ch >= '0' && ch <= '9') ||
@@ -242,6 +345,7 @@ public sealed partial class MainViewModel
         return cleaned;
     }
 
+    // ===== Settings helpers =====
     private static string? TryLoadStringSetting(string key, string? fallback)
     {
         try
@@ -275,5 +379,19 @@ public sealed partial class MainViewModel
         }
         catch (SettingsPropertyNotFoundException) { }
         catch { }
+    }
+
+    // ===== init wrapper =====
+    private async Task InitializeAsyncSafe()
+    {
+        try
+        {
+            await InitializeAsync();
+        }
+        catch (Exception ex)
+        {
+            AppendLog("Инициализация: ошибка.");
+            AppendLog(ex.Message);
+        }
     }
 }

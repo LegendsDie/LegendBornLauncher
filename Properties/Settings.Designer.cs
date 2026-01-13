@@ -48,18 +48,6 @@ namespace LegendBorn.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("")]
-        public string SelectedVersion {
-            get {
-                return ((string)(this["SelectedVersion"]));
-            }
-            set {
-                this["SelectedVersion"] = value;
-            }
-        }
-        
-        [global::System.Configuration.UserScopedSettingAttribute()]
-        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("4096")]
         public int RamMb {
             get {
@@ -84,19 +72,7 @@ namespace LegendBorn.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("")]
-        public string SiteLogin {
-            get {
-                return ((string)(this["SiteLogin"]));
-            }
-            set {
-                this["SiteLogin"] = value;
-            }
-        }
-        
-        [global::System.Configuration.UserScopedSettingAttribute()]
-        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("0.1.9")]
+        [global::System.Configuration.DefaultSettingValueAttribute("0.2.0")]
         public string ConfigVersion {
             get {
                 return ((string)(this["ConfigVersion"]));

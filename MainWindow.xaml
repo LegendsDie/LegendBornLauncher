@@ -47,7 +47,12 @@
         <SolidColorBrush x:Key="Accent" Color="{StaticResource C_Accent}"/>
         <SolidColorBrush x:Key="Accent2" Color="{StaticResource C_Accent2}"/>
 
-        <!-- ✅ Effects (ВАЖНО: Effect НЕ bool!) -->
+        <!-- Background (Auth screen) -->
+        <ImageBrush x:Key="AuthStartBg"
+                    ImageSource="pack://application:,,,/Assets/launcherstart.png"
+                    Stretch="UniformToFill"/>
+
+        <!-- ✅ Effects -->
         <DropShadowEffect x:Key="ShadowSoft" BlurRadius="22" ShadowDepth="6" Opacity="0.28"/>
         <DropShadowEffect x:Key="ShadowCard" BlurRadius="18" ShadowDepth="4" Opacity="0.22"/>
 
@@ -240,6 +245,18 @@
             <Setter Property="Background" Value="#1AFFFFFF"/>
         </Style>
 
+        <!-- One button: Play OR Stop -->
+        <Style x:Key="PlayOrStopButtonStyle" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+            <Setter Property="Content" Value="{Binding PlayButtonText}"/>
+            <Setter Property="IsEnabled" Value="{Binding CanPlay}"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding CanStop}" Value="True">
+                    <Setter Property="Content" Value="Остановить"/>
+                    <Setter Property="IsEnabled" Value="True"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
     </Window.Resources>
 
     <Border Style="{StaticResource RootBorderStyle}">
@@ -302,7 +319,7 @@
                                 Background="Transparent"
                                 BorderThickness="0"
                                 Padding="0"
-                                ToolTip="На главную"
+                                ToolTip="Главная"
                                 Command="{Binding OpenStartCommand}">
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                 <Border Width="28" Height="28" CornerRadius="9" Background="#1FFFFFFF" VerticalAlignment="Center">
@@ -399,111 +416,109 @@
                             Style="{StaticResource HiddenTabsStyle}"
                             SelectedIndex="{Binding SelectedMenuIndex}">
 
-                    <!-- 0) AUTH -->
+                    <!-- 0) AUTH (minimal start screen) -->
                     <TabItem>
-                        <!-- ... без изменений ... -->
                         <Grid>
-                            <Border Style="{StaticResource CardStyle}"
-                                    VerticalAlignment="Center"
-                                    HorizontalAlignment="Center"
-                                    Width="720">
-                                <StackPanel>
-                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                        <Border Width="44" Height="44" CornerRadius="16" Background="#1FFFFFFF" VerticalAlignment="Center">
-                                            <TextBlock Text="LB" FontWeight="Bold" FontSize="14"
-                                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                        </Border>
+                            <Border CornerRadius="18"
+                                    BorderBrush="{StaticResource Stroke}"
+                                    BorderThickness="1"
+                                    ClipToBounds="True"
+                                    Effect="{StaticResource ShadowSoft}">
+                                <Grid>
+                                    <Rectangle Fill="{StaticResource AuthStartBg}"/>
 
-                                        <StackPanel Margin="12,0,0,0">
-                                            <TextBlock Text="Вход в LegendCraft"
-                                                       FontSize="22"
-                                                       FontWeight="Bold"/>
-                                            <TextBlock Foreground="{StaticResource TextDim}" FontSize="12">
-                                                Авторизация только через сайт — паролей в лаунчере нет.
+                                    <Rectangle>
+                                        <Rectangle.Fill>
+                                            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                                <GradientStop Color="#550B0F1A" Offset="0"/>
+                                                <GradientStop Color="#B00B0F1A" Offset="1"/>
+                                            </LinearGradientBrush>
+                                        </Rectangle.Fill>
+                                    </Rectangle>
+
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="*"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+
+                                        <StackPanel Grid.Row="0"
+                                                    VerticalAlignment="Center"
+                                                    HorizontalAlignment="Center"
+                                                    Width="520">
+
+                                            <TextBlock Text="Добро пожаловать"
+                                                       FontSize="26"
+                                                       FontWeight="Bold"
+                                                       HorizontalAlignment="Center"/>
+
+                                            <TextBlock Margin="0,10,0,0"
+                                                       Foreground="{StaticResource TextDim}"
+                                                       FontSize="13"
+                                                       TextAlignment="Center">
+                                                Авторизация выполняется через сайт.
                                             </TextBlock>
+
+                                            <Button Style="{StaticResource PrimaryButton}"
+                                                    Content="Авторизация"
+                                                    Command="{Binding LoginViaSiteCommand}"
+                                                    Margin="0,18,0,0"
+                                                    Height="50"
+                                                    FontSize="15"
+                                                    Padding="22,0"/>
+
+                                            <Border Margin="0,14,0,0"
+                                                    Background="#AA0F172A"
+                                                    BorderBrush="{StaticResource Stroke}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="14"
+                                                    Padding="14"
+                                                    Visibility="{Binding IsWaitingSiteConfirm, Converter={StaticResource BoolToVis}}">
+                                                <StackPanel>
+                                                    <TextBlock Text="Подтверди вход на сайте"
+                                                               FontWeight="SemiBold"/>
+
+                                                    <TextBlock Margin="0,8,0,0"
+                                                               Foreground="{StaticResource TextDim}"
+                                                               FontSize="12">
+                                                        Статус: <Run Text="{Binding StatusText}"/>
+                                                    </TextBlock>
+
+                                                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                                        <Button Style="{StaticResource GhostButton}"
+                                                                Content="Скопировать ссылку"
+                                                                Height="40"
+                                                                Padding="18,0"
+                                                                Click="CopyOrRegenLoginLink_OnClick"/>
+
+                                                        <Button Style="{StaticResource DangerButton}"
+                                                                Content="Отменить"
+                                                                Command="{Binding SiteLogoutCommand}"
+                                                                Margin="10,0,0,0"
+                                                                Height="40"
+                                                                Padding="18,0"/>
+                                                    </StackPanel>
+                                                </StackPanel>
+                                            </Border>
+
                                         </StackPanel>
-                                    </StackPanel>
 
-                                    <Border Margin="0,16,0,0"
-                                            Background="#0F172A"
-                                            BorderBrush="{StaticResource Stroke}"
-                                            BorderThickness="1"
-                                            CornerRadius="14"
-                                            Padding="14">
-                                        <StackPanel>
-                                            <TextBlock Text="Как зайти" FontWeight="SemiBold"/>
-                                            <TextBlock Margin="0,8,0,0" Foreground="{StaticResource TextDim}">
-                                                1) Нажми «Войти через сайт».
-                                            </TextBlock>
-                                            <TextBlock Foreground="{StaticResource TextDim}">
-                                                2) В браузере войди и нажми «В путь».
-                                            </TextBlock>
-                                            <TextBlock Foreground="{StaticResource TextDim}">
-                                                3) Лаунчер автоматически получит доступ.
-                                            </TextBlock>
-                                        </StackPanel>
-                                    </Border>
-
-                                    <Button Style="{StaticResource PrimaryButton}"
-                                            Content="{Binding LoginButtonText}"
-                                            Command="{Binding LoginViaSiteCommand}"
-                                            Margin="0,18,0,0"
-                                            Height="50"
-                                            FontSize="15"
-                                            Padding="22,0"/>
-
-                                    <Button Style="{StaticResource DangerButton}"
-                                            Content="Отменить"
-                                            Command="{Binding SiteLogoutCommand}"
-                                            Margin="0,12,0,0"
-                                            Height="40"
-                                            Padding="18,0"
-                                            Visibility="{Binding IsWaitingSiteConfirm, Converter={StaticResource BoolToVis}}"/>
-
-                                    <Border Margin="0,14,0,0"
-                                            Background="#0F172A"
-                                            BorderBrush="{StaticResource Stroke}"
-                                            BorderThickness="1"
-                                            CornerRadius="14"
-                                            Padding="14"
-                                            Visibility="{Binding IsWaitingSiteConfirm, Converter={StaticResource BoolToVis}}">
-                                        <StackPanel>
-                                            <TextBlock Text="Если сайт не открылся автоматически" FontWeight="SemiBold"/>
-                                            <TextBlock Margin="0,6,0,0" Foreground="{StaticResource TextDim}" FontSize="12">
-                                                Для некоторых регионов может понадобиться VPN. Нажми «Открыть принудительно» или «Скопировать ссылку».
-                                            </TextBlock>
-
-                                            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                                                <Button Style="{StaticResource PrimaryButton}"
-                                                        Content="Открыть принудительно"
-                                                        Command="{Binding OpenLoginUrlCommand}"
-                                                        Height="40"
-                                                        Padding="18,0"
-                                                        Margin="0,0,10,0"/>
-
-                                                <Button Style="{StaticResource GhostButton}"
-                                                        Content="Скопировать ссылку"
-                                                        Command="{Binding CopyLoginUrlCommand}"
-                                                        Height="40"
-                                                        Padding="18,0"/>
-                                            </StackPanel>
-                                        </StackPanel>
-                                    </Border>
-
-                                    <TextBlock Margin="0,14,0,0" Foreground="{StaticResource TextDim}" FontSize="12">
-                                        Статус: <Run Text="{Binding StatusText}"/>
-                                    </TextBlock>
-                                </StackPanel>
+                                        <TextBlock Grid.Row="1"
+                                                   Margin="0,0,0,14"
+                                                   Foreground="{StaticResource TextDim}"
+                                                   FontSize="12"
+                                                   HorizontalAlignment="Center">
+                                            <Run Text="{Binding StatusText}"/>
+                                        </TextBlock>
+                                    </Grid>
+                                </Grid>
                             </Border>
                         </Grid>
                     </TabItem>
 
                     <!-- 1) START -->
                     <TabItem>
-                        <!-- ... без изменений (как у тебя) ... -->
                         <Grid>
-                            <!-- контент стартовой вкладки как в 0.1.6 -->
-                            <!-- оставлено без правок -->
                             <Border CornerRadius="18"
                                     BorderBrush="{StaticResource Stroke}"
                                     BorderThickness="1"
@@ -561,26 +576,27 @@
                                                         <StackPanel>
                                                             <TextBlock Text="Сервер" FontWeight="SemiBold"/>
                                                             <TextBlock Margin="0,6,0,0" Foreground="{StaticResource TextDim}" FontSize="12">
-                                                                Выбери сервер (если их несколько).
+                                                                Пока доступен один сервер. Позже появится выбор.
                                                             </TextBlock>
                                                         </StackPanel>
 
-                                                        <Grid Grid.Row="2">
-                                                            <Grid.RowDefinitions>
-                                                                <RowDefinition Height="Auto"/>
-                                                                <RowDefinition Height="10"/>
-                                                                <RowDefinition Height="Auto"/>
-                                                            </Grid.RowDefinitions>
+                                                        <Border Grid.Row="2"
+                                                                Background="#0F172A"
+                                                                BorderBrush="{StaticResource Stroke}"
+                                                                BorderThickness="1"
+                                                                CornerRadius="12"
+                                                                Padding="10,8">
+                                                            <StackPanel>
+                                                                <TextBlock Text="{Binding SelectedServer.Name}" FontWeight="SemiBold"/>
+                                                                <TextBlock Text="{Binding ServerIp}" Foreground="{StaticResource TextDim}" FontSize="12"/>
+                                                            </StackPanel>
+                                                        </Border>
 
-                                                            <ComboBox ItemsSource="{Binding Servers}"
-                                                                      SelectedItem="{Binding SelectedServer}"
-                                                                      DisplayMemberPath="Name"/>
-
-                                                            <TextBlock Grid.Row="2"
-                                                                       Text="{Binding ServerIp}"
-                                                                       Foreground="{StaticResource TextDim}"
-                                                                       FontSize="12"/>
-                                                        </Grid>
+                                                        <ComboBox Grid.Row="2"
+                                                                  ItemsSource="{Binding Servers}"
+                                                                  SelectedItem="{Binding SelectedServer}"
+                                                                  DisplayMemberPath="Name"
+                                                                  Visibility="Collapsed"/>
                                                     </Grid>
                                                 </Border>
 
@@ -617,21 +633,11 @@
 
                                             <StackPanel Grid.Column="2" VerticalAlignment="Center" HorizontalAlignment="Right">
 
-                                                <Button Style="{StaticResource PrimaryButton}"
-                                                        Content="{Binding PlayButtonText}"
-                                                        Command="{Binding PlayCommand}"
-                                                        IsEnabled="{Binding CanPlay}"
+                                                <Button Style="{StaticResource PlayOrStopButtonStyle}"
+                                                        Click="PlayOrStop_OnClick"
                                                         Height="56"
                                                         FontSize="16"
                                                         Padding="34,0"/>
-
-                                                <Button Style="{StaticResource GhostButton}"
-                                                        Content="Остановить"
-                                                        Command="{Binding StopGameCommand}"
-                                                        IsEnabled="{Binding CanStop}"
-                                                        Margin="0,12,0,0"
-                                                        Height="42"
-                                                        Padding="18,0"/>
 
                                                 <Button Style="{StaticResource GhostButton}"
                                                         Content="Проверить сборку"
@@ -644,7 +650,7 @@
                                                            Foreground="{StaticResource TextDim}"
                                                            FontSize="12"
                                                            HorizontalAlignment="Right">
-                                                    Обновления сборки применяются перед запуском.
+                                                    Сборка синхронизируется перед запуском.
                                                 </TextBlock>
 
                                             </StackPanel>
@@ -658,55 +664,180 @@
 
                     <!-- 2) PROFILE -->
                     <TabItem>
-                        <!-- ... без изменений ... -->
-                        <Border Style="{StaticResource CardStyle}">
-                            <Grid>
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="12"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <Border Grid.Row="0" Style="{StaticResource CardStyle}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <Border Width="44" Height="44" CornerRadius="16" ClipToBounds="True" Background="#24324B">
+                                            <Grid>
+                                                <TextBlock Text="{Binding UserInitial}"
+                                                           FontWeight="Bold"
+                                                           FontSize="14"
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center"/>
+                                                <Image Source="{Binding AvatarUrl, IsAsync=True}" Stretch="UniformToFill"/>
+                                            </Grid>
+                                        </Border>
+
+                                        <StackPanel Margin="12,0,0,0">
+                                            <TextBlock Text="{Binding SiteUserName}" FontSize="18" FontWeight="Bold"/>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="Резонит: " Foreground="{StaticResource TextDim}" FontSize="12"/>
+                                                <TextBlock Text="{Binding Rezonite, StringFormat={}{0:N0}}" FontWeight="SemiBold" FontSize="12"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+
+                                        <Button Style="{StaticResource DangerButton}"
+                                                Content="Выйти"
+                                                Command="{Binding SiteLogoutCommand}"
+                                                Height="34"
+                                                Padding="16,0"
+                                                Margin="0,0,10,0"/>
+
+                                        <!-- ❌ крестик = на главную (не закрывать) -->
+                                        <Button Style="{StaticResource WinCtlButton}"
+                                                ToolTip="На главную"
+                                                Command="{Binding OpenStartCommand}">
+                                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE711;" FontSize="14"/>
+                                        </Button>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+
+                            <Grid Grid.Row="2">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="14"/>
-                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="1.05*"/>
+                                    <ColumnDefinition Width="12"/>
+                                    <ColumnDefinition Width="1*"/>
                                 </Grid.ColumnDefinitions>
 
-                                <StackPanel Grid.Column="0">
+                                <Border Grid.Column="0" Style="{StaticResource CardStyle}">
+                                    <StackPanel>
+                                        <TextBlock Text="Профиль" FontSize="16" FontWeight="Bold"/>
 
-                                    <TextBlock Text="Профиль" FontSize="18" FontWeight="Bold"/>
+                                        <Border Margin="0,12,0,0"
+                                                Background="#0F172A"
+                                                BorderBrush="{StaticResource Stroke}"
+                                                BorderThickness="1"
+                                                CornerRadius="14"
+                                                Padding="14">
+                                            <StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="Аккаунт: " Foreground="{StaticResource TextDim}"/>
+                                                    <TextBlock Text="{Binding SiteUserName}" FontWeight="SemiBold"/>
+                                                </StackPanel>
 
-                                    <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
-                                        <TextBlock Text="Аккаунт: " Foreground="{StaticResource TextDim}"/>
-                                        <TextBlock Text="{Binding SiteUserName}" FontWeight="SemiBold"/>
+                                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                                    <TextBlock Text="Minecraft: " Foreground="{StaticResource TextDim}"/>
+                                                    <TextBlock Text="{Binding Username}" FontWeight="SemiBold"/>
+                                                </StackPanel>
+
+                                                <TextBlock Margin="0,10,0,0"
+                                                           Foreground="{StaticResource TextDim}"
+                                                           FontSize="12">
+                                                    Данные профиля обновляются с сайта.
+                                                </TextBlock>
+                                            </StackPanel>
+                                        </Border>
+
+                                        <TextBlock Margin="0,14,0,0"
+                                                   Foreground="{StaticResource TextDim}"
+                                                   FontSize="12">
+                                            Достижения и расширенный профиль будут добавлены позже.
+                                        </TextBlock>
                                     </StackPanel>
+                                </Border>
 
-                                    <StackPanel Orientation="Horizontal"
-                                                Margin="0,8,0,0"
-                                                Visibility="{Binding IsLoggedIn, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="Резонит: " Foreground="{StaticResource TextDim}"/>
-                                        <TextBlock Text="{Binding Rezonite, StringFormat={}{0:N0}}" FontWeight="SemiBold"/>
+                                <Border Grid.Column="2" Style="{StaticResource CardStyle}">
+                                    <StackPanel>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+
+                                            <StackPanel>
+                                                <TextBlock Text="Баланс развития"
+                                                           FontWeight="Bold"
+                                                           FontSize="14"/>
+                                                <TextBlock Foreground="{StaticResource TextDim}"
+                                                           FontSize="12">
+                                                    Как действия качают характеристики героя
+                                                </TextBlock>
+                                            </StackPanel>
+
+                                            <TextBlock Grid.Column="1"
+                                                       VerticalAlignment="Top"
+                                                       Foreground="{StaticResource TextDim}"
+                                                       FontSize="12"
+                                                       Text="{Binding WeeklyActionsText, FallbackValue='Действий за неделю: 0'}"/>
+                                        </Grid>
+
+                                        <ItemsControl Margin="0,12,0,0"
+                                                      ItemsSource="{Binding ProfileStats}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Grid Margin="0,8,0,0">
+                                                        <Grid.RowDefinitions>
+                                                            <RowDefinition Height="Auto"/>
+                                                            <RowDefinition Height="8"/>
+                                                            <RowDefinition Height="Auto"/>
+                                                        </Grid.RowDefinitions>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*"/>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
+                                                        <TextBlock Grid.Column="1"
+                                                                   Foreground="{StaticResource TextDim}"
+                                                                   Text="{Binding LevelText, FallbackValue='УР. 0'}"/>
+
+                                                        <Grid Grid.Row="1" Grid.ColumnSpan="2">
+                                                            <Border Background="#1AFFFFFF" CornerRadius="4"/>
+                                                            <Border Background="{Binding Brush, FallbackValue={StaticResource Accent}}"
+                                                                    CornerRadius="4"
+                                                                    RenderTransformOrigin="0,0.5">
+                                                                <Border.RenderTransform>
+                                                                    <ScaleTransform ScaleX="{Binding Progress, FallbackValue=0}" ScaleY="1"/>
+                                                                </Border.RenderTransform>
+                                                            </Border>
+                                                        </Grid>
+
+                                                        <TextBlock Grid.Row="2"
+                                                                   Grid.ColumnSpan="2"
+                                                                   Margin="0,8,0,0"
+                                                                   Foreground="{StaticResource TextDim}"
+                                                                   FontSize="11"
+                                                                   Text="{Binding Hint, FallbackValue=''}"/>
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+
+                                        <TextBlock Margin="0,14,0,0"
+                                                   Foreground="{StaticResource TextDim}"
+                                                   FontSize="11">
+                                            Наведи на характеристику, чтобы увидеть, от каких действий она растёт.
+                                        </TextBlock>
                                     </StackPanel>
-
-                                    <TextBlock Margin="0,14,0,0"
-                                               Foreground="{StaticResource TextDim}"
-                                               FontSize="12">
-                                        Остальные настройки профиля — на сайте.
-                                    </TextBlock>
-
-                                </StackPanel>
-
-                                <StackPanel Grid.Column="2" VerticalAlignment="Top">
-                                    <Button Style="{StaticResource GhostButton}"
-                                            Content="Открыть папку игры"
-                                            Command="{Binding OpenGameDirCommand}"
-                                            Height="42"
-                                            Padding="18,0"/>
-
-                                    <Button Style="{StaticResource DangerButton}"
-                                            Content="Выйти"
-                                            Command="{Binding SiteLogoutCommand}"
-                                            Margin="0,12,0,0"
-                                            Height="42"
-                                            Padding="18,0"/>
-                                </StackPanel>
+                                </Border>
                             </Grid>
-                        </Border>
+                        </Grid>
                     </TabItem>
 
                     <!-- 3) SETTINGS -->
@@ -734,11 +865,10 @@
                                                   SelectedItem="{Binding RamMb}"
                                                   Margin="0,8,0,0"/>
 
-                                        <!-- ===== 0.1.7 fix russia: UI MODE ===== -->
                                         <TextBlock Margin="0,18,0,0" Text="При запуске Minecraft" FontWeight="SemiBold"/>
                                         <StackPanel Margin="0,8,0,0">
                                             <RadioButton GroupName="GameUiMode"
-                                                         Content="Закрывать лаунчер (скрывать окно) пока игра запущена — по умолчанию"
+                                                         Content="Скрывать лаунчер пока игра запущена"
                                                          IsChecked="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=GameUiModeHide, Mode=TwoWay}"/>
                                             <RadioButton GroupName="GameUiMode"
                                                          Content="Сворачивать лаунчер пока игра запущена"
@@ -751,70 +881,101 @@
                                         <TextBlock Margin="0,10,0,0"
                                                    Foreground="{StaticResource TextDim}"
                                                    FontSize="12">
-                                            Лаунчер автоматически вернётся, когда Minecraft закроется.
-                                        </TextBlock>
-
-                                        <TextBlock Margin="0,10,0,0"
-                                                   Foreground="{StaticResource TextDim}"
-                                                   FontSize="12">
-                                            Позже добавим авто-рекомендации по ОЗУ.
+                                            Лаунчер вернётся, когда Minecraft закроется.
                                         </TextBlock>
                                     </StackPanel>
 
-                                    <StackPanel Grid.Column="2" VerticalAlignment="Bottom">
-                                        <Button Style="{StaticResource GhostButton}"
-                                                Content="Проверить обновления лаунчера"
-                                                Command="{Binding CheckLauncherUpdatesCommand}"
-                                                Height="42"
-                                                Padding="18,0"/>
+                                    <!-- Right actions + ❌ крестик = на главную -->
+                                    <Grid Grid.Column="2">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="*"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
 
-                                        <Button Style="{StaticResource GhostButton}"
-                                                Content="Открыть папку игры"
-                                                Command="{Binding OpenGameDirCommand}"
-                                                Margin="0,12,0,0"
-                                                Height="42"
-                                                Padding="18,0"/>
-                                    </StackPanel>
+                                        <Button Grid.Row="0"
+                                                Style="{StaticResource WinCtlButton}"
+                                                HorizontalAlignment="Right"
+                                                ToolTip="На главную"
+                                                Command="{Binding OpenStartCommand}">
+                                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE711;" FontSize="14"/>
+                                        </Button>
+
+                                        <StackPanel Grid.Row="2">
+                                            <Button Style="{StaticResource GhostButton}"
+                                                    Content="Проверить обновления лаунчера"
+                                                    Command="{Binding CheckLauncherUpdatesCommand}"
+                                                    Height="42"
+                                                    Padding="18,0"/>
+
+                                            <Button Style="{StaticResource GhostButton}"
+                                                    Content="Открыть папку игры"
+                                                    Command="{Binding OpenGameDirCommand}"
+                                                    Margin="0,12,0,0"
+                                                    Height="42"
+                                                    Padding="18,0"/>
+                                        </StackPanel>
+                                    </Grid>
                                 </Grid>
                             </Border>
 
                             <Border Grid.Row="2" Style="{StaticResource CardStyle}">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="*"/>
-                                    </Grid.RowDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Диагностика" FontWeight="SemiBold"/>
 
-                                    <Grid Grid.Row="0">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
+                                    <Expander Margin="0,12,0,0" Header="Логи" IsExpanded="False">
+                                        <Border Margin="0,10,0,0"
+                                                Background="#0F172A"
+                                                BorderBrush="{StaticResource Stroke}"
+                                                BorderThickness="1"
+                                                CornerRadius="14"
+                                                Padding="14">
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="12"/>
+                                                    <RowDefinition Height="*"/>
+                                                </Grid.RowDefinitions>
 
-                                        <TextBlock Text="Логи лаунчера" FontWeight="SemiBold"/>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
 
-                                        <Button Grid.Column="1"
-                                                Style="{StaticResource GhostButton}"
-                                                Content="Очистить"
-                                                Command="{Binding ClearLogCommand}"
-                                                Height="34"
-                                                Padding="16,0"/>
-                                    </Grid>
+                                                    <StackPanel Orientation="Horizontal" Grid.Column="1">
+                                                        <Button Style="{StaticResource GhostButton}"
+                                                                Content="Копировать"
+                                                                Height="34"
+                                                                Padding="16,0"
+                                                                Margin="0,0,10,0"
+                                                                Click="CopyLogs_OnClick"/>
 
-                                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,12,0,0">
-                                        <ItemsControl ItemsSource="{Binding LogLines}">
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate>
-                                                    <TextBlock Text="{Binding}"
-                                                               Margin="0,2"
-                                                               Foreground="{StaticResource TextDim}"
-                                                               FontSize="12"/>
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
-                                    </ScrollViewer>
+                                                        <Button Style="{StaticResource GhostButton}"
+                                                                Content="Очистить"
+                                                                Command="{Binding ClearLogCommand}"
+                                                                Height="34"
+                                                                Padding="16,0"/>
+                                                    </StackPanel>
+                                                </Grid>
 
-                                </Grid>
+                                                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                                                    <ItemsControl ItemsSource="{Binding LogLines}">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <TextBlock Text="{Binding}"
+                                                                           Margin="0,2"
+                                                                           Foreground="{StaticResource TextDim}"
+                                                                           FontSize="12"/>
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+                                                </ScrollViewer>
+                                            </Grid>
+                                        </Border>
+                                    </Expander>
+
+                                </StackPanel>
                             </Border>
                         </Grid>
                     </TabItem>

@@ -38,7 +38,7 @@ public sealed class SiteAuthService
             Timeout = Timeout.InfiniteTimeSpan
         };
 
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("LegendBornLauncher/0.1.10");
+        http.DefaultRequestHeaders.UserAgent.ParseAdd(LauncherIdentity.UserAgent);
         return http;
     }
 
@@ -64,13 +64,7 @@ public sealed class SiteAuthService
 
     private static bool IsRetryableStatus(HttpStatusCode code)
         => (int)code >= 500 || code == HttpStatusCode.RequestTimeout || code == HttpStatusCode.TooManyRequests;
-
-    private static async Task<HttpResponseMessage> SendAsyncWithRetry(HttpRequestMessage req, CancellationToken ct, TimeSpan perTryTimeout)
-    {
-        // IMPORTANT: HttpRequestMessage нельзя переиспользовать, поэтому мы передаём "фабрику" ниже
-        throw new NotSupportedException();
-    }
-
+    
     private static async Task<HttpResponseMessage> SendAsyncWithRetry(Func<HttpRequestMessage> factory, CancellationToken ct, int attempts, TimeSpan perTryTimeout)
     {
         Exception? last = null;
