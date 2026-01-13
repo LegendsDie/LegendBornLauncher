@@ -8,11 +8,12 @@
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
 
-        <Version>0.2.0</Version>
+        <!-- App version -->
+        <Version>0.2.1</Version>
         <AssemblyVersion>0.2.0.0</AssemblyVersion>
-        <FileVersion>0.2.0.0</FileVersion>
+        <FileVersion>0.2.1.0</FileVersion>
 
-        <InformationalVersion>0.2.0</InformationalVersion>
+        <InformationalVersion>0.2.1</InformationalVersion>
         <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 
         <StartupObject>LegendBorn.App</StartupObject>
@@ -29,6 +30,8 @@
         <Resource Include="Assets\legendcraft.jpg" />
         <None Remove="Assets\launcherstart.png" />
         <Resource Include="Assets\launcherstart.png" />
+        <None Remove="Assets\logolauncher.png" />
+        <Resource Include="Assets\logolauncher.png" />
     </ItemGroup>
 
     <ItemGroup>

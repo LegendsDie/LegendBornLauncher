@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using LegendBorn.Models;
+using LegendBorn.Services;
 
 namespace LegendBorn;
 
@@ -38,13 +39,18 @@ public sealed partial class MainViewModel
                 _tokens.SafeAccessToken,
                 key,
                 idem,
-                payload: new { client = "LegendBornLauncher", v = "1" },
+                payload: new
+                {
+                    client = "LegendBornLauncher",
+                    launcher = LauncherIdentity.InformationalVersion,
+                    v = "1"
+                },
                 ct: CancellationToken.None);
         }
         catch { }
     }
 
-    private async Task TryAutoLoginAsync()
+    private async Task TryAutoLoginAsync(CancellationToken ct)
     {
         if (_isClosing) return;
 
@@ -65,7 +71,7 @@ public sealed partial class MainViewModel
 
             _tokens = saved;
 
-            var me = await _site.GetMeAsync(_tokens.SafeAccessToken, CancellationToken.None);
+            var me = await _site.GetMeAsync(_tokens.SafeAccessToken, ct);
             Profile = me;
 
             SiteUserName = string.IsNullOrWhiteSpace(me.UserName) ? "Пользователь" : me.UserName;
@@ -86,6 +92,10 @@ public sealed partial class MainViewModel
                 StatusText = "Вход выполнен.";
                 AppendLog($"Сайт: вошли как {SiteUserName}");
             }
+        }
+        catch (OperationCanceledException)
+        {
+            StatusText = "Отменено.";
         }
         catch
         {
@@ -116,7 +126,9 @@ public sealed partial class MainViewModel
         if (_isClosing) return;
 
         CancelLoginWait();
-        _loginCts = new CancellationTokenSource();
+
+        // login CTS linked to lifetime: при закрытии — отмена ожидания
+        _loginCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
 
         try
         {
@@ -175,7 +187,6 @@ public sealed partial class MainViewModel
                 if (tokens is null || !tokens.HasAccessToken)
                     continue;
 
-                // релизно: если сервер внезапно отдал уже протухший токен — не сохраняем
                 if (tokens.IsExpired())
                 {
                     AppendLog("Сайт вернул просроченный токен. Попробуй снова.");
@@ -211,7 +222,7 @@ public sealed partial class MainViewModel
                 return;
             }
         }
-        catch (TaskCanceledException)
+        catch (OperationCanceledException)
         {
             AppendLog("Ожидание входа отменено.");
             StatusText = "Вход отменён.";

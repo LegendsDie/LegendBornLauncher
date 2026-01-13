@@ -9,13 +9,11 @@ namespace LegendBorn;
 
 public sealed partial class MainViewModel
 {
-    // ✅ Нормальные fallback'и (без downloads.sourceforge.net)
     private static readonly string[] SourceForgePackMirrors =
     {
         "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/"
     };
 
-    // ✅ Bunny Pull Zone / CDN
     private const string BunnyPackMirror =
         "https://legendborn-pack.b-cdn.net/launcher/pack/";
 
@@ -44,21 +42,18 @@ public sealed partial class MainViewModel
         if (string.IsNullOrWhiteSpace(baseUrl))
             baseUrl = EnsureSlash("https://legendborn.ru/launcher/pack/");
 
-        // extras, но выкидываем downloads.sourceforge.net и пустые
         var extra = (s.PackMirrors ?? Array.Empty<string>())
             .Select(EnsureSlash)
             .Where(u => !string.IsNullOrWhiteSpace(u))
             .Where(u => !IsSourceForgeDownloads(u))
             .ToArray();
 
-        // baseUrl всегда первым
         var all = new[] { baseUrl }
             .Concat(extra)
             .Where(u => !string.IsNullOrWhiteSpace(u))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        // если baseUrl = твой сайт -> гарантируем Bunny и SF master как запасные
         if (IsLegendbornHost(baseUrl))
         {
             var bunny = EnsureSlash(BunnyPackMirror);
@@ -70,7 +65,6 @@ public sealed partial class MainViewModel
                 all.AddRange(SourceForgePackMirrors.Select(EnsureSlash).Where(x => !string.IsNullOrWhiteSpace(x)));
         }
 
-        // если вдруг всё вычистилось — подстрахуемся
         if (all.Count == 0)
         {
             all.Add(EnsureSlash("https://legendborn.ru/launcher/pack/"));
@@ -108,9 +102,13 @@ public sealed partial class MainViewModel
             var mirrors = BuildPackMirrors(SelectedServer);
 
             if (SelectedServer.SyncPack)
-                await _mc.SyncPackAsync(mirrors, CancellationToken.None);
+                await _mc.SyncPackAsync(mirrors, _lifetimeCts.Token);
 
             StatusText = "Сборка актуальна.";
+        }
+        catch (OperationCanceledException)
+        {
+            StatusText = "Отменено.";
         }
         catch (Exception ex)
         {
@@ -151,7 +149,7 @@ public sealed partial class MainViewModel
                 loader: loader,
                 packMirrors: mirrors,
                 syncPack: SelectedServer.SyncPack,
-                ct: CancellationToken.None);
+                ct: _lifetimeCts.Token);
 
             Versions.Clear();
             Versions.Add(launchVersionId);
@@ -181,6 +179,11 @@ public sealed partial class MainViewModel
 
             AppendLog("Игра запущена.");
             StatusText = "Игра запущена.";
+        }
+        catch (OperationCanceledException)
+        {
+            StatusText = "Отменено.";
+            AppendLog("Запуск отменён.");
         }
         catch (Exception ex)
         {

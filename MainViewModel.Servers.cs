@@ -8,16 +8,18 @@ namespace LegendBorn;
 
 public sealed partial class MainViewModel
 {
-    private async Task InitializeAsync()
+    private async Task InitializeAsync(CancellationToken ct)
     {
         try
         {
-            await LoadServersAsync();
+            await LoadServersAsync(ct);
 
-            if (SelectedServer is not null)
-                SetVersionsUi(MakeAutoVersionLabel(SelectedServer));
-
-            await TryAutoLoginAsync();
+            // OnSelectedServerChanged уже выставляет Versions/SelectedVersion
+            await TryAutoLoginAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            AppendLog("Инициализация: отменено.");
         }
         catch (Exception ex)
         {
@@ -49,7 +51,7 @@ public sealed partial class MainViewModel
         RaisePackPresentation();
     }
 
-    private async Task LoadServersAsync()
+    private async Task LoadServersAsync(CancellationToken ct)
     {
         if (_isClosing) return;
 
@@ -59,9 +61,8 @@ public sealed partial class MainViewModel
 
             var list = await _servers.GetServersOrDefaultAsync(
                 mirrors: ServerListService.DefaultServersMirrors,
-                ct: CancellationToken.None);
+                ct: ct);
 
-            // ВАЖНО: применяем список СИНХРОННО на UI-потоке, иначе гонки/нулевые count
             InvokeOnUi(() =>
             {
                 Servers.Clear();
@@ -108,6 +109,10 @@ public sealed partial class MainViewModel
             });
 
             AppendLog($"Серверы: загружено {Servers.Count} шт.");
+        }
+        catch (OperationCanceledException)
+        {
+            AppendLog("Серверы: отменено.");
         }
         catch (Exception ex)
         {

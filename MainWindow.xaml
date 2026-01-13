@@ -17,246 +17,23 @@
 
     <shell:WindowChrome.WindowChrome>
         <shell:WindowChrome CaptionHeight="0"
-                            CornerRadius="14"
+                            CornerRadius="16"
                             GlassFrameThickness="0"
                             ResizeBorderThickness="6"
                             UseAeroCaptionButtons="False"/>
     </shell:WindowChrome.WindowChrome>
 
     <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Themes/LauncherTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
 
-        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
-
-        <!-- ===== Colors ===== -->
-        <Color x:Key="C_Bg0">#0B0F1A</Color>
-        <Color x:Key="C_Bg1">#0F172A</Color>
-        <Color x:Key="C_Card">#121A2B</Color>
-        <Color x:Key="C_Stroke">#2A3550</Color>
-        <Color x:Key="C_TextDim">#AAB4C5</Color>
-        <Color x:Key="C_TextStrong">#EAF0FF</Color>
-
-        <Color x:Key="C_Accent">#7C3AED</Color>
-        <Color x:Key="C_Accent2">#A855F7</Color>
-
-        <SolidColorBrush x:Key="Bg0" Color="{StaticResource C_Bg0}"/>
-        <SolidColorBrush x:Key="Bg1" Color="{StaticResource C_Bg1}"/>
-        <SolidColorBrush x:Key="Card" Color="{StaticResource C_Card}"/>
-        <SolidColorBrush x:Key="Stroke" Color="{StaticResource C_Stroke}"/>
-        <SolidColorBrush x:Key="TextDim" Color="{StaticResource C_TextDim}"/>
-        <SolidColorBrush x:Key="TextStrong" Color="{StaticResource C_TextStrong}"/>
-        <SolidColorBrush x:Key="Accent" Color="{StaticResource C_Accent}"/>
-        <SolidColorBrush x:Key="Accent2" Color="{StaticResource C_Accent2}"/>
-
-        <!-- Background (Auth screen) -->
-        <ImageBrush x:Key="AuthStartBg"
-                    ImageSource="pack://application:,,,/Assets/launcherstart.png"
-                    Stretch="UniformToFill"/>
-
-        <!-- ✅ Effects -->
-        <DropShadowEffect x:Key="ShadowSoft" BlurRadius="22" ShadowDepth="6" Opacity="0.28"/>
-        <DropShadowEffect x:Key="ShadowCard" BlurRadius="18" ShadowDepth="4" Opacity="0.22"/>
-
-        <Style x:Key="RootBorderStyle" TargetType="Border">
-            <Setter Property="CornerRadius" Value="14"/>
-            <Setter Property="Background" Value="{StaticResource Bg0}"/>
-            <Style.Triggers>
-                <DataTrigger Binding="{Binding WindowState, RelativeSource={RelativeSource AncestorType=Window}}" Value="Maximized">
-                    <Setter Property="CornerRadius" Value="0"/>
-                </DataTrigger>
-            </Style.Triggers>
-        </Style>
-
-        <Style x:Key="HiddenTabsStyle" TargetType="{x:Type TabControl}">
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="{x:Type TabControl}">
-                        <ContentPresenter ContentSource="SelectedContent"/>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <Style x:Key="CardStyle" TargetType="Border">
-            <Setter Property="Background" Value="{StaticResource Card}"/>
-            <Setter Property="BorderBrush" Value="{StaticResource Stroke}"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="16"/>
-            <Setter Property="Padding" Value="18"/>
-            <Setter Property="Effect" Value="{StaticResource ShadowCard}"/>
-            <Setter Property="SnapsToDevicePixels" Value="True"/>
-        </Style>
-
-        <Style TargetType="TextBlock">
-            <Setter Property="TextWrapping" Value="Wrap"/>
-        </Style>
-
-        <Style TargetType="RadioButton">
-            <Setter Property="Foreground" Value="{StaticResource TextStrong}"/>
-            <Setter Property="Margin" Value="0,6,0,0"/>
-        </Style>
-
-        <Style x:Key="BaseButton" TargetType="Button">
-            <Setter Property="Foreground" Value="{StaticResource TextStrong}"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding" Value="16,10"/>
-            <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="bd"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="12">
-                            <ContentPresenter HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"
-                                              Margin="{TemplateBinding Padding}"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="bd" Property="Opacity" Value="0.96"/>
-                            </Trigger>
-                            <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="bd" Property="Opacity" Value="0.86"/>
-                            </Trigger>
-                            <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="bd" Property="Opacity" Value="0.42"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource BaseButton}">
-            <Setter Property="Background" Value="{StaticResource Accent}"/>
-            <Setter Property="BorderBrush" Value="{StaticResource Accent2}"/>
-        </Style>
-
-        <Style x:Key="GhostButton" TargetType="Button" BasedOn="{StaticResource BaseButton}">
-            <Setter Property="Background" Value="#00000000"/>
-            <Setter Property="BorderBrush" Value="{StaticResource Stroke}"/>
-        </Style>
-
-        <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource BaseButton}">
-            <Setter Property="Background" Value="#2A1020"/>
-            <Setter Property="BorderBrush" Value="#6B1D3A"/>
-            <Setter Property="Foreground" Value="#FFD6E3"/>
-        </Style>
-
-        <Style x:Key="WinCtlButton" TargetType="Button">
-            <Setter Property="Width" Value="40"/>
-            <Setter Property="Height" Value="30"/>
-            <Setter Property="Padding" Value="0"/>
-            <Setter Property="Background" Value="#00000000"/>
-            <Setter Property="BorderBrush" Value="#00000000"/>
-            <Setter Property="Foreground" Value="#DCE5FF"/>
-            <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="bd" CornerRadius="10" Background="{TemplateBinding Background}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="#1FFFFFFF"/>
-                            </Trigger>
-                            <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="#2FFFFFFF"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <Style x:Key="ProfileButton" TargetType="Button">
-            <Setter Property="Height" Value="34"/>
-            <Setter Property="Padding" Value="10,6"/>
-            <Setter Property="Background" Value="#121A2B"/>
-            <Setter Property="BorderBrush" Value="{StaticResource Stroke}"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Foreground" Value="{StaticResource TextStrong}"/>
-            <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="bd"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="12">
-                            <ContentPresenter Margin="{TemplateBinding Padding}"
-                                              HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="#172038"/>
-                            </Trigger>
-                            <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="bd" Property="Opacity" Value="0.88"/>
-                            </Trigger>
-                            <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="bd" Property="Opacity" Value="0.45"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <Style TargetType="TextBox">
-            <Setter Property="Background" Value="#0F172A"/>
-            <Setter Property="BorderBrush" Value="{StaticResource Stroke}"/>
-            <Setter Property="Foreground" Value="{StaticResource TextStrong}"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding" Value="10,8"/>
-            <Setter Property="Height" Value="34"/>
-            <Setter Property="CaretBrush" Value="{StaticResource TextStrong}"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="TextBox">
-                        <Border Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="12">
-                            <ScrollViewer x:Name="PART_ContentHost" Margin="0"/>
-                        </Border>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <Style TargetType="ComboBox">
-            <Setter Property="Background" Value="#0F172A"/>
-            <Setter Property="BorderBrush" Value="{StaticResource Stroke}"/>
-            <Setter Property="Foreground" Value="{StaticResource TextStrong}"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding" Value="10,6"/>
-            <Setter Property="Height" Value="34"/>
-        </Style>
-
-        <Style TargetType="ProgressBar">
-            <Setter Property="Height" Value="16"/>
-            <Setter Property="Foreground" Value="{StaticResource Accent}"/>
-            <Setter Property="Background" Value="#1AFFFFFF"/>
-        </Style>
-
-        <!-- One button: Play OR Stop -->
-        <Style x:Key="PlayOrStopButtonStyle" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
-            <Setter Property="Content" Value="{Binding PlayButtonText}"/>
-            <Setter Property="IsEnabled" Value="{Binding CanPlay}"/>
-            <Style.Triggers>
-                <DataTrigger Binding="{Binding CanStop}" Value="True">
-                    <Setter Property="Content" Value="Остановить"/>
-                    <Setter Property="IsEnabled" Value="True"/>
-                </DataTrigger>
-            </Style.Triggers>
-        </Style>
-
+            <!-- Background (Auth screen) -->
+            <ImageBrush x:Key="AuthStartBg"
+                        ImageSource="pack://application:,,,/Assets/launcherstart.png"
+                        Stretch="UniformToFill"/>
+        </ResourceDictionary>
     </Window.Resources>
 
     <Border Style="{StaticResource RootBorderStyle}">
@@ -267,13 +44,13 @@
                 <Rectangle>
                     <Rectangle.Fill>
                         <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-                            <GradientStop Color="#0B0F1A" Offset="0"/>
-                            <GradientStop Color="#0E1630" Offset="1"/>
+                            <GradientStop Color="#060718" Offset="0"/>
+                            <GradientStop Color="#0B0F1A" Offset="1"/>
                         </LinearGradientBrush>
                     </Rectangle.Fill>
                 </Rectangle>
 
-                <Ellipse Width="560" Height="560" Opacity="0.12" HorizontalAlignment="Left" Margin="-180,-180,0,0">
+                <Ellipse Width="560" Height="560" Opacity="0.10" HorizontalAlignment="Left" Margin="-180,-180,0,0">
                     <Ellipse.Fill>
                         <RadialGradientBrush>
                             <GradientStop Color="#A855F7" Offset="0"/>
@@ -282,7 +59,7 @@
                     </Ellipse.Fill>
                 </Ellipse>
 
-                <Ellipse Width="640" Height="640" Opacity="0.10" HorizontalAlignment="Right" Margin="0,-240,-240,0">
+                <Ellipse Width="640" Height="640" Opacity="0.08" HorizontalAlignment="Right" Margin="0,-240,-240,0">
                     <Ellipse.Fill>
                         <RadialGradientBrush>
                             <GradientStop Color="#7C3AED" Offset="0"/>
@@ -292,21 +69,15 @@
                 </Ellipse>
             </Grid>
 
-            <Grid Margin="14">
+            <Grid Margin="16">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="44"/>
-                    <RowDefinition Height="12"/>
+                    <RowDefinition Height="52"/>
+                    <RowDefinition Height="14"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
                 <!-- TOP BAR -->
-                <Border Grid.Row="0"
-                        Background="{StaticResource Bg1}"
-                        BorderBrush="{StaticResource Stroke}"
-                        BorderThickness="1"
-                        CornerRadius="14"
-                        Padding="12,6"
-                        Effect="{StaticResource ShadowSoft}">
+                <Border Grid.Row="0" Style="{StaticResource TopBarStyle}">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
@@ -322,11 +93,14 @@
                                 ToolTip="Главная"
                                 Command="{Binding OpenStartCommand}">
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                <Border Width="28" Height="28" CornerRadius="9" Background="#1FFFFFFF" VerticalAlignment="Center">
-                                    <TextBlock Text="LB" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                <!-- FIX: logo instead of "LB" -->
+                                <Border Width="34" Height="34" CornerRadius="12" Background="#22FFFFFF" VerticalAlignment="Center">
+                                    <Image Source="pack://application:,,,/Assets/logolauncher.png"
+                                           Stretch="Uniform"
+                                           Margin="5"/>
                                 </Border>
 
-                                <StackPanel Margin="10,0,0,0">
+                                <StackPanel Margin="12,0,0,0">
                                     <TextBlock Text="LEGENDBORN" FontWeight="Bold" FontSize="13"/>
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="Launcher" Foreground="{StaticResource TextDim}" FontSize="11"/>
@@ -416,22 +190,18 @@
                             Style="{StaticResource HiddenTabsStyle}"
                             SelectedIndex="{Binding SelectedMenuIndex}">
 
-                    <!-- 0) AUTH (minimal start screen) -->
+                    <!-- 0) AUTH -->
                     <TabItem>
                         <Grid>
-                            <Border CornerRadius="18"
-                                    BorderBrush="{StaticResource Stroke}"
-                                    BorderThickness="1"
-                                    ClipToBounds="True"
-                                    Effect="{StaticResource ShadowSoft}">
+                            <Border Style="{StaticResource ScreenFrameStyle}">
                                 <Grid>
                                     <Rectangle Fill="{StaticResource AuthStartBg}"/>
 
                                     <Rectangle>
                                         <Rectangle.Fill>
                                             <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-                                                <GradientStop Color="#550B0F1A" Offset="0"/>
-                                                <GradientStop Color="#B00B0F1A" Offset="1"/>
+                                                <GradientStop Color="#45060718" Offset="0"/>
+                                                <GradientStop Color="#B0060718" Offset="1"/>
                                             </LinearGradientBrush>
                                         </Rectangle.Fill>
                                     </Rectangle>
@@ -460,19 +230,19 @@
                                             </TextBlock>
 
                                             <Button Style="{StaticResource PrimaryButton}"
-                                                    Content="Авторизация"
+                                                    Content="{Binding LoginButtonText}"
                                                     Command="{Binding LoginViaSiteCommand}"
                                                     Margin="0,18,0,0"
-                                                    Height="50"
+                                                    Height="52"
                                                     FontSize="15"
-                                                    Padding="22,0"/>
+                                                    Padding="26,0"/>
 
                                             <Border Margin="0,14,0,0"
-                                                    Background="#AA0F172A"
-                                                    BorderBrush="{StaticResource Stroke}"
+                                                    Background="#7A0F172A"
+                                                    BorderBrush="{StaticResource StrokeGlow}"
                                                     BorderThickness="1"
-                                                    CornerRadius="14"
-                                                    Padding="14"
+                                                    CornerRadius="16"
+                                                    Padding="16"
                                                     Visibility="{Binding IsWaitingSiteConfirm, Converter={StaticResource BoolToVis}}">
                                                 <StackPanel>
                                                     <TextBlock Text="Подтверди вход на сайте"
@@ -487,15 +257,15 @@
                                                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
                                                         <Button Style="{StaticResource GhostButton}"
                                                                 Content="Скопировать ссылку"
-                                                                Height="40"
+                                                                Height="42"
                                                                 Padding="18,0"
                                                                 Click="CopyOrRegenLoginLink_OnClick"/>
 
                                                         <Button Style="{StaticResource DangerButton}"
                                                                 Content="Отменить"
                                                                 Command="{Binding SiteLogoutCommand}"
-                                                                Margin="10,0,0,0"
-                                                                Height="40"
+                                                                Margin="12,0,0,0"
+                                                                Height="42"
                                                                 Padding="18,0"/>
                                                     </StackPanel>
                                                 </StackPanel>
@@ -519,131 +289,139 @@
                     <!-- 1) START -->
                     <TabItem>
                         <Grid>
-                            <Border CornerRadius="18"
-                                    BorderBrush="{StaticResource Stroke}"
-                                    BorderThickness="1"
-                                    ClipToBounds="True"
-                                    Effect="{StaticResource ShadowSoft}">
+                            <Border Style="{StaticResource ScreenFrameStyle}">
                                 <Grid>
                                     <Image Source="pack://application:,,,/Assets/legendcraft.jpg"
                                            Stretch="UniformToFill"
-                                           Opacity="0.40"/>
+                                           Opacity="0.42"/>
 
-                                    <Rectangle Fill="#A00B0F1A"/>
+                                    <Rectangle Fill="#9A060718"/>
 
                                     <Rectangle>
                                         <Rectangle.Fill>
                                             <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
-                                                <GradientStop Color="#E00F172A" Offset="0"/>
-                                                <GradientStop Color="#9A0F172A" Offset="0.55"/>
-                                                <GradientStop Color="#D00B0F1A" Offset="1"/>
+                                                <GradientStop Color="#E0121228" Offset="0"/>
+                                                <GradientStop Color="#84121228" Offset="0.55"/>
+                                                <GradientStop Color="#B0060718" Offset="1"/>
                                             </LinearGradientBrush>
                                         </Rectangle.Fill>
                                     </Rectangle>
 
-                                    <Border Background="#00000000" Padding="22">
+                                    <Border Background="#00000000" Padding="26">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="1.6*"/>
-                                                <ColumnDefinition Width="18"/>
+                                                <ColumnDefinition Width="1.55*"/>
+                                                <ColumnDefinition Width="26"/>
                                                 <ColumnDefinition Width="1*"/>
                                             </Grid.ColumnDefinitions>
 
-                                            <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                            <!-- LEFT -->
+                                            <StackPanel Grid.Column="0"
+                                                        VerticalAlignment="Top"
+                                                        Margin="0,14,0,0">
 
                                                 <TextBlock Text="{Binding PackName}"
-                                                           FontSize="44"
-                                                           FontWeight="Bold"/>
+                                                           FontSize="56"
+                                                           FontWeight="Bold"
+                                                           Foreground="{StaticResource TextStrong}"/>
 
                                                 <TextBlock Margin="0,10,0,0"
                                                            Foreground="{StaticResource TextDim}"
                                                            FontSize="14"
                                                            Text="{Binding BuildDisplayName}"/>
 
-                                                <Border Margin="0,18,0,0"
-                                                        Background="#900B0F1A"
-                                                        BorderBrush="{StaticResource Stroke}"
-                                                        BorderThickness="1"
-                                                        CornerRadius="14"
-                                                        Padding="14">
+                                                <!-- SERVER -->
+                                                <Border Margin="0,22,0,0"
+                                                        Style="{StaticResource FieldCardStyle}">
                                                     <Grid>
                                                         <Grid.RowDefinitions>
                                                             <RowDefinition Height="Auto"/>
-                                                            <RowDefinition Height="10"/>
+                                                            <RowDefinition Height="12"/>
+                                                            <RowDefinition Height="Auto"/>
+                                                            <RowDefinition Height="8"/>
                                                             <RowDefinition Height="Auto"/>
                                                         </Grid.RowDefinitions>
 
-                                                        <StackPanel>
-                                                            <TextBlock Text="Сервер" FontWeight="SemiBold"/>
-                                                            <TextBlock Margin="0,6,0,0" Foreground="{StaticResource TextDim}" FontSize="12">
-                                                                Пока доступен один сервер. Позже появится выбор.
-                                                            </TextBlock>
-                                                        </StackPanel>
-
-                                                        <Border Grid.Row="2"
-                                                                Background="#0F172A"
-                                                                BorderBrush="{StaticResource Stroke}"
-                                                                BorderThickness="1"
-                                                                CornerRadius="12"
-                                                                Padding="10,8">
-                                                            <StackPanel>
-                                                                <TextBlock Text="{Binding SelectedServer.Name}" FontWeight="SemiBold"/>
-                                                                <TextBlock Text="{Binding ServerIp}" Foreground="{StaticResource TextDim}" FontSize="12"/>
-                                                            </StackPanel>
-                                                        </Border>
+                                                        <TextBlock Text="Сервер"
+                                                                   FontWeight="SemiBold"
+                                                                   Foreground="{StaticResource TextStrong}"/>
 
                                                         <ComboBox Grid.Row="2"
                                                                   ItemsSource="{Binding Servers}"
                                                                   SelectedItem="{Binding SelectedServer}"
-                                                                  DisplayMemberPath="Name"
-                                                                  Visibility="Collapsed"/>
+                                                                  DisplayMemberPath="Name"/>
+
+                                                        <TextBlock Grid.Row="4"
+                                                                   Foreground="{StaticResource TextDim}"
+                                                                   FontSize="12"
+                                                                   Text="{Binding ServerIp}"/>
                                                     </Grid>
                                                 </Border>
 
-                                                <Border Margin="0,16,0,0"
-                                                        Background="#900B0F1A"
-                                                        BorderBrush="{StaticResource Stroke}"
-                                                        BorderThickness="1"
-                                                        CornerRadius="14"
-                                                        Padding="14">
+                                                <!-- NICK + STATUS/PROGRESS STRIP -->
+                                                <Border Margin="0,18,0,0"
+                                                        Style="{StaticResource FieldCardStyle}">
                                                     <StackPanel>
-                                                        <TextBlock Text="Ник (Minecraft)" FontWeight="SemiBold"/>
-                                                        <TextBlock Margin="0,6,0,0" Foreground="{StaticResource TextDim}" FontSize="12">
-                                                            Можно поменять перед запуском.
-                                                        </TextBlock>
-                                                        <TextBox Margin="0,10,0,0" Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"/>
-                                                    </StackPanel>
-                                                </Border>
+                                                        <TextBlock Text="Ник (Minecraft)"
+                                                                   FontWeight="SemiBold"
+                                                                   Foreground="{StaticResource TextStrong}"/>
 
-                                                <Border Margin="0,16,0,0"
-                                                        Background="#900B0F1A"
-                                                        BorderBrush="{StaticResource Stroke}"
-                                                        BorderThickness="1"
-                                                        CornerRadius="14"
-                                                        Padding="14">
-                                                    <StackPanel>
-                                                        <TextBlock Text="{Binding StatusText}" Foreground="{StaticResource TextDim}"/>
-                                                        <ProgressBar Margin="0,10,0,0"
-                                                                     Minimum="0" Maximum="100"
-                                                                     Value="{Binding ProgressPercent}"/>
+                                                        <TextBox Margin="0,12,0,0"
+                                                                 Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"/>
+
+                                                        <Border Style="{StaticResource StatusStripStyle}">
+                                                            <Grid>
+                                                                <Grid.RowDefinitions>
+                                                                    <RowDefinition Height="Auto"/>
+                                                                    <RowDefinition Height="10"/>
+                                                                    <RowDefinition Height="Auto"/>
+                                                                </Grid.RowDefinitions>
+
+                                                                <Grid Grid.Row="0">
+                                                                    <Grid.ColumnDefinitions>
+                                                                        <ColumnDefinition Width="*"/>
+                                                                        <ColumnDefinition Width="Auto"/>
+                                                                    </Grid.ColumnDefinitions>
+
+                                                                    <TextBlock Text="{Binding StatusText, FallbackValue='Вход выполнен.'}"
+                                                                               Foreground="{StaticResource TextDim}"
+                                                                               FontSize="12"/>
+
+                                                                    <TextBlock Grid.Column="1"
+                                                                               Margin="12,0,0,0"
+                                                                               Foreground="{StaticResource TextDim}"
+                                                                               FontSize="12"
+                                                                               Text="{Binding ProgressPercent, StringFormat={}{0:0}%}"/>
+                                                                </Grid>
+
+                                                                <ProgressBar Grid.Row="2"
+                                                                             Style="{StaticResource ProgressBarAccurateStyle}"
+                                                                             Minimum="0" Maximum="100"
+                                                                             Value="{Binding ProgressPercent}"/>
+                                                            </Grid>
+                                                        </Border>
                                                     </StackPanel>
                                                 </Border>
 
                                             </StackPanel>
 
-                                            <StackPanel Grid.Column="2" VerticalAlignment="Center" HorizontalAlignment="Right">
+                                            <!-- RIGHT -->
+                                            <StackPanel Grid.Column="2"
+                                                        VerticalAlignment="Center"
+                                                        HorizontalAlignment="Right"
+                                                        Width="320">
 
                                                 <Button Style="{StaticResource PlayOrStopButtonStyle}"
                                                         Click="PlayOrStop_OnClick"
-                                                        Height="56"
+                                                        Height="58"
                                                         FontSize="16"
-                                                        Padding="34,0"/>
+                                                        Padding="36,0"/>
 
                                                 <Button Style="{StaticResource GhostButton}"
                                                         Content="Проверить сборку"
                                                         Command="{Binding RefreshVersionsCommand}"
-                                                        Margin="0,12,0,0"
-                                                        Height="42"
+                                                        Margin="0,14,0,0"
+                                                        Height="44"
                                                         Padding="18,0"/>
 
                                                 <TextBlock Margin="0,14,0,0"
@@ -667,7 +445,7 @@
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="12"/>
+                                <RowDefinition Height="14"/>
                                 <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
 
@@ -700,15 +478,13 @@
                                     </StackPanel>
 
                                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-
                                         <Button Style="{StaticResource DangerButton}"
                                                 Content="Выйти"
                                                 Command="{Binding SiteLogoutCommand}"
-                                                Height="34"
+                                                Height="36"
                                                 Padding="16,0"
                                                 Margin="0,0,10,0"/>
 
-                                        <!-- ❌ крестик = на главную (не закрывать) -->
                                         <Button Style="{StaticResource WinCtlButton}"
                                                 ToolTip="На главную"
                                                 Command="{Binding OpenStartCommand}">
@@ -721,7 +497,7 @@
                             <Grid Grid.Row="2">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="1.05*"/>
-                                    <ColumnDefinition Width="12"/>
+                                    <ColumnDefinition Width="14"/>
                                     <ColumnDefinition Width="1*"/>
                                 </Grid.ColumnDefinitions>
 
@@ -730,8 +506,8 @@
                                         <TextBlock Text="Профиль" FontSize="16" FontWeight="Bold"/>
 
                                         <Border Margin="0,12,0,0"
-                                                Background="#0F172A"
-                                                BorderBrush="{StaticResource Stroke}"
+                                                Background="#101329"
+                                                BorderBrush="{StaticResource StrokeGlow}"
                                                 BorderThickness="1"
                                                 CornerRadius="14"
                                                 Padding="14">
@@ -771,11 +547,8 @@
                                             </Grid.ColumnDefinitions>
 
                                             <StackPanel>
-                                                <TextBlock Text="Баланс развития"
-                                                           FontWeight="Bold"
-                                                           FontSize="14"/>
-                                                <TextBlock Foreground="{StaticResource TextDim}"
-                                                           FontSize="12">
+                                                <TextBlock Text="Баланс развития" FontWeight="Bold" FontSize="14"/>
+                                                <TextBlock Foreground="{StaticResource TextDim}" FontSize="12">
                                                     Как действия качают характеристики героя
                                                 </TextBlock>
                                             </StackPanel>
@@ -787,8 +560,7 @@
                                                        Text="{Binding WeeklyActionsText, FallbackValue='Действий за неделю: 0'}"/>
                                         </Grid>
 
-                                        <ItemsControl Margin="0,12,0,0"
-                                                      ItemsSource="{Binding ProfileStats}">
+                                        <ItemsControl Margin="0,12,0,0" ItemsSource="{Binding ProfileStats}">
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <Grid Margin="0,8,0,0">
@@ -803,14 +575,12 @@
                                                         </Grid.ColumnDefinitions>
 
                                                         <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
-                                                        <TextBlock Grid.Column="1"
-                                                                   Foreground="{StaticResource TextDim}"
-                                                                   Text="{Binding LevelText, FallbackValue='УР. 0'}"/>
+                                                        <TextBlock Grid.Column="1" Foreground="{StaticResource TextDim}" Text="{Binding LevelText, FallbackValue='УР. 0'}"/>
 
                                                         <Grid Grid.Row="1" Grid.ColumnSpan="2">
-                                                            <Border Background="#1AFFFFFF" CornerRadius="4"/>
-                                                            <Border Background="{Binding Brush, FallbackValue={StaticResource Accent}}"
-                                                                    CornerRadius="4"
+                                                            <Border Background="#26FFFFFF" CornerRadius="6"/>
+                                                            <Border Background="{Binding Brush, FallbackValue={StaticResource Accent2}}"
+                                                                    CornerRadius="6"
                                                                     RenderTransformOrigin="0,0.5">
                                                                 <Border.RenderTransform>
                                                                     <ScaleTransform ScaleX="{Binding Progress, FallbackValue=0}" ScaleY="1"/>
@@ -818,8 +588,7 @@
                                                             </Border>
                                                         </Grid>
 
-                                                        <TextBlock Grid.Row="2"
-                                                                   Grid.ColumnSpan="2"
+                                                        <TextBlock Grid.Row="2" Grid.ColumnSpan="2"
                                                                    Margin="0,8,0,0"
                                                                    Foreground="{StaticResource TextDim}"
                                                                    FontSize="11"
@@ -845,7 +614,7 @@
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="12"/>
+                                <RowDefinition Height="14"/>
                                 <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
 
@@ -863,10 +632,11 @@
                                         <TextBlock Margin="0,14,0,0" Text="Память (RAM)" FontWeight="SemiBold"/>
                                         <ComboBox ItemsSource="{Binding RamOptions}"
                                                   SelectedItem="{Binding RamMb}"
-                                                  Margin="0,8,0,0"/>
+                                                  Margin="0,10,0,0"
+                                                  Height="44"/>
 
                                         <TextBlock Margin="0,18,0,0" Text="При запуске Minecraft" FontWeight="SemiBold"/>
-                                        <StackPanel Margin="0,8,0,0">
+                                        <StackPanel Margin="0,10,0,0">
                                             <RadioButton GroupName="GameUiMode"
                                                          Content="Скрывать лаунчер пока игра запущена"
                                                          IsChecked="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=GameUiModeHide, Mode=TwoWay}"/>
@@ -885,7 +655,6 @@
                                         </TextBlock>
                                     </StackPanel>
 
-                                    <!-- Right actions + ❌ крестик = на главную -->
                                     <Grid Grid.Column="2">
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto"/>
@@ -905,14 +674,14 @@
                                             <Button Style="{StaticResource GhostButton}"
                                                     Content="Проверить обновления лаунчера"
                                                     Command="{Binding CheckLauncherUpdatesCommand}"
-                                                    Height="42"
+                                                    Height="44"
                                                     Padding="18,0"/>
 
                                             <Button Style="{StaticResource GhostButton}"
                                                     Content="Открыть папку игры"
                                                     Command="{Binding OpenGameDirCommand}"
-                                                    Margin="0,12,0,0"
-                                                    Height="42"
+                                                    Margin="0,14,0,0"
+                                                    Height="44"
                                                     Padding="18,0"/>
                                         </StackPanel>
                                     </Grid>
@@ -920,16 +689,27 @@
                             </Border>
 
                             <Border Grid.Row="2" Style="{StaticResource CardStyle}">
-                                <StackPanel>
-                                    <TextBlock Text="Диагностика" FontWeight="SemiBold"/>
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="*"/>
+                                    </Grid.RowDefinitions>
 
-                                    <Expander Margin="0,12,0,0" Header="Логи" IsExpanded="False">
+                                    <TextBlock Grid.Row="0" Text="Диагностика" FontWeight="SemiBold"/>
+
+                                    <Expander Grid.Row="1"
+                                              Margin="0,12,0,0"
+                                              Header="Логи (последние 100)"
+                                              IsExpanded="False">
+
                                         <Border Margin="0,10,0,0"
-                                                Background="#0F172A"
-                                                BorderBrush="{StaticResource Stroke}"
+                                                Background="#101329"
+                                                BorderBrush="{StaticResource StrokeGlow}"
                                                 BorderThickness="1"
                                                 CornerRadius="14"
-                                                Padding="14">
+                                                Padding="14"
+                                                ClipToBounds="True">
+
                                             <Grid>
                                                 <Grid.RowDefinitions>
                                                     <RowDefinition Height="Auto"/>
@@ -937,7 +717,7 @@
                                                     <RowDefinition Height="*"/>
                                                 </Grid.RowDefinitions>
 
-                                                <Grid>
+                                                <Grid Grid.Row="0">
                                                     <Grid.ColumnDefinitions>
                                                         <ColumnDefinition Width="*"/>
                                                         <ColumnDefinition Width="Auto"/>
@@ -946,7 +726,7 @@
                                                     <StackPanel Orientation="Horizontal" Grid.Column="1">
                                                         <Button Style="{StaticResource GhostButton}"
                                                                 Content="Копировать"
-                                                                Height="34"
+                                                                Height="36"
                                                                 Padding="16,0"
                                                                 Margin="0,0,10,0"
                                                                 Click="CopyLogs_OnClick"/>
@@ -954,28 +734,38 @@
                                                         <Button Style="{StaticResource GhostButton}"
                                                                 Content="Очистить"
                                                                 Command="{Binding ClearLogCommand}"
-                                                                Height="34"
+                                                                Height="36"
                                                                 Padding="16,0"/>
                                                     </StackPanel>
                                                 </Grid>
 
-                                                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
-                                                    <ItemsControl ItemsSource="{Binding LogLines}">
-                                                        <ItemsControl.ItemTemplate>
-                                                            <DataTemplate>
-                                                                <TextBlock Text="{Binding}"
-                                                                           Margin="0,2"
-                                                                           Foreground="{StaticResource TextDim}"
-                                                                           FontSize="12"/>
-                                                            </DataTemplate>
-                                                        </ItemsControl.ItemTemplate>
-                                                    </ItemsControl>
-                                                </ScrollViewer>
+                                                <ListBox x:Name="LogListBox"
+                                                         Grid.Row="2"
+                                                         ItemsSource="{Binding LogLines}"
+                                                         Background="Transparent"
+                                                         BorderThickness="0"
+                                                         Foreground="{StaticResource TextDim}"
+                                                         FontSize="12"
+                                                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                                         ScrollViewer.CanContentScroll="True"
+                                                         VirtualizingStackPanel.IsVirtualizing="True"
+                                                         VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                                         ItemContainerStyle="{StaticResource LogListItemStyle}">
+
+                                                    <ListBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding}"
+                                                                       TextWrapping="NoWrap"
+                                                                       TextTrimming="CharacterEllipsis"/>
+                                                        </DataTemplate>
+                                                    </ListBox.ItemTemplate>
+                                                </ListBox>
+
                                             </Grid>
                                         </Border>
                                     </Expander>
-
-                                </StackPanel>
+                                </Grid>
                             </Border>
                         </Grid>
                     </TabItem>

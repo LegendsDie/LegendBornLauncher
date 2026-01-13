@@ -11,43 +11,43 @@ namespace LegendBorn;
 
 public sealed partial class MainViewModel
 {
-    // Config schema version (НЕ равно версии лаунчера)
-    private const string ConfigSchemaVersion = "0.2.0";
-
     // ===== Release-safety flags =====
     private volatile bool _isClosing;
 
+    // общий lifetime токен для любых длительных операций
+    private readonly CancellationTokenSource _lifetimeCts = new();
+
     /// <summary>
-    /// Вызови в MainWindow.Closing, чтобы остановить любые фоновые UI-обновления.
+    /// Вызови в MainWindow.Closing, чтобы остановить любые фоновые операции/обновления.
     /// </summary>
     public void MarkClosing()
     {
         _isClosing = true;
+
+        try { _lifetimeCts.Cancel(); } catch { }
+
         CancelLoginWait();
+
+        try { _lifetimeCts.Dispose(); } catch { }
     }
 
-    // ===== Settings migration =====
-    private static void EnsureSettingsMigrated()
+    // ===== merged login strip text (for Start->Nick block) =====
+    public string LoginStateText
     {
-        try
+        get
         {
-            if (!Settings.Default.SettingsUpgraded)
+            try
             {
-                try { Settings.Default.Upgrade(); } catch { }
-                Settings.Default.SettingsUpgraded = true;
+                // IsLoggedIn у тебя точно есть (используется в XAML).
+                if (IsLoggedIn) return "Вход выполнен.";
+                if (IsWaitingSiteConfirm) return "Ожидаю подтверждение входа на сайте...";
+                return "Требуется вход.";
             }
-
-            var cv = (Settings.Default.ConfigVersion ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(cv)) cv = "0.0.0";
-
-            // тут можно добавлять реальные миграции по мере расширения схемы
-
-            if (!cv.Equals(ConfigSchemaVersion, StringComparison.OrdinalIgnoreCase))
-                Settings.Default.ConfigVersion = ConfigSchemaVersion;
-
-            SaveSettingsSafe();
+            catch
+            {
+                return "—";
+            }
         }
-        catch { }
     }
 
     private static void SaveSettingsSafe()
@@ -72,7 +72,6 @@ public sealed partial class MainViewModel
         catch { }
     }
 
-    // Синхронный UI-вызов — критичен для загрузки серверов/инициализации (избегаем гонок).
     private void InvokeOnUi(Action action, DispatcherPriority priority = DispatcherPriority.Send)
     {
         try
@@ -202,7 +201,7 @@ public sealed partial class MainViewModel
     }
 
     // ===== Logs =====
-    private const int MaxLogLines = 500;
+    private const int MaxLogLines = 100;
 
     private static readonly string LogDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -221,7 +220,10 @@ public sealed partial class MainViewModel
         {
             if (_isClosing) return;
 
+            // обычный порядок: старые сверху, новые снизу
             LogLines.Add(line);
+
+            // только последние 100
             while (LogLines.Count > MaxLogLines)
                 LogLines.RemoveAt(0);
         });
@@ -271,6 +273,7 @@ public sealed partial class MainViewModel
         Raise(nameof(PlayButtonText));
         Raise(nameof(LoginButtonText));
         Raise(nameof(HasLoginUrl));
+        Raise(nameof(LoginStateText)); // важно для полосы под ником
 
         if (!_commandsReady) return;
 
@@ -386,7 +389,11 @@ public sealed partial class MainViewModel
     {
         try
         {
-            await InitializeAsync();
+            await InitializeAsync(_lifetimeCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            AppendLog("Инициализация: отменено.");
         }
         catch (Exception ex)
         {

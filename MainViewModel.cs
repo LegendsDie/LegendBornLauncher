@@ -3,7 +3,6 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Threading.Tasks;
 using LegendBorn.Mvvm;
 using LegendBorn.Models;
@@ -62,15 +61,9 @@ public sealed partial class MainViewModel : ObservableObject
         {
             try
             {
-                var asm = Assembly.GetEntryAssembly() ?? Assembly.GetExecutingAssembly();
-
-                var info = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
-                if (!string.IsNullOrWhiteSpace(info))
-                    return "v" + info.Split('+')[0];
-
-                var v = asm.GetName().Version;
-                if (v is null) return "v?";
-                return $"v{v.Major}.{v.Minor}.{v.Build}";
+                var v = LauncherIdentity.InformationalVersion;
+                if (string.IsNullOrWhiteSpace(v)) return "v?";
+                return "v" + v.Split('+')[0].Trim();
             }
             catch
             {
@@ -113,7 +106,6 @@ public sealed partial class MainViewModel : ObservableObject
             if (!_suppressSelectedServerSideEffects)
                 OnSelectedServerChanged(value);
 
-            // CanPlay зависит от SelectedServer
             RefreshCanStates();
         }
     }
@@ -151,15 +143,13 @@ public sealed partial class MainViewModel : ObservableObject
         get => _ramMb;
         set
         {
-            if (!Set(ref _ramMb, value))
-                return;
+            var normalized = RamOptions.Contains(value) ? value : 4096;
 
-            if (!RamOptions.Contains(_ramMb))
-                _ramMb = 4096;
+            if (!Set(ref _ramMb, normalized))
+                return;
 
             TrySaveSetting("RamMb", _ramMb);
             SaveSettingsSafe();
-
             RefreshCanStates();
         }
     }
@@ -196,25 +186,21 @@ public sealed partial class MainViewModel : ObservableObject
     {
         get
         {
-            var url = Profile?.AvatarUrl;
+            var url = (Profile?.AvatarUrl ?? "").Trim();
             if (string.IsNullOrWhiteSpace(url))
                 return null;
-
-            url = url.Trim();
 
             if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
                 url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
                 return url;
 
             if (url.StartsWith("//", StringComparison.Ordinal))
-                return revealUrl("https:" + url);
+                return "https:" + url;
 
             if (url.StartsWith("/", StringComparison.Ordinal))
                 return SiteBaseUrl + url;
 
             return SiteBaseUrl + "/" + url;
-
-            static string revealUrl(string u) => u;
         }
     }
 
@@ -252,7 +238,6 @@ public sealed partial class MainViewModel : ObservableObject
 
             TrySaveSetting("Username", _username);
             SaveSettingsSafe();
-
             RefreshCanStates();
         }
     }
@@ -279,7 +264,6 @@ public sealed partial class MainViewModel : ObservableObject
             }
             else
             {
-                // если мы НЕ в настройках — возвращаем на авторизацию
                 if (SelectedMenuIndex != 3)
                     SelectedMenuIndex = 0;
             }
@@ -375,7 +359,6 @@ public sealed partial class MainViewModel : ObservableObject
 
     public string PlayButtonText => IsBusy ? "..." : "Играть";
 
-    // В XAML у тебя кнопка называется "Авторизация"
     public string LoginButtonText => IsWaitingSiteConfirm ? "Ожидание..." : "Авторизация";
 
     // ===== Commands =====
@@ -399,8 +382,6 @@ public sealed partial class MainViewModel : ObservableObject
 
     public MainViewModel()
     {
-        EnsureSettingsMigrated();
-
         SelectedMenuIndex = 0;
 
         _gameDir = Path.Combine(
@@ -430,6 +411,7 @@ public sealed partial class MainViewModel : ObservableObject
         _commandsReady = true;
 
         Username = TryLoadStringSetting("Username", "Player") ?? "Player";
+
         RamMb = TryLoadIntSetting("RamMb", 4096);
         if (!RamOptions.Contains(RamMb))
             RamMb = 4096;
@@ -440,17 +422,20 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void InitCommands()
     {
-        RefreshVersionsCommand = new AsyncRelayCommand(CheckPackAsync,
+        RefreshVersionsCommand = new AsyncRelayCommand(
+            CheckPackAsync,
             () => !_isClosing && !IsBusy && !IsWaitingSiteConfirm && SelectedServer is not null);
 
         PlayCommand = new AsyncRelayCommand(PlayAsync, () => CanPlay);
         OpenGameDirCommand = new RelayCommand(OpenGameDir);
         StopGameCommand = new RelayCommand(StopGame, () => !_isClosing && CanStop);
 
-        LoginViaSiteCommand = new AsyncRelayCommand(LoginViaSiteAsync,
+        LoginViaSiteCommand = new AsyncRelayCommand(
+            LoginViaSiteAsync,
             () => !_isClosing && !IsBusy && !IsLoggedIn && !IsWaitingSiteConfirm);
 
-        SiteLogoutCommand = new RelayCommand(SiteLogout,
+        SiteLogoutCommand = new RelayCommand(
+            SiteLogout,
             () => !_isClosing && (IsLoggedIn || IsWaitingSiteConfirm));
 
         ClearLogCommand = new RelayCommand(() => LogLines.Clear());
@@ -458,10 +443,12 @@ public sealed partial class MainViewModel : ObservableObject
         OpenSettingsCommand = new RelayCommand(() => SelectedMenuIndex = 3);
         OpenStartCommand = new RelayCommand(() => SelectedMenuIndex = IsLoggedIn ? 1 : 0);
 
-        OpenProfileCommand = new RelayCommand(() =>
-        {
-            if (IsLoggedIn) SelectedMenuIndex = 2;
-        }, () => !_isClosing && IsLoggedIn);
+        OpenProfileCommand = new RelayCommand(
+            () =>
+            {
+                if (IsLoggedIn) SelectedMenuIndex = 2;
+            },
+            () => !_isClosing && IsLoggedIn);
 
         OpenLoginUrlCommand = new RelayCommand(OpenLoginUrl, () => !_isClosing && HasLoginUrl);
         CopyLoginUrlCommand = new RelayCommand(CopyLoginUrl, () => !_isClosing && HasLoginUrl);

@@ -1,14 +1,15 @@
 ﻿using System;
+using System.Collections.Specialized;
 using System.ComponentModel;
 using System.IO;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using LegendBorn.Services;
-using System.Windows.Controls;
 
 namespace LegendBorn;
 
@@ -16,6 +17,8 @@ public partial class MainWindow : Window
 {
     private bool _updatesChecked;
     private bool _isClosing;
+
+    private readonly MainViewModel _vm;
 
     // ===== prefs =====
     private enum LauncherGameUiMode { Hide, Minimize, None }
@@ -27,6 +30,9 @@ public partial class MainWindow : Window
     private bool _uiChangedForGame;
     private WindowState _preGameWindowState;
     private bool _preGameWasVisible;
+
+    // ===== logs autoscroll =====
+    private bool _logAutoScroll = true;
 
     private static readonly string PrefsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -83,33 +89,128 @@ public partial class MainWindow : Window
         LoadPrefs();
         ApplyModeToBindings();
 
-        var vm = new MainViewModel();
-        DataContext = vm;
+        _vm = new MainViewModel();
+        DataContext = _vm;
 
-        if (vm is INotifyPropertyChanged inpc)
-            inpc.PropertyChanged += VmOnPropertyChanged;
+        _vm.PropertyChanged += VmOnPropertyChanged;
 
         Loaded += MainWindow_OnLoaded;
-        Closing += (_, __) => _isClosing = true;
+        Closing += MainWindow_OnClosing;
+    }
+
+    private void MainWindow_OnClosing(object? sender, CancelEventArgs e)
+    {
+        if (_isClosing) return;
+        _isClosing = true;
+
+        try
+        {
+            _vm.PropertyChanged -= VmOnPropertyChanged;
+
+            if (_vm.LogLines is INotifyCollectionChanged ncc)
+                ncc.CollectionChanged -= LogLines_CollectionChanged;
+        }
+        catch { }
+
+        try
+        {
+            if (LogListBox != null)
+                LogListBox.RemoveHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(LogScrollViewer_ScrollChanged));
+        }
+        catch { }
+
+        try { _vm.MarkClosing(); } catch { }
+        try { SavePrefs(); } catch { }
+    }
+
+    private void MainWindow_OnLoaded(object sender, RoutedEventArgs e)
+    {
+        HookLogsUi();
+
+        if (_updatesChecked)
+            return;
+
+        _updatesChecked = true;
+        _ = RunUpdateCheckSafeAsync();
+    }
+
+    private void HookLogsUi()
+    {
+        try
+        {
+            if (_isClosing) return;
+            if (LogListBox == null) return;
+
+            LogListBox.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(LogScrollViewer_ScrollChanged));
+
+            if (_vm.LogLines is INotifyCollectionChanged ncc)
+                ncc.CollectionChanged += LogLines_CollectionChanged;
+
+            ScrollLogsToEnd();
+        }
+        catch { }
+    }
+
+    private void LogScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        try
+        {
+            if (_isClosing) return;
+
+            // Пользователь крутит колесом/ползунком
+            if (e.ExtentHeightChange == 0)
+            {
+                var bottom = e.ExtentHeight - e.ViewportHeight;
+                _logAutoScroll = e.VerticalOffset >= bottom - 1.0; // "почти внизу"
+            }
+        }
+        catch { }
+    }
+
+    private void LogLines_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (_isClosing) return;
+        if (!_logAutoScroll) return;
+
+        Dispatcher.BeginInvoke(new Action(ScrollLogsToEnd));
+    }
+
+    private void ScrollLogsToEnd()
+    {
+        try
+        {
+            if (_isClosing) return;
+            if (LogListBox == null) return;
+
+            var count = LogListBox.Items.Count;
+            if (count <= 0) return;
+
+            LogListBox.ScrollIntoView(LogListBox.Items[count - 1]);
+        }
+        catch { }
     }
 
     private void VmOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (_isClosing) return;
+
         if (e.PropertyName != nameof(MainViewModel.CanStop))
             return;
 
-        if (sender is not MainViewModel vm)
-            return;
+        var running = _vm.CanStop;
 
-        var running = vm.CanStop;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_isClosing) return;
 
-        if (running && !_wasGameRunning)
-            OnGameStarted();
+            if (running && !_wasGameRunning)
+                OnGameStarted();
 
-        if (!running && _wasGameRunning)
-            OnGameStopped();
+            if (!running && _wasGameRunning)
+                OnGameStopped();
 
-        _wasGameRunning = running;
+            _wasGameRunning = running;
+        }));
     }
 
     private void OnGameStarted()
@@ -121,17 +222,20 @@ public partial class MainWindow : Window
         _preGameWasVisible = IsVisible;
         _uiChangedForGame = true;
 
-        Dispatcher.Invoke(() =>
+        try
         {
             if (_gameUiMode == LauncherGameUiMode.Hide)
             {
-                Hide();
+                if (IsVisible)
+                    Hide();
             }
             else if (_gameUiMode == LauncherGameUiMode.Minimize)
             {
-                WindowState = WindowState.Minimized;
+                if (WindowState != WindowState.Minimized)
+                    WindowState = WindowState.Minimized;
             }
-        });
+        }
+        catch { }
     }
 
     private void OnGameStopped()
@@ -141,26 +245,20 @@ public partial class MainWindow : Window
 
         _uiChangedForGame = false;
 
-        Dispatcher.Invoke(() =>
+        try
         {
-            try
-            {
-                if (!IsVisible)
-                    Show();
+            if (_gameUiMode == LauncherGameUiMode.Hide && _preGameWasVisible && !IsVisible)
+                Show();
 
-                WindowState = _preGameWindowState == WindowState.Minimized
-                    ? WindowState.Normal
-                    : _preGameWindowState;
+            WindowState = _preGameWindowState == WindowState.Minimized
+                ? WindowState.Normal
+                : _preGameWindowState;
 
-                Activate();
-                Topmost = true;
-                Topmost = false;
-            }
-            catch
-            {
-                // ignore
-            }
-        });
+            Activate();
+            Topmost = true;
+            Topmost = false;
+        }
+        catch { }
     }
 
     private void SetUiMode(LauncherGameUiMode mode)
@@ -235,19 +333,7 @@ public partial class MainWindow : Window
             else
                 File.Move(tmp, PrefsPath);
         }
-        catch
-        {
-            // ignore
-        }
-    }
-
-    private void MainWindow_OnLoaded(object sender, RoutedEventArgs e)
-    {
-        if (_updatesChecked)
-            return;
-
-        _updatesChecked = true;
-        _ = RunUpdateCheckSafeAsync();
+        catch { }
     }
 
     private async Task RunUpdateCheckSafeAsync()
@@ -259,10 +345,7 @@ public partial class MainWindow : Window
 
             await UpdateService.CheckAndUpdateAsync(silent: false, showNoUpdates: false);
         }
-        catch
-        {
-            // updater must not break launch
-        }
+        catch { }
     }
 
     // ===== XAML handlers =====
@@ -303,62 +386,58 @@ public partial class MainWindow : Window
         return false;
     }
 
-    // ===== One button: Play OR Stop (XAML: Click="PlayOrStop_OnClick") =====
+    // ===== One button: Play OR Stop =====
     private void PlayOrStop_OnClick(object sender, RoutedEventArgs e)
     {
         try
         {
-            if (DataContext is not MainViewModel vm)
-                return;
+            if (_isClosing) return;
 
-            if (vm.CanStop)
+            if (_vm.CanStop)
             {
-                if (vm.StopGameCommand?.CanExecute(null) == true)
-                    vm.StopGameCommand.Execute(null);
+                if (_vm.StopGameCommand?.CanExecute(null) == true)
+                    _vm.StopGameCommand.Execute(null);
                 return;
             }
 
-            if (vm.PlayCommand?.CanExecute(null) == true)
-                vm.PlayCommand.Execute(null);
+            if (_vm.PlayCommand?.CanExecute(null) == true)
+                _vm.PlayCommand.Execute(null);
         }
-        catch
-        {
-            // ignore; VM logs errors
-        }
+        catch { }
     }
 
-    // ===== Copy link button also regenerates if missing (XAML: Click="CopyOrRegenLoginLink_OnClick") =====
+    // ===== Copy link button also regenerates if missing =====
     private async void CopyOrRegenLoginLink_OnClick(object sender, RoutedEventArgs e)
     {
         try
         {
-            if (DataContext is not MainViewModel vm)
-                return;
+            if (_isClosing) return;
 
-            // If link exists -> just copy
-            if (vm.HasLoginUrl)
+            if (_vm.HasLoginUrl)
             {
-                if (vm.CopyLoginUrlCommand?.CanExecute(null) == true)
-                    vm.CopyLoginUrlCommand.Execute(null);
+                if (_vm.CopyLoginUrlCommand?.CanExecute(null) == true)
+                    _vm.CopyLoginUrlCommand.Execute(null);
                 return;
             }
 
-            // No link: try to re-start login flow, then copy when URL appears.
-            if (vm.LoginViaSiteCommand?.CanExecute(null) == true)
-                vm.LoginViaSiteCommand.Execute(null);
+            if (_vm.LoginViaSiteCommand?.CanExecute(null) == true)
+                _vm.LoginViaSiteCommand.Execute(null);
 
-            // Wait for VM to receive connectUrl (up to ~4.5 sec)
             for (var i = 0; i < 30; i++)
             {
+                if (_isClosing) return;
+
                 await Task.Delay(150);
 
-                if (vm.HasLoginUrl)
+                if (_vm.HasLoginUrl)
                 {
-                    if (vm.CopyLoginUrlCommand?.CanExecute(null) == true)
-                        vm.CopyLoginUrlCommand.Execute(null);
+                    if (_vm.CopyLoginUrlCommand?.CanExecute(null) == true)
+                        _vm.CopyLoginUrlCommand.Execute(null);
                     return;
                 }
             }
+
+            if (_isClosing) return;
 
             MessageBox.Show(
                 "Не удалось получить ссылку авторизации. Попробуйте ещё раз.",
@@ -366,29 +445,22 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
         }
-        catch
-        {
-            // silent; do not break UI
-        }
+        catch { }
     }
 
-    // ===== Copy logs (XAML: Click="CopyLogs_OnClick") =====
+    // ===== Copy logs =====
     private void CopyLogs_OnClick(object sender, RoutedEventArgs e)
     {
         try
         {
-            if (DataContext is not MainViewModel vm)
+            if (_isClosing) return;
+
+            if (_vm.LogLines is null || _vm.LogLines.Count == 0)
                 return;
 
-            if (vm.LogLines is null || vm.LogLines.Count == 0)
-                return;
-
-            var text = string.Join(Environment.NewLine, vm.LogLines);
+            var text = string.Join(Environment.NewLine, _vm.LogLines);
             Clipboard.SetText(text);
         }
-        catch
-        {
-            // ignore
-        }
+        catch { }
     }
 }
