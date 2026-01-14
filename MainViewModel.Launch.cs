@@ -158,6 +158,7 @@ public sealed partial class MainViewModel
             TrySaveSetting("Username", Username);
             TrySaveSetting("RamMb", RamMb);
             TrySaveSetting("SelectedServerId", SelectedServer.Id);
+            TrySaveSetting("ServerIp", ServerIp);
             SaveSettingsSafe();
 
             StatusText = "Запуск игры...";

@@ -14,9 +14,14 @@ public sealed class SiteAuthService
 {
     private const string SiteBaseUrl = "https://legendborn.ru/";
 
+    // safety: ответы API не должны быть большими
+    private const long MaxResponseBytes = 512 * 1024; // 512 KB
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        AllowTrailingCommas = true,
+        ReadCommentHandling = JsonCommentHandling.Skip
     };
 
     private static readonly HttpClient Http = CreateHttp();
@@ -35,21 +40,33 @@ public sealed class SiteAuthService
         var http = new HttpClient(handler)
         {
             BaseAddress = new Uri(SiteBaseUrl),
-            Timeout = Timeout.InfiniteTimeSpan
+            Timeout = Timeout.InfiniteTimeSpan // таймауты per-request
         };
 
         http.DefaultRequestHeaders.UserAgent.ParseAdd(LauncherIdentity.UserAgent);
+        http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         return http;
     }
 
     private static string NormalizeToken(string token)
         => (token ?? string.Empty).Trim().Trim('"');
 
+    private static bool IsRetryableStatus(HttpStatusCode code)
+        => (int)code >= 500 || code == HttpStatusCode.RequestTimeout || code == HttpStatusCode.TooManyRequests;
+
     private static async Task<string> ReadBodyAsync(HttpResponseMessage resp, CancellationToken ct)
     {
-        var s = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+        // читаем стримом, чтобы не получить огромный ответ
+        await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+
+        using var ms = new System.IO.MemoryStream();
+        await stream.CopyToAsync(ms, ct).ConfigureAwait(false);
+
+        if (ms.Length > MaxResponseBytes)
+            throw new InvalidOperationException("Ответ сервера слишком большой.");
+
         ct.ThrowIfCancellationRequested();
-        return s ?? string.Empty;
+        return Encoding.UTF8.GetString(ms.ToArray());
     }
 
     private static string TryGetString(JsonElement root, string name)
@@ -62,10 +79,53 @@ public sealed class SiteAuthService
             ? v
             : 0;
 
-    private static bool IsRetryableStatus(HttpStatusCode code)
-        => (int)code >= 500 || code == HttpStatusCode.RequestTimeout || code == HttpStatusCode.TooManyRequests;
-    
-    private static async Task<HttpResponseMessage> SendAsyncWithRetry(Func<HttpRequestMessage> factory, CancellationToken ct, int attempts, TimeSpan perTryTimeout)
+    private static bool TryGetBool(JsonElement root, string name, out bool value)
+    {
+        value = false;
+        if (!root.TryGetProperty(name, out var p)) return false;
+
+        if (p.ValueKind == JsonValueKind.True) { value = true; return true; }
+        if (p.ValueKind == JsonValueKind.False) { value = false; return true; }
+        return false;
+    }
+
+    private static TimeSpan GetRetryDelay(HttpResponseMessage resp, int attemptIndex)
+    {
+        // 1) Retry-After, если есть
+        try
+        {
+            var ra = resp.Headers.RetryAfter;
+            if (ra is not null)
+            {
+                if (ra.Delta is { } d)
+                    return Clamp(d, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(4));
+
+                if (ra.Date is { } dt)
+                {
+                    var delta = dt - DateTimeOffset.UtcNow;
+                    return Clamp(delta, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(4));
+                }
+            }
+        }
+        catch { }
+
+        // 2) fallback: мягкий backoff
+        var ms = 250 * Math.Max(1, attemptIndex);
+        return TimeSpan.FromMilliseconds(Math.Min(ms, 1500));
+    }
+
+    private static TimeSpan Clamp(TimeSpan v, TimeSpan min, TimeSpan max)
+    {
+        if (v < min) return min;
+        if (v > max) return max;
+        return v;
+    }
+
+    private static async Task<HttpResponseMessage> SendAsyncWithRetry(
+        Func<HttpRequestMessage> factory,
+        CancellationToken ct,
+        int attempts,
+        TimeSpan perTryTimeout)
     {
         Exception? last = null;
 
@@ -79,13 +139,17 @@ public sealed class SiteAuthService
                 tcs.CancelAfter(perTryTimeout);
 
                 using var req = factory();
-                var resp = await Http.SendAsync(req, tcs.Token).ConfigureAwait(false);
+
+                var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, tcs.Token)
+                    .ConfigureAwait(false);
 
                 if (IsRetryableStatus(resp.StatusCode))
                 {
                     last = new HttpRequestException("Retryable status: " + (int)resp.StatusCode);
+                    var delay = GetRetryDelay(resp, i);
                     resp.Dispose();
-                    await Task.Delay(200 * i, ct).ConfigureAwait(false);
+
+                    await Task.Delay(delay, ct).ConfigureAwait(false);
                     continue;
                 }
 
@@ -94,12 +158,12 @@ public sealed class SiteAuthService
             catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
             {
                 last = ex;
-                await Task.Delay(200 * i, ct).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromMilliseconds(200 * i), ct).ConfigureAwait(false);
             }
             catch (HttpRequestException ex)
             {
                 last = ex;
-                await Task.Delay(200 * i, ct).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromMilliseconds(200 * i), ct).ConfigureAwait(false);
             }
         }
 
@@ -187,6 +251,7 @@ public sealed class SiteAuthService
         resp.EnsureSuccessStatusCode();
 
         var json = await ReadBodyAsync(resp, ct).ConfigureAwait(false);
+
         return JsonSerializer.Deserialize<UserProfile>(json, JsonOptions)
                ?? new UserProfile { UserName = "Unknown", MinecraftName = "Player" };
     }
@@ -215,7 +280,6 @@ public sealed class SiteAuthService
 
         var json = await ReadBodyAsync(resp, ct).ConfigureAwait(false);
         var dto = JsonSerializer.Deserialize<RezoniteBalanceResponse>(json, JsonOptions);
-
         return dto?.Balance ?? 0;
     }
 
@@ -229,19 +293,17 @@ public sealed class SiteAuthService
     {
         accessToken = NormalizeToken(accessToken);
 
-        if (string.IsNullOrWhiteSpace(key))
-            throw new ArgumentException("key is required", nameof(key));
-        if (string.IsNullOrWhiteSpace(idempotencyKey))
-            throw new ArgumentException("idempotencyKey is required", nameof(idempotencyKey));
-
-        var body = new LauncherEventRequest
+        var reqModel = new LauncherEventRequest
         {
-            Key = key.Trim(),
-            IdempotencyKey = idempotencyKey.Trim(),
+            Key = key ?? "",
+            IdempotencyKey = idempotencyKey ?? "",
             Payload = payload
         };
 
-        var jsonBody = JsonSerializer.Serialize(body, JsonOptions);
+        if (!reqModel.IsValid)
+            throw new ArgumentException("key/idempotencyKey are required");
+
+        var jsonBody = JsonSerializer.Serialize(reqModel, JsonOptions);
 
         using var resp = await SendAsyncWithRetry(
             factory: () =>
@@ -262,30 +324,44 @@ public sealed class SiteAuthService
         if (!resp.IsSuccessStatusCode)
             return null;
 
+        // Релиз-safe: сервер мог вернуть старый или новый формат.
         var respJson = await ReadBodyAsync(resp, ct).ConfigureAwait(false);
-        return JsonSerializer.Deserialize<LauncherEventResponse>(respJson, JsonOptions);
-    }
 
-    // ===== DTO =====
-    private sealed class RezoniteBalanceResponse
-    {
-        public string? Currency { get; set; }
-        public long Balance { get; set; }
-    }
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(respJson) ? "{}" : respJson);
+            var root = doc.RootElement;
 
-    private sealed class LauncherEventRequest
-    {
-        public string Key { get; set; } = "";
-        public string IdempotencyKey { get; set; } = "";
-        public object? Payload { get; set; }
-    }
+            var ok = false;
+            TryGetBool(root, "ok", out ok);
 
-    public sealed class LauncherEventResponse
-    {
-        public bool Ok { get; set; }
-        public bool Duplicated { get; set; }
-        public string? Error { get; set; }
-        public long? Balance { get; set; }
-        public string? Currency { get; set; }
+            var rewarded = false;
+            if (!TryGetBool(root, "rewarded", out rewarded))
+            {
+                // legacy: duplicated => rewarded=false
+                if (TryGetBool(root, "duplicated", out var duplicated))
+                    rewarded = !duplicated && ok;
+                else
+                    rewarded = ok;
+            }
+
+            var balance = TryGetInt64(root, "balance");
+            var msg = TryGetString(root, "message");
+            if (string.IsNullOrWhiteSpace(msg))
+                msg = TryGetString(root, "error");
+
+            return new LauncherEventResponse
+            {
+                Ok = ok,
+                Rewarded = rewarded,
+                Balance = balance < 0 ? 0 : balance,
+                Message = string.IsNullOrWhiteSpace(msg) ? null : msg
+            };
+        }
+        catch
+        {
+            // fallback: пробуем прямую десериализацию
+            return JsonSerializer.Deserialize<LauncherEventResponse>(respJson, JsonOptions);
+        }
     }
 }

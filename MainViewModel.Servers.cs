@@ -8,6 +8,10 @@ namespace LegendBorn;
 
 public sealed partial class MainViewModel
 {
+    // Для корректного auto-update ServerIp при смене сервера
+    private string _lastAutoServerIp = "";
+    private string _previousSelectedServerAddress = "";
+
     private async Task InitializeAsync(CancellationToken ct)
     {
         try
@@ -37,9 +41,32 @@ public sealed partial class MainViewModel
             return;
         }
 
-        // Apply UI state
-        ServerIp = value.Address;
+        // === КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ 0.2.2 ===
+        // ServerIp больше не "залипает" и не ломает смену сервера:
+        // авто-обновляем IP только если пользователь не делал ручной override.
+        try
+        {
+            var current = (ServerIp ?? "").Trim();
+            var addr = (value.Address ?? "").Trim();
 
+            var shouldAuto =
+                string.IsNullOrWhiteSpace(current) ||
+                current.Equals(DefaultServerIp, StringComparison.OrdinalIgnoreCase) ||
+                current.Equals(_lastAutoServerIp, StringComparison.OrdinalIgnoreCase) ||
+                (!string.IsNullOrWhiteSpace(_previousSelectedServerAddress) &&
+                 current.Equals(_previousSelectedServerAddress, StringComparison.OrdinalIgnoreCase));
+
+            if (shouldAuto && !string.IsNullOrWhiteSpace(addr))
+            {
+                ServerIp = addr;
+                _lastAutoServerIp = addr;
+            }
+
+            _previousSelectedServerAddress = addr;
+        }
+        catch { }
+
+        // Apply UI state
         var label = MakeAutoVersionLabel(value);
         SetVersionsUi(label);
 

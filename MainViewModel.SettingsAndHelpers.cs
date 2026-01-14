@@ -28,7 +28,8 @@ public sealed partial class MainViewModel
 
         CancelLoginWait();
 
-        try { _lifetimeCts.Dispose(); } catch { }
+        // ВАЖНО (0.2.2): НЕ DISPOSE'им CTS тут — иначе фоновые таски могут получить ObjectDisposedException.
+        // CLR сам заберёт ресурсы при закрытии процесса, а нам нужна стабильность shutdown.
     }
 
     // ===== merged login strip text (for Start->Nick block) =====
@@ -38,7 +39,6 @@ public sealed partial class MainViewModel
         {
             try
             {
-                // IsLoggedIn у тебя точно есть (используется в XAML).
                 if (IsLoggedIn) return "Вход выполнен.";
                 if (IsWaitingSiteConfirm) return "Ожидаю подтверждение входа на сайте...";
                 return "Требуется вход.";
@@ -220,10 +220,8 @@ public sealed partial class MainViewModel
         {
             if (_isClosing) return;
 
-            // обычный порядок: старые сверху, новые снизу
             LogLines.Add(line);
 
-            // только последние 100
             while (LogLines.Count > MaxLogLines)
                 LogLines.RemoveAt(0);
         });
@@ -273,7 +271,7 @@ public sealed partial class MainViewModel
         Raise(nameof(PlayButtonText));
         Raise(nameof(LoginButtonText));
         Raise(nameof(HasLoginUrl));
-        Raise(nameof(LoginStateText)); // важно для полосы под ником
+        Raise(nameof(LoginStateText));
 
         if (!_commandsReady) return;
 

@@ -1,3 +1,15 @@
+// ServerListService.cs (v0.2.2)
+// - Убрана константа LauncherUserAgent (используем LauncherIdentity.UserAgent)
+// - Улучшены таймауты и чтение JSON через stream + лимит по размеру
+// - Race на fallback'ах: отмена остальных при успехе + безопасный await
+// - Кэш: атомарная запись кроссплатформенно (Replace/Move) + отдельная папка cache в gameDir (по желанию)
+// - Критические фиксы:
+//   1) NormalizeServer раньше "forge" поддерживал auto-url — теперь ВАШЕ ТЗ: только NeoForge/Vanilla
+//      => forge принудительно отклоняем (return null) чтобы не было “тихой” установки не того.
+//   2) packBaseUrl теперь не обязателен, но если задан — гарантированно попадает в PackMirrors первым.
+//   3) packMirrors нормализуются как baseUrl (со слэшем), чтобы MinecraftService не получал битые URL.
+// - Мелкие улучшения: детерминированная нормализация, строгая валидация, минимизация аллокаций
+
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -5,6 +17,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
@@ -15,12 +28,7 @@ namespace LegendBorn.Services;
 public sealed class ServerListService
 {
     public const string DefaultServersUrl = "https://legendborn.ru/launcher/servers.json";
-
-    // ✅ Bunny CDN (если положишь servers.json туда же, где у тебя pack на Bunny)
-    // Рекомендуемый путь: https://legendborn-pack.b-cdn.net/launcher/servers.json
     public const string BunnyServersUrl = "https://legendborn-pack.b-cdn.net/launcher/servers.json";
-
-    // ✅ SF master — запасной
     public const string SourceForgeMasterServersUrl = "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/servers.json";
 
     // ✅ дефолтные зеркала servers.json:
@@ -34,8 +42,6 @@ public sealed class ServerListService
         SourceForgeMasterServersUrl
     };
 
-    private const string LauncherUserAgent = "LegendBornLauncher/0.2.0";
-
     // Таймауты под РФ (быстрый фейл у primary, затем race на fallback)
     private const int PrimaryTimeoutSec1 = 6;
     private const int PrimaryTimeoutSec2 = 12;
@@ -46,9 +52,19 @@ public sealed class ServerListService
 
     private static readonly HttpClient _http = CreateHttp();
 
+    // Кэш (AppData) — чтобы список жил даже когда сеть умерла
     private static readonly string CacheFilePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "LegendBorn", "cache", "servers_cache.json");
+
+    // Отдельные настройки JSON (контекст есть, но опции нужны для быстрых проверок/возможной диагностики)
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        AllowTrailingCommas = true,
+        ReadCommentHandling = JsonCommentHandling.Skip,
+        WriteIndented = true
+    };
 
     public async Task<IReadOnlyList<ServerInfo>> GetServersAsync(
         IEnumerable<string>? mirrors = null,
@@ -78,7 +94,7 @@ public sealed class ServerListService
             return primaryRes.Value.Servers;
         }
 
-        // 2) Если сайт не отдал — делаем race между fallback'ами (Bunny/SF/прочие)
+        // 2) Если сайт не отдал — race между fallback'ами
         var fallbacks = urls
             .Where(u => !u.Equals(primary, StringComparison.OrdinalIgnoreCase))
             .ToArray();
@@ -92,24 +108,40 @@ public sealed class ServerListService
             throw new InvalidOperationException("Primary зеркало упало, fallback'ов нет, кеш пуст.");
         }
 
-        // небольшой приоритет по типу (не “жёстко”, просто порядок старта)
         fallbacks = OrderFallbacks(fallbacks);
 
         using var raceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
-        var tasks = fallbacks
-            .Select(u => TryFetchServersFromUrlAsync(u, raceCts.Token, TimeSpan.FromSeconds(FallbackTimeoutSec)))
-            .ToList();
+        var tasks = new List<Task<(string Json, IReadOnlyList<ServerInfo> Servers)?>>(fallbacks.Length);
+        foreach (var u in fallbacks)
+            tasks.Add(TryFetchServersFromUrlAsync(u, raceCts.Token, TimeSpan.FromSeconds(FallbackTimeoutSec)));
 
         while (tasks.Count > 0)
         {
             var finished = await Task.WhenAny(tasks).ConfigureAwait(false);
             tasks.Remove(finished);
 
-            var res = await finished.ConfigureAwait(false);
+            (string Json, IReadOnlyList<ServerInfo> Servers)? res = null;
+            try
+            {
+                res = await finished.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (raceCts.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                // отменили из-за успеха другого зеркала — ок
+            }
+            catch
+            {
+                // ignore
+            }
+
             if (res is not null)
             {
                 raceCts.Cancel();
+
+                // добиваем остальных, чтобы не оставлять фоновые исключения
+                try { await Task.WhenAll(tasks).ConfigureAwait(false); } catch { }
+
                 SaveCacheQuiet(res.Value.Json);
                 return res.Value.Servers;
             }
@@ -138,8 +170,8 @@ public sealed class ServerListService
             {
                 new ServerInfo
                 {
-                    Id = "legendborn",
-                    Name = "LegendBorn",
+                    Id = "legendCraft",
+                    Name = "LegendCraft",
                     Address = "legendcraft.minerent.io",
                     MinecraftVersion = "1.21.1",
                     Loader = new LoaderInfo
@@ -198,19 +230,14 @@ public sealed class ServerListService
             if (len.HasValue && len.Value > MaxServersJsonBytes)
                 return null;
 
-            // читаем безопаснее через stream (ReadAsStringAsync без ct)
             await using var stream = await resp.Content.ReadAsStreamAsync(reqCts.Token).ConfigureAwait(false);
 
-            using var ms = new MemoryStream();
-            await stream.CopyToAsync(ms, reqCts.Token).ConfigureAwait(false);
-
-            if (ms.Length > MaxServersJsonBytes)
+            // читаем строго с ограничением
+            var json = await ReadUtf8LimitedAsync(stream, MaxServersJsonBytes, reqCts.Token).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(json))
                 return null;
 
-            var json = System.Text.Encoding.UTF8.GetString(ms.ToArray());
-            reqCts.Token.ThrowIfCancellationRequested();
-
-            var trimmed = (json ?? "").TrimStart();
+            var trimmed = json.TrimStart();
             if (trimmed.StartsWith("<", StringComparison.Ordinal))
                 return null;
 
@@ -218,15 +245,13 @@ public sealed class ServerListService
             if (root is null || root.Servers is null || root.Servers.Count == 0)
                 return null;
 
-            var result = root.Servers
-                .Select(s =>
-                {
-                    try { return NormalizeServer(s); }
-                    catch { return null; }
-                })
-                .Where(s => s is not null)
-                .Cast<ServerInfo>()
-                .ToList();
+            var result = new List<ServerInfo>(root.Servers.Count);
+            foreach (var s in root.Servers)
+            {
+                var ns = NormalizeServer(s);
+                if (ns is not null)
+                    result.Add(ns);
+            }
 
             if (result.Count == 0)
                 return null;
@@ -241,6 +266,27 @@ public sealed class ServerListService
         {
             return null;
         }
+    }
+
+    private static async Task<string> ReadUtf8LimitedAsync(Stream stream, long maxBytes, CancellationToken ct)
+    {
+        // StreamReader не дает "жёстко" ограничить bytes, поэтому читаем в память с проверкой длины.
+        using var ms = new MemoryStream(capacity: (int)Math.Min(64 * 1024, maxBytes));
+        var buffer = new byte[32 * 1024];
+
+        int read;
+        long total = 0;
+
+        while ((read = await stream.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false)) > 0)
+        {
+            total += read;
+            if (total > maxBytes)
+                return "";
+
+            ms.Write(buffer, 0, read);
+        }
+
+        return Encoding.UTF8.GetString(ms.ToArray());
     }
 
     private static string[] OrderFallbacks(string[] fallbacks)
@@ -267,6 +313,9 @@ public sealed class ServerListService
 
     private static void SaveCacheQuiet(string json)
     {
+        if (string.IsNullOrWhiteSpace(json))
+            return;
+
         try
         {
             var dir = Path.GetDirectoryName(CacheFilePath);
@@ -276,21 +325,9 @@ public sealed class ServerListService
             var tmp = CacheFilePath + ".tmp";
             File.WriteAllText(tmp, json);
 
-            // максимально совместимо: без null backup
-            if (File.Exists(CacheFilePath))
-            {
-                var bak = CacheFilePath + ".bak";
-                try { if (File.Exists(bak)) File.Delete(bak); } catch { }
+            ReplaceOrMoveAtomic(tmp, CacheFilePath);
 
-                File.Replace(tmp, CacheFilePath, bak, ignoreMetadataErrors: true);
-                try { if (File.Exists(bak)) File.Delete(bak); } catch { }
-            }
-            else
-            {
-                File.Move(tmp, CacheFilePath);
-            }
-
-            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+            TryDeleteQuiet(tmp);
         }
         catch { }
     }
@@ -303,19 +340,20 @@ public sealed class ServerListService
                 return null;
 
             var json = File.ReadAllText(CacheFilePath);
+            if (string.IsNullOrWhiteSpace(json))
+                return null;
+
             var root = JsonSerializer.Deserialize(json, ServerListJsonContext.Default.ServersRoot);
             if (root is null || root.Servers is null || root.Servers.Count == 0)
                 return null;
 
-            var result = root.Servers
-                .Select(s =>
-                {
-                    try { return NormalizeServer(s); }
-                    catch { return null; }
-                })
-                .Where(s => s is not null)
-                .Cast<ServerInfo>()
-                .ToList();
+            var result = new List<ServerInfo>(root.Servers.Count);
+            foreach (var s in root.Servers)
+            {
+                var ns = NormalizeServer(s);
+                if (ns is not null)
+                    result.Add(ns);
+            }
 
             return result.Count > 0 ? result : null;
         }
@@ -326,14 +364,18 @@ public sealed class ServerListService
     }
 
     // =========================
-    // Normalize / Validate
+    // Normalize / Validate (v0.2.2: only NeoForge/Vanilla)
     // =========================
 
     private static ServerInfo? NormalizeServer(ServerInfo s)
     {
-        if (string.IsNullOrWhiteSpace(s.Id)) return null;
-        if (string.IsNullOrWhiteSpace(s.Name)) return null;
-        if (string.IsNullOrWhiteSpace(s.Address)) return null;
+        var id = (s.Id ?? "").Trim();
+        var name = (s.Name ?? "").Trim();
+        var address = (s.Address ?? "").Trim();
+
+        if (string.IsNullOrWhiteSpace(id)) return null;
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        if (string.IsNullOrWhiteSpace(address)) return null;
 
         var mc = (s.MinecraftVersion ?? "").Trim();
         if (string.IsNullOrWhiteSpace(mc)) return null;
@@ -355,30 +397,36 @@ public sealed class ServerListService
         }
 
         var loaderType = (loader.Type ?? "vanilla").Trim().ToLowerInvariant();
-        if (string.IsNullOrWhiteSpace(loaderType)) loaderType = "vanilla";
+        if (string.IsNullOrWhiteSpace(loaderType))
+            loaderType = "vanilla";
+
+        // ✅ ТЗ: нужен только NeoForge (и vanilla)
+        if (loaderType != "vanilla" && loaderType != "neoforge")
+            return null;
 
         var loaderVer = (loader.Version ?? "").Trim();
         var installerUrl = (loader.InstallerUrl ?? "").Trim();
 
-        // если installerUrl пустой — подставим официальный
-        if (loaderType != "vanilla" && string.IsNullOrWhiteSpace(installerUrl))
+        if (loaderType == "neoforge")
         {
-            installerUrl = loaderType switch
-            {
-                "neoforge" when !string.IsNullOrWhiteSpace(loaderVer)
-                    => $"https://maven.neoforged.net/releases/net/neoforged/neoforge/{loaderVer}/neoforge-{loaderVer}-installer.jar",
+            if (string.IsNullOrWhiteSpace(loaderVer))
+                return null;
 
-                "forge" when !string.IsNullOrWhiteSpace(loaderVer)
-                    => $"https://maven.minecraftforge.net/net/minecraftforge/forge/{mc}-{loaderVer}/forge-{mc}-{loaderVer}-installer.jar",
+            // если installerUrl пустой — подставим официальный neoforge
+            if (string.IsNullOrWhiteSpace(installerUrl))
+                installerUrl = $"https://maven.neoforged.net/releases/net/neoforged/neoforge/{loaderVer}/neoforge-{loaderVer}-installer.jar";
 
-                _ => ""
-            };
+            // валидируем как absolute
+            if (string.IsNullOrWhiteSpace(NormalizeAbsoluteUrl(installerUrl)))
+                return null;
+        }
+        else
+        {
+            // vanilla
+            loaderVer = "";
+            installerUrl = "";
         }
 
-        if (loaderType != "vanilla" && string.IsNullOrWhiteSpace(installerUrl))
-            return null;
-
-        // ✅ ВАЖНО: валидируем как absolute URL
         var packBase = NormalizeAbsoluteBaseUrl(s.PackBaseUrl);
 
         var mirrors = (s.PackMirrors ?? Array.Empty<string>())
@@ -387,10 +435,8 @@ public sealed class ServerListService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        // ✅ КЛЮЧЕВОЕ УЛУЧШЕНИЕ:
-        // packBaseUrl всегда добавляем в PackMirrors первым (если задан),
-        // чтобы дальше любой код мог использовать только PackMirrors и порядок сохранялся.
-        var effectiveMirrors = new List<string>();
+        // packBaseUrl всегда добавляем в PackMirrors первым (если задан)
+        var effectiveMirrors = new List<string>(capacity: mirrors.Length + 1);
         if (!string.IsNullOrWhiteSpace(packBase))
             effectiveMirrors.Add(packBase);
 
@@ -402,11 +448,16 @@ public sealed class ServerListService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
+        var clientVid = (s.ClientVersionId ?? "").Trim();
+
         return s with
         {
+            Id = id,
+            Name = name,
+            Address = address,
             MinecraftVersion = mc,
             Loader = new LoaderInfo { Type = loaderType, Version = loaderVer, InstallerUrl = installerUrl },
-            ClientVersionId = (s.ClientVersionId ?? "").Trim(),
+            ClientVersionId = string.IsNullOrWhiteSpace(clientVid) ? null : clientVid,
             PackBaseUrl = packBase,
             PackMirrors = finalMirrors
         };
@@ -455,6 +506,32 @@ public sealed class ServerListService
 
         http.DefaultRequestHeaders.UserAgent.ParseAdd(LauncherIdentity.UserAgent);
         return http;
+    }
+
+    private static void ReplaceOrMoveAtomic(string sourceTmp, string destPath)
+    {
+        // tmp и dest должны быть на одном томе/папке — тогда Replace/Move будет атомарным
+        if (OperatingSystem.IsWindows() && File.Exists(destPath))
+        {
+            var backup = destPath + ".bak";
+            try
+            {
+                TryDeleteQuiet(backup);
+                File.Replace(sourceTmp, destPath, backup, ignoreMetadataErrors: true);
+            }
+            finally
+            {
+                TryDeleteQuiet(backup);
+            }
+            return;
+        }
+
+        File.Move(sourceTmp, destPath, overwrite: true);
+    }
+
+    private static void TryDeleteQuiet(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch { }
     }
 
     // =========================

@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using Velopack;
@@ -8,13 +9,27 @@ namespace LegendBorn.Services;
 
 public static class UpdateService
 {
-    // Можно задавать и URL, и "Owner/Repo". Мы нормализуем в URL.
     private const string RepoUrlOrSlug = "https://github.com/LegendsDie/LegendBornLauncher";
+
+    // Должен совпадать с --channel в vpk pack (и в твоём workflow)
+    private const string Channel = "win";
+
+    private static readonly SemaphoreSlim _gate = new(1, 1);
 
     private static GithubSource CreateSource()
     {
         var repoUrl = NormalizeGithubRepoUrl(RepoUrlOrSlug);
         return new GithubSource(repoUrl: repoUrl, accessToken: "", prerelease: false);
+    }
+
+    private static UpdateManager CreateManager()
+    {
+        var options = new UpdateOptions
+        {
+            ExplicitChannel = Channel
+        };
+
+        return new UpdateManager(CreateSource(), options);
     }
 
     private static string NormalizeGithubRepoUrl(string input)
@@ -23,11 +38,9 @@ public static class UpdateService
         if (string.IsNullOrWhiteSpace(input))
             return "https://github.com/LegendsDie/LegendBornLauncher";
 
-        // "//github.com/Owner/Repo"
         if (input.StartsWith("//", StringComparison.Ordinal))
             input = "https:" + input;
 
-        // already URL
         if (input.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
             input.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
         {
@@ -38,11 +51,9 @@ public static class UpdateService
                     return $"https://github.com/{parts[0]}/{parts[1]}";
             }
 
-            // fallback as-is (но лучше не доходить сюда)
             return input.Trim().TrimEnd('/');
         }
 
-        // treat as slug: "Owner/Repo" or "github.com/Owner/Repo"
         var slug = input.Trim().TrimEnd('/');
         if (slug.StartsWith("github.com/", StringComparison.OrdinalIgnoreCase))
             slug = slug.Substring("github.com/".Length);
@@ -54,13 +65,26 @@ public static class UpdateService
         return "https://github.com/LegendsDie/LegendBornLauncher";
     }
 
-    public static async Task CheckAndUpdateAsync(bool silent, bool showNoUpdates = false)
+    /// <summary>
+    /// Проверка и установка обновлений.
+    /// silent=true  -> без диалогов; ошибки не показываем.
+    /// showNoUpdates=true -> показывать "обновлений нет" (только если silent=false).
+    /// </summary>
+    public static async Task CheckAndUpdateAsync(
+        bool silent,
+        bool showNoUpdates = false,
+        CancellationToken ct = default)
     {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+
         UpdateManager? mgr = null;
 
         try
         {
-            mgr = new UpdateManager(CreateSource());
+            ct.ThrowIfCancellationRequested();
+
+            // ВАЖНО: без using — UpdateManager у тебя не IDisposable
+            mgr = CreateManager();
 
             if (!mgr.IsInstalled)
             {
@@ -71,13 +95,15 @@ public static class UpdateService
 
             if (mgr.UpdatePendingRestart is { } pending)
             {
+                // применяем уже скачанное обновление
                 mgr.ApplyUpdatesAndRestart(pending);
                 return;
             }
 
             var updates = await mgr.CheckForUpdatesAsync().ConfigureAwait(false);
-            var target = updates?.TargetFullRelease;
+            ct.ThrowIfCancellationRequested();
 
+            var target = updates?.TargetFullRelease;
             if (target is null)
             {
                 if (!silent && showNoUpdates)
@@ -94,15 +120,26 @@ public static class UpdateService
                     return;
             }
 
+            // Держим совместимость с твоей версией Velopack:
             await mgr.DownloadUpdatesAsync(updates!).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
 
+            // Запускаем apply-процесс, который ждёт закрытия приложения
             mgr.WaitExitThenApplyUpdates(target, restart: true);
 
-            // корректно закрываем WPF, чтобы apply мог отработать
-            Application.Current?.Dispatcher.Invoke(() =>
+            // Корректно закрываем WPF, чтобы apply мог отработать
+            try
             {
-                try { Application.Current.Shutdown(); } catch { }
-            });
+                Application.Current?.Dispatcher.Invoke(() =>
+                {
+                    try { Application.Current.Shutdown(); } catch { }
+                });
+            }
+            catch { }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // отмена — штатно
         }
         catch (Exception ex)
         {
@@ -111,7 +148,7 @@ public static class UpdateService
         }
         finally
         {
-            try { (mgr as IDisposable)?.Dispose(); } catch { }
+            try { _gate.Release(); } catch { }
         }
     }
 

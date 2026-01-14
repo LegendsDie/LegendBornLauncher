@@ -14,6 +14,9 @@ public sealed partial class MainViewModel : ObservableObject
 {
     private const string SiteBaseUrl = "https://legendborn.ru";
 
+    // ВАЖНО: дефолтный IP из Settings.settings (если пользователь не менял вручную)
+    private const string DefaultServerIp = "legendcraft.minerent.io";
+
     // ===== Services / core =====
     private readonly MinecraftService _mc;
     private readonly ServerListService _servers = new();
@@ -111,7 +114,7 @@ public sealed partial class MainViewModel : ObservableObject
     }
 
     // ===== Pack display (UI) — зависит от сервера =====
-    public string PackName => SelectedServer?.Name ?? "LegendBorn";
+    public string PackName => SelectedServer?.Name ?? "LegendCraft";
     public string MinecraftVersion => SelectedServer?.MinecraftVersion ?? "1.21.1";
     public string LoaderName => FormatLoaderName(SelectedServer?.LoaderName);
     public string LoaderVersion => SelectedServer?.LoaderVersion ?? "";
@@ -242,11 +245,21 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
-    private string _serverIp = "legendcraft.minerent.io";
+    private string _serverIp = DefaultServerIp;
     public string ServerIp
     {
         get => _serverIp;
-        set => Set(ref _serverIp, value);
+        set
+        {
+            var v = (value ?? "").Trim();
+
+            if (!Set(ref _serverIp, v))
+                return;
+
+            TrySaveSetting("ServerIp", _serverIp);
+            SaveSettingsSafe();
+            RefreshCanStates();
+        }
     }
 
     private bool _isLoggedIn;
@@ -358,7 +371,6 @@ public sealed partial class MainViewModel : ObservableObject
         IsValidMcName(Username);
 
     public string PlayButtonText => IsBusy ? "..." : "Играть";
-
     public string LoginButtonText => IsWaitingSiteConfirm ? "Ожидание..." : "Авторизация";
 
     // ===== Commands =====
@@ -410,11 +422,22 @@ public sealed partial class MainViewModel : ObservableObject
         InitCommands();
         _commandsReady = true;
 
-        Username = TryLoadStringSetting("Username", "Player") ?? "Player";
+        // ===== Load Settings (релиз-safe) =====
+        try
+        {
+            var u = TryLoadStringSetting("Username", "Player") ?? "Player";
+            _username = string.IsNullOrWhiteSpace(u) ? "Player" : u.Trim();
+            Raise(nameof(Username));
 
-        RamMb = TryLoadIntSetting("RamMb", 4096);
-        if (!RamOptions.Contains(RamMb))
-            RamMb = 4096;
+            var ip = TryLoadStringSetting("ServerIp", DefaultServerIp) ?? DefaultServerIp;
+            _serverIp = (ip ?? "").Trim();
+            Raise(nameof(ServerIp));
+
+            var ram = TryLoadIntSetting("RamMb", 4096);
+            _ramMb = RamOptions.Contains(ram) ? ram : 4096;
+            Raise(nameof(RamMb));
+        }
+        catch { }
 
         _ = InitializeAsyncSafe();
         RefreshCanStates();

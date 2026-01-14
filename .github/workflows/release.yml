@@ -112,7 +112,7 @@ jobs:
             throw "Version not found in csproj (Version/InformationalVersion/AssemblyVersion)"
           }
 
-          # На случай "0.2.0+sha" — отрезаем build metadata
+          # На случай "0.2.2+sha" — отрезаем build metadata
           $v = $v.ToString().Split('+')[0].Trim()
 
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8

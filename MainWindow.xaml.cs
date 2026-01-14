@@ -36,7 +36,7 @@ public partial class MainWindow : Window
 
     private static readonly string PrefsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "LegendBorn", "launcher_prefs.json");
+        "LegendCraft", "launcher_prefs.json");
 
     public bool GameUiModeHide
     {
@@ -96,6 +96,13 @@ public partial class MainWindow : Window
 
         Loaded += MainWindow_OnLoaded;
         Closing += MainWindow_OnClosing;
+        Closed += MainWindow_OnClosed;
+    }
+
+    private void MainWindow_OnClosed(object? sender, EventArgs e)
+    {
+        // Дублируем “снятие крючков” на случай нестандартного завершения.
+        TryUnhookLogsUi();
     }
 
     private void MainWindow_OnClosing(object? sender, CancelEventArgs e)
@@ -103,21 +110,8 @@ public partial class MainWindow : Window
         if (_isClosing) return;
         _isClosing = true;
 
-        try
-        {
-            _vm.PropertyChanged -= VmOnPropertyChanged;
-
-            if (_vm.LogLines is INotifyCollectionChanged ncc)
-                ncc.CollectionChanged -= LogLines_CollectionChanged;
-        }
-        catch { }
-
-        try
-        {
-            if (LogListBox != null)
-                LogListBox.RemoveHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(LogScrollViewer_ScrollChanged));
-        }
-        catch { }
+        try { _vm.PropertyChanged -= VmOnPropertyChanged; } catch { }
+        TryUnhookLogsUi();
 
         try { _vm.MarkClosing(); } catch { }
         try { SavePrefs(); } catch { }
@@ -146,7 +140,24 @@ public partial class MainWindow : Window
             if (_vm.LogLines is INotifyCollectionChanged ncc)
                 ncc.CollectionChanged += LogLines_CollectionChanged;
 
-            ScrollLogsToEnd();
+            ScrollLogsToEnd(force: true);
+        }
+        catch { }
+    }
+
+    private void TryUnhookLogsUi()
+    {
+        try
+        {
+            if (_vm.LogLines is INotifyCollectionChanged ncc)
+                ncc.CollectionChanged -= LogLines_CollectionChanged;
+        }
+        catch { }
+
+        try
+        {
+            if (LogListBox != null)
+                LogListBox.RemoveHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(LogScrollViewer_ScrollChanged));
         }
         catch { }
     }
@@ -157,12 +168,13 @@ public partial class MainWindow : Window
         {
             if (_isClosing) return;
 
-            // Пользователь крутит колесом/ползунком
-            if (e.ExtentHeightChange == 0)
-            {
-                var bottom = e.ExtentHeight - e.ViewportHeight;
-                _logAutoScroll = e.VerticalOffset >= bottom - 1.0; // "почти внизу"
-            }
+            // Пользователь крутит колесом/ползунком.
+            // Если меняется ExtentHeight — значит добавились строки, тогда этот эвент не про user-scroll.
+            if (e.ExtentHeightChange != 0)
+                return;
+
+            var bottom = Math.Max(0, e.ExtentHeight - e.ViewportHeight);
+            _logAutoScroll = e.VerticalOffset >= bottom - 1.0; // "почти внизу"
         }
         catch { }
     }
@@ -172,10 +184,11 @@ public partial class MainWindow : Window
         if (_isClosing) return;
         if (!_logAutoScroll) return;
 
-        Dispatcher.BeginInvoke(new Action(ScrollLogsToEnd));
+        // Не дергаем UI слишком часто: один BeginInvoke достаточно.
+        Dispatcher.BeginInvoke(new Action(() => ScrollLogsToEnd(force: false)));
     }
 
-    private void ScrollLogsToEnd()
+    private void ScrollLogsToEnd(bool force)
     {
         try
         {
@@ -184,6 +197,9 @@ public partial class MainWindow : Window
 
             var count = LogListBox.Items.Count;
             if (count <= 0) return;
+
+            if (!force && !_logAutoScroll)
+                return;
 
             LogListBox.ScrollIntoView(LogListBox.Items[count - 1]);
         }
@@ -329,9 +345,20 @@ public partial class MainWindow : Window
             File.WriteAllText(tmp, json);
 
             if (File.Exists(PrefsPath))
-                File.Replace(tmp, PrefsPath, destinationBackupFileName: null, ignoreMetadataErrors: true);
+            {
+                // КРИТИЧНО: backupFileName = null у некоторых систем ломает Replace.
+                var bak = PrefsPath + ".bak";
+                try { if (File.Exists(bak)) File.Delete(bak); } catch { }
+
+                File.Replace(tmp, PrefsPath, bak, ignoreMetadataErrors: true);
+                try { if (File.Exists(bak)) File.Delete(bak); } catch { }
+            }
             else
+            {
                 File.Move(tmp, PrefsPath);
+            }
+
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
         }
         catch { }
     }
@@ -423,6 +450,7 @@ public partial class MainWindow : Window
             if (_vm.LoginViaSiteCommand?.CanExecute(null) == true)
                 _vm.LoginViaSiteCommand.Execute(null);
 
+            // ждём до ~4.5 сек, пока VM получит ссылку
             for (var i = 0; i < 30; i++)
             {
                 if (_isClosing) return;

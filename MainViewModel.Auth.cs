@@ -35,7 +35,7 @@ public sealed partial class MainViewModel
             var key = "launcher_login";
             var idem = $"launcher_login:{DateTime.UtcNow:yyyy-MM-dd}";
 
-            await _site.SendLauncherEventAsync(
+            var resp = await _site.SendLauncherEventAsync(
                 _tokens.SafeAccessToken,
                 key,
                 idem,
@@ -46,6 +46,12 @@ public sealed partial class MainViewModel
                     v = "1"
                 },
                 ct: CancellationToken.None);
+
+            if (resp is not null && resp.Ok && resp.Balance >= 0)
+            {
+                // если сервер возвращает баланс — обновим UI
+                PostToUi(() => Rezonite = resp.Balance);
+            }
         }
         catch { }
     }
@@ -77,7 +83,7 @@ public sealed partial class MainViewModel
             SiteUserName = string.IsNullOrWhiteSpace(me.UserName) ? "Пользователь" : me.UserName;
             IsLoggedIn = true;
 
-            var mcName = string.IsNullOrWhiteSpace(me.MinecraftName) ? SiteUserName : me.MinecraftName;
+            var mcName = string.IsNullOrWhiteSpace(me.MinecraftName) ? SiteUserName : me.MinecraftName!;
             Username = MakeValidMcName(mcName);
 
             await TrySendDailyLauncherLoginEventAsync();
@@ -203,7 +209,7 @@ public sealed partial class MainViewModel
                 SiteUserName = string.IsNullOrWhiteSpace(me.UserName) ? "Пользователь" : me.UserName;
                 IsLoggedIn = true;
 
-                var mcName = string.IsNullOrWhiteSpace(me.MinecraftName) ? SiteUserName : me.MinecraftName;
+                var mcName = string.IsNullOrWhiteSpace(me.MinecraftName) ? SiteUserName : me.MinecraftName!;
                 Username = MakeValidMcName(mcName);
 
                 await TrySendDailyLauncherLoginEventAsync();
