@@ -5,10 +5,10 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -17,22 +17,57 @@ namespace LegendBorn.Services;
 /// <summary>
 /// Установщик NeoForge (installer.jar) в кастомный gameDir.
 /// MinecraftService ставит базовую ваниль через CmlLib, а здесь — только запуск "java -jar neoforge-installer.jar ...".
+/// ВАЖНО: в РФ maven.neoforged.net часто недоступен, поэтому:
+/// 1) скачиваем installer через зеркало;
+/// 2) после установки патчим versions/<id>/<id>.json, заменяя ссылки Maven на наше зеркало.
 /// </summary>
 public sealed class LoaderInstaller
 {
+    // Официальный Maven NeoForged
+    public const string OfficialNeoForgedMavenBase = "https://maven.neoforged.net/";
+
+    // Единственное зеркало Maven (подними на сервере как reverse-proxy/cache)
+    // https://legendborn.ru/maven/ -> proxy https://maven.neoforged.net/
+    public static readonly string[] DefaultNeoForgeMavenMirrors =
+    {
+        "https://legendborn.ru/maven/",
+    };
+
     private const long MaxInstallerBytes = 100L * 1024 * 1024; // 100 MB safety
     private static readonly TimeSpan DownloadTimeout = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan InstallTimeout = TimeSpan.FromMinutes(6);
+    private static readonly TimeSpan MirrorProbeTimeout = TimeSpan.FromSeconds(2);
 
     private readonly MinecraftPath _path;
     private readonly HttpClient _http;
     private readonly Action<string>? _log;
 
+    private readonly string[] _neoForgeMavenMirrors;
+    private readonly bool _rewriteNeoForgeUrlsToMirror;
+
     public LoaderInstaller(MinecraftPath path, HttpClient http, Action<string>? log = null)
+        : this(path, http, neoForgeMavenMirrors: null, rewriteNeoForgeUrlsToMirror: true, log: log)
+    {
+    }
+
+    public LoaderInstaller(
+        MinecraftPath path,
+        HttpClient http,
+        IEnumerable<string>? neoForgeMavenMirrors,
+        bool rewriteNeoForgeUrlsToMirror,
+        Action<string>? log = null)
     {
         _path = path ?? throw new ArgumentNullException(nameof(path));
         _http = http ?? throw new ArgumentNullException(nameof(http));
         _log = log;
+
+        _neoForgeMavenMirrors = (neoForgeMavenMirrors ?? DefaultNeoForgeMavenMirrors)
+            .Select(NormalizeAbsoluteBaseUrl)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        _rewriteNeoForgeUrlsToMirror = rewriteNeoForgeUrlsToMirror;
     }
 
     public async Task<string> EnsureInstalledAsync(
@@ -61,10 +96,9 @@ public sealed class LoaderInstaller
         if (string.IsNullOrWhiteSpace(loaderVersion))
             throw new InvalidOperationException("NeoForge требует версию (loader.version).");
 
-        // installerUrl может прийти пустым — тогда используем официальный
-        var official = GetOfficialNeoForgeInstallerUrl(loaderVersion);
+        var officialInstallerUrl = GetOfficialNeoForgeInstallerUrl(loaderVersion);
         if (string.IsNullOrWhiteSpace(installerUrl))
-            installerUrl = official;
+            installerUrl = officialInstallerUrl;
 
         if (string.IsNullOrWhiteSpace(installerUrl))
             throw new InvalidOperationException("NeoForge требует installerUrl (или должна строиться официальная ссылка).");
@@ -74,6 +108,7 @@ public sealed class LoaderInstaller
         if (IsVersionPresent(expectedId))
         {
             _log?.Invoke($"NeoForge: уже установлен -> {expectedId}");
+            await TryRewriteNeoForgeVersionJsonUrlsAsync(expectedId, ct).ConfigureAwait(false);
             return expectedId;
         }
 
@@ -81,7 +116,7 @@ public sealed class LoaderInstaller
             minecraftVersion: minecraftVersion,
             loaderVersion: loaderVersion,
             primaryInstallerUrl: installerUrl,
-            officialInstallerUrl: official,
+            officialInstallerUrl: officialInstallerUrl,
             ct: ct).ConfigureAwait(false);
 
         var installedId = await InstallNeoForgeIntoGameDirAsync(
@@ -94,6 +129,7 @@ public sealed class LoaderInstaller
         if (string.IsNullOrWhiteSpace(installedId))
             throw new InvalidOperationException("NeoForge installer отработал, но версия лоадера не найдена в versions/.");
 
+        await TryRewriteNeoForgeVersionJsonUrlsAsync(installedId!, ct).ConfigureAwait(false);
         return installedId!;
     }
 
@@ -101,7 +137,6 @@ public sealed class LoaderInstaller
     {
         var t = (loaderType ?? "vanilla").Trim().ToLowerInvariant();
         if (string.IsNullOrWhiteSpace(t)) return "vanilla";
-        // допускаем "NeoForge" и любые регистры
         if (t == "neoforge") return "neoforge";
         if (t == "vanilla") return "vanilla";
         return t;
@@ -139,14 +174,31 @@ public sealed class LoaderInstaller
     {
         var tries = new List<string>();
 
+        // 1) primary from config/servers.json
         if (!string.IsNullOrWhiteSpace(primaryInstallerUrl))
             tries.Add(primaryInstallerUrl.Trim());
 
-        if (!string.IsNullOrWhiteSpace(officialInstallerUrl) &&
-            !tries.Any(x => x.Equals(officialInstallerUrl, StringComparison.OrdinalIgnoreCase)))
+        // 2) зеркало: если ссылка указывает на официальный домен — подменяем на mirror base
+        foreach (var mirrorBase in _neoForgeMavenMirrors)
         {
-            tries.Add(officialInstallerUrl.Trim());
+            var mirrorUrl1 = RewriteUrlPrefix(primaryInstallerUrl, OfficialNeoForgedMavenBase, mirrorBase);
+            if (!string.IsNullOrWhiteSpace(mirrorUrl1))
+                tries.Add(mirrorUrl1);
+
+            var mirrorUrl2 = RewriteUrlPrefix(officialInstallerUrl, OfficialNeoForgedMavenBase, mirrorBase);
+            if (!string.IsNullOrWhiteSpace(mirrorUrl2))
+                tries.Add(mirrorUrl2);
         }
+
+        // 3) официальный в самом конце
+        if (!string.IsNullOrWhiteSpace(officialInstallerUrl))
+            tries.Add(officialInstallerUrl.Trim());
+
+        tries = tries
+            .Select(NormalizeAbsoluteUrl)
+            .Where(u => !string.IsNullOrWhiteSpace(u))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
         Exception? last = null;
 
@@ -162,7 +214,11 @@ public sealed class LoaderInstaller
                     throw new InvalidOperationException($"installerUrl is not a valid http(s) absolute url: {urlTry}");
                 }
 
-                var cacheDir = Path.Combine(_path.BasePath, "launcher", "installers", "neoforge", minecraftVersion, loaderVersion);
+                var baseDir = _path.BasePath ?? "";
+                if (string.IsNullOrWhiteSpace(baseDir))
+                    throw new InvalidOperationException("MinecraftPath.BasePath пустой.");
+
+                var cacheDir = Path.Combine(baseDir, "launcher", "installers", "neoforge", minecraftVersion, loaderVersion);
                 Directory.CreateDirectory(cacheDir);
 
                 var fileName = Path.GetFileName(uri.AbsolutePath);
@@ -171,7 +227,6 @@ public sealed class LoaderInstaller
 
                 var local = Path.Combine(cacheDir, fileName);
 
-                // если файл уже есть и выглядит как jar — используем
                 if (File.Exists(local) && new FileInfo(local).Length > 0 && LooksLikeJar(local))
                     return local;
 
@@ -199,7 +254,7 @@ public sealed class LoaderInstaller
                     throw new InvalidOperationException($"Installer слишком большой ({len.Value} bytes).");
 
                 await using (var input = await resp.Content.ReadAsStreamAsync(reqCts.Token).ConfigureAwait(false))
-                await using (var output = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                await using (var output = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 81920, FileOptions.SequentialScan))
                 {
                     await CopyWithLimitAsync(input, output, MaxInstallerBytes, reqCts.Token).ConfigureAwait(false);
                     await output.FlushAsync(reqCts.Token).ConfigureAwait(false);
@@ -256,10 +311,9 @@ public sealed class LoaderInstaller
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             if (fs.Length < 4) return false;
 
-            // JAR = ZIP => первые байты: 0x50 0x4B ('P''K')
             var b1 = fs.ReadByte();
             var b2 = fs.ReadByte();
-            return b1 == 0x50 && b2 == 0x4B;
+            return b1 == 0x50 && b2 == 0x4B; // 'P''K'
         }
         catch
         {
@@ -287,7 +341,6 @@ public sealed class LoaderInstaller
         var javaExe = FindJavaExecutable();
         var before = SnapshotVersionIds(baseDir);
 
-        // Сначала пробуем "нормальные" аргументы с installDir
         var argTries = new List<string[]>
         {
             new[] { "-jar", installerPath, "--installClient", "--installDir", baseDir },
@@ -321,8 +374,7 @@ public sealed class LoaderInstaller
                 continue;
         }
 
-        // Если installDir не сработал — fallback: installer часто пишет в %APPDATA%\.minecraft
-        // Мы подменим APPDATA на папку внутри gameDir и потом перенесём нужные данные.
+        // fallback: installer иногда пишет в %APPDATA%\.minecraft
         var tempAppData = Path.Combine(baseDir, "launcher", "tmp", "appdata");
         var tempMc = Path.Combine(tempAppData, ".minecraft");
 
@@ -363,7 +415,6 @@ public sealed class LoaderInstaller
                 PickNeoForgeVersionId(createdTemp, loaderVersion)
                 ?? FindNeoForgeVersionIdInBase(tempMc, loaderVersion);
 
-            // переносим только то, что реально может понадобиться клиенту
             MergeDir(Path.Combine(tempMc, "versions"), Path.Combine(baseDir, "versions"));
             MergeDir(Path.Combine(tempMc, "libraries"), Path.Combine(baseDir, "libraries"));
             MergeDir(Path.Combine(tempMc, "assets"), Path.Combine(baseDir, "assets"));
@@ -374,7 +425,6 @@ public sealed class LoaderInstaller
             if (IsVersionPresent(expectedId))
                 return expectedId;
 
-            // последний шанс: просто поиск в baseDir
             return FindNeoForgeVersionIdInBase(baseDir, loaderVersion);
         }
         finally
@@ -408,7 +458,6 @@ public sealed class LoaderInstaller
         {
             if (string.IsNullOrWhiteSpace(id)) continue;
 
-            // чаще всего: "1.21.1-neoforge-21.1.216"
             if (id.Contains("neoforge", StringComparison.OrdinalIgnoreCase) &&
                 (string.IsNullOrWhiteSpace(loaderVersion) || id.Contains(loaderVersion, StringComparison.OrdinalIgnoreCase)))
                 return id;
@@ -451,11 +500,10 @@ public sealed class LoaderInstaller
     {
         var baseDir = _path.BasePath ?? "";
 
-        // 1) runtime внутри gameDir (если ты её раскладываешь сам)
+        // 1) runtime внутри gameDir
         var runtimeDir = Path.Combine(baseDir, "runtime");
         if (Directory.Exists(runtimeDir))
         {
-            // предпочитаем java.exe
             var javaExe = Directory.EnumerateFiles(runtimeDir, "java.exe", SearchOption.AllDirectories).FirstOrDefault();
             if (!string.IsNullOrWhiteSpace(javaExe)) return javaExe!;
 
@@ -503,7 +551,27 @@ public sealed class LoaderInstaller
             if (!string.IsNullOrWhiteSpace(parent))
                 Directory.CreateDirectory(parent);
 
-            File.Copy(file, target, overwrite: true);
+            CopyFileIfDifferent(file, target);
+        }
+    }
+
+    private static void CopyFileIfDifferent(string src, string dst)
+    {
+        try
+        {
+            if (File.Exists(dst))
+            {
+                var a = new FileInfo(src);
+                var b = new FileInfo(dst);
+                if (a.Length == b.Length)
+                    return;
+            }
+
+            File.Copy(src, dst, overwrite: true);
+        }
+        catch
+        {
+            // не роняем установку из-за единичного файла
         }
     }
 
@@ -583,11 +651,9 @@ public sealed class LoaderInstaller
             }
             catch { }
 
-            // если отменили внешним ct — пробрасываем
             if (ct.IsCancellationRequested)
                 throw;
 
-            // иначе это наш timeout
             throw new TimeoutException("NeoForge installer: превышен таймаут выполнения.");
         }
 
@@ -601,6 +667,261 @@ public sealed class LoaderInstaller
             _log?.Invoke(stderr);
 
         return (p.ExitCode, stdout, stderr);
+    }
+
+    // =========================
+    // Patch version json URLs (critical for РФ)
+    // =========================
+
+    private async Task TryRewriteNeoForgeVersionJsonUrlsAsync(string versionId, CancellationToken ct)
+    {
+        if (!_rewriteNeoForgeUrlsToMirror)
+            return;
+
+        var baseDir = _path.BasePath ?? "";
+        if (string.IsNullOrWhiteSpace(baseDir))
+            return;
+
+        var jsonPath = Path.Combine(baseDir, "versions", versionId, versionId + ".json");
+        if (!File.Exists(jsonPath))
+            return;
+
+        var mirror = await PickFirstReachableMirrorAsync(_neoForgeMavenMirrors, ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(mirror))
+        {
+            _log?.Invoke("NeoForge: зеркало Maven не доступно/не задано — оставляю ссылки как есть.");
+            return;
+        }
+
+        try
+        {
+            var text = File.ReadAllText(jsonPath);
+            if (string.IsNullOrWhiteSpace(text))
+                return;
+
+            // если в json нет official maven — нечего патчить
+            if (!text.Contains(OfficialNeoForgedMavenBase, StringComparison.OrdinalIgnoreCase) &&
+                !text.Contains("maven.neoforged.net", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            var node = JsonNode.Parse(text);
+            if (node is null)
+                return;
+
+            var replaced = ReplaceStringsRecursive(node, s =>
+            {
+                // основной случай
+                var r = RewriteUrlPrefix(s, OfficialNeoForgedMavenBase, mirror);
+                if (!string.IsNullOrWhiteSpace(r))
+                    return r;
+
+                // на случай, если где-то без завершающего /
+                r = RewriteUrlPrefix(s, "https://maven.neoforged.net", mirror.TrimEnd('/'));
+                if (!string.IsNullOrWhiteSpace(r))
+                    return r;
+
+                // иногда бывает http
+                r = RewriteUrlPrefix(s, "http://maven.neoforged.net/", mirror);
+                if (!string.IsNullOrWhiteSpace(r))
+                    return r;
+
+                return s;
+            });
+
+            if (!replaced)
+                return;
+
+            var tmp = jsonPath + ".tmp";
+            var bak = jsonPath + ".bak";
+
+            var output = node.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(tmp, output);
+
+            try
+            {
+                TryDeleteQuiet(bak);
+                File.Replace(tmp, jsonPath, bak, ignoreMetadataErrors: true);
+            }
+            finally
+            {
+                TryDeleteQuiet(tmp);
+                TryDeleteQuiet(bak);
+            }
+
+            _log?.Invoke($"NeoForge: пропатчил URLs в {versionId}.json -> {mirror}");
+        }
+        catch (Exception ex)
+        {
+            _log?.Invoke($"NeoForge: не удалось пропатчить version json ({versionId}) — {ex.Message}");
+        }
+    }
+
+    private async Task<string?> PickFirstReachableMirrorAsync(string[] mirrors, CancellationToken ct)
+    {
+        if (mirrors is null || mirrors.Length == 0)
+            return null;
+
+        foreach (var m in mirrors)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var url = NormalizeAbsoluteBaseUrl(m);
+            if (string.IsNullOrWhiteSpace(url))
+                continue;
+
+            // Проверка доступности: сначала HEAD, потом GET (некоторые конфиги HEAD не любят)
+            if (await IsUrlReachableAsync(url, ct).ConfigureAwait(false))
+                return url;
+        }
+
+        return null;
+    }
+
+    private async Task<bool> IsUrlReachableAsync(string url, CancellationToken ct)
+    {
+        // HEAD
+        if (await ProbeAsync(HttpMethod.Head, url, ct).ConfigureAwait(false))
+            return true;
+
+        // GET fallback
+        return await ProbeAsync(HttpMethod.Get, url, ct).ConfigureAwait(false);
+    }
+
+    private async Task<bool> ProbeAsync(HttpMethod method, string url, CancellationToken ct)
+    {
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(MirrorProbeTimeout);
+
+            using var req = new HttpRequestMessage(method, url);
+            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
+            req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
+
+            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token)
+                .ConfigureAwait(false);
+
+            var code = (int)resp.StatusCode;
+            return code < 500; // 2xx/3xx/4xx = “доступно”, 5xx = “плохо”
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Рекурсивно заменяет строковые значения в JsonNode.
+    /// Важно: JsonValue нельзя "SetValue", нужно заменять узел в родителе (JsonObject/JsonArray).
+    /// </summary>
+    private static bool ReplaceStringsRecursive(JsonNode node, Func<string, string> replacer)
+    {
+        if (node is JsonObject obj)
+        {
+            bool any = false;
+
+            foreach (var key in obj.Select(k => k.Key).ToList())
+            {
+                var child = obj[key];
+                if (child is null) continue;
+
+                if (child is JsonValue v && v.TryGetValue<string>(out var s) && s is not null)
+                {
+                    var ns = replacer(s);
+                    if (!string.Equals(ns, s, StringComparison.Ordinal))
+                    {
+                        obj[key] = JsonValue.Create(ns);
+                        any = true;
+                    }
+                    continue;
+                }
+
+                if (ReplaceStringsRecursive(child, replacer))
+                    any = true;
+            }
+
+            return any;
+        }
+
+        if (node is JsonArray arr)
+        {
+            bool any = false;
+
+            for (int i = 0; i < arr.Count; i++)
+            {
+                var child = arr[i];
+                if (child is null) continue;
+
+                if (child is JsonValue v && v.TryGetValue<string>(out var s) && s is not null)
+                {
+                    var ns = replacer(s);
+                    if (!string.Equals(ns, s, StringComparison.Ordinal))
+                    {
+                        arr[i] = JsonValue.Create(ns);
+                        any = true;
+                    }
+                    continue;
+                }
+
+                if (ReplaceStringsRecursive(child, replacer))
+                    any = true;
+            }
+
+            return any;
+        }
+
+        // JsonValue на корне менять не нужно (у нас корень всегда объект)
+        return false;
+    }
+
+    // =========================
+    // Utilities
+    // =========================
+
+    private static string? RewriteUrlPrefix(string input, string fromPrefix, string toPrefix)
+    {
+        input = (input ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(input)) return null;
+
+        fromPrefix = (fromPrefix ?? "").Trim();
+        toPrefix = (toPrefix ?? "").Trim();
+
+        if (string.IsNullOrWhiteSpace(fromPrefix) || string.IsNullOrWhiteSpace(toPrefix))
+            return null;
+
+        if (!fromPrefix.EndsWith("/")) fromPrefix += "/";
+        if (!toPrefix.EndsWith("/")) toPrefix += "/";
+
+        if (input.StartsWith(fromPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var suffix = input.Substring(fromPrefix.Length);
+            return toPrefix + suffix;
+        }
+
+        return null;
+    }
+
+    private static string NormalizeAbsoluteUrl(string? url)
+    {
+        url = (url ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(url)) return "";
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return "";
+
+        if (!uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+            !uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+            return "";
+
+        return uri.ToString();
+    }
+
+    private static string NormalizeAbsoluteBaseUrl(string? url)
+    {
+        url = NormalizeAbsoluteUrl(url);
+        if (string.IsNullOrWhiteSpace(url)) return "";
+        if (!url.EndsWith("/")) url += "/";
+        return url;
     }
 
     private static async Task<bool> TryMoveOrReplaceWithRetryAsync(string source, string dest, CancellationToken ct, int attempts, int delayMs)
