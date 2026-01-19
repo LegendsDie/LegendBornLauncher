@@ -1,15 +1,18 @@
 ﻿<Window x:Class="LegendBorn.MainWindow"
+        x:Name="RootWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
-        Title="LegendCraft"
-        Height="600" Width="920"
+        Title="LegendBorn"
+        Icon="pack://application:,,,/Assets/logolauncher.png"
+        Width="1100" Height="740"
+        MinWidth="920" MinHeight="600"
         WindowStartupLocation="CenterScreen"
         Background="#0B0F1A"
         Foreground="#EAF0FF"
         FontFamily="Segoe UI"
         WindowStyle="None"
-        ResizeMode="CanResize"
+        ResizeMode="NoResize"
         SnapsToDevicePixels="True"
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Display"
@@ -19,7 +22,7 @@
         <shell:WindowChrome CaptionHeight="0"
                             CornerRadius="16"
                             GlassFrameThickness="0"
-                            ResizeBorderThickness="6"
+                            ResizeBorderThickness="0"
                             UseAeroCaptionButtons="False"/>
     </shell:WindowChrome.WindowChrome>
 
@@ -34,14 +37,219 @@
                         ImageSource="pack://application:,,,/Assets/launcherstart.png"
                         Stretch="UniformToFill"/>
 
-            <!-- Local fallback for readability if theme causes black text -->
+            <!-- Local fallback -->
             <SolidColorBrush x:Key="TextStrongLocal" Color="#EAF0FF"/>
             <SolidColorBrush x:Key="TextDimLocal" Color="#A9B4D6"/>
             <SolidColorBrush x:Key="DividerBrushLocal" Color="#2A2F49"/>
+
+            <!-- Bottom thin progress strip (delayed hide so it doesn't "blink") -->
+            <Style x:Key="BottomStripProgressBarStyle"
+                   TargetType="ProgressBar"
+                   BasedOn="{StaticResource ProgressBarAccurateStyle}">
+                <Setter Property="Height" Value="4"/>
+                <Setter Property="VerticalAlignment" Value="Bottom"/>
+                <Setter Property="HorizontalAlignment" Value="Stretch"/>
+                <Setter Property="Margin" Value="26,0,26,18"/>
+                <Setter Property="IsHitTestVisible" Value="False"/>
+                <Setter Property="Opacity" Value="1"/>
+                <Style.Triggers>
+
+                    <!-- Hide when ProgressPercent == 0, but with delay + cancellation -->
+                    <DataTrigger Binding="{Binding ProgressPercent}" Value="0">
+                        <DataTrigger.EnterActions>
+                            <BeginStoryboard x:Name="HideStripAtZero">
+                                <Storyboard>
+                                    <!-- Wait a bit, then fade/collapse -->
+                                    <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                     To="0"
+                                                     Duration="0:0:0.25"
+                                                     BeginTime="0:0:1.5"/>
+                                    <DoubleAnimation Storyboard.TargetProperty="Height"
+                                                     To="0"
+                                                     Duration="0:0:0.20"
+                                                     BeginTime="0:0:1.5"/>
+                                    <ThicknessAnimation Storyboard.TargetProperty="Margin"
+                                                        To="26,0,26,0"
+                                                        Duration="0:0:0.20"
+                                                        BeginTime="0:0:1.5"/>
+                                </Storyboard>
+                            </BeginStoryboard>
+                        </DataTrigger.EnterActions>
+                        <DataTrigger.ExitActions>
+                            <!-- If progress moved off 0 quickly, cancel scheduled hide -->
+                            <StopStoryboard BeginStoryboardName="HideStripAtZero"/>
+                            <BeginStoryboard>
+                                <Storyboard>
+                                    <DoubleAnimation Storyboard.TargetProperty="Height"
+                                                     To="4"
+                                                     Duration="0:0:0.12"/>
+                                    <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                     To="1"
+                                                     Duration="0:0:0.12"/>
+                                    <ThicknessAnimation Storyboard.TargetProperty="Margin"
+                                                        To="26,0,26,18"
+                                                        Duration="0:0:0.12"/>
+                                </Storyboard>
+                            </BeginStoryboard>
+                        </DataTrigger.ExitActions>
+                    </DataTrigger>
+
+                    <!-- Hide when ProgressPercent == 100, but keep visible longer (no instant disappear) -->
+                    <DataTrigger Binding="{Binding ProgressPercent}" Value="100">
+                        <DataTrigger.EnterActions>
+                            <BeginStoryboard x:Name="HideStripAtHundred">
+                                <Storyboard>
+                                    <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                     To="0"
+                                                     Duration="0:0:0.25"
+                                                     BeginTime="0:0:2.0"/>
+                                    <DoubleAnimation Storyboard.TargetProperty="Height"
+                                                     To="0"
+                                                     Duration="0:0:0.20"
+                                                     BeginTime="0:0:2.0"/>
+                                    <ThicknessAnimation Storyboard.TargetProperty="Margin"
+                                                        To="26,0,26,0"
+                                                        Duration="0:0:0.20"
+                                                        BeginTime="0:0:2.0"/>
+                                </Storyboard>
+                            </BeginStoryboard>
+                        </DataTrigger.EnterActions>
+                        <DataTrigger.ExitActions>
+                            <!-- If progress leaves 100 (e.g., next phase), cancel scheduled hide -->
+                            <StopStoryboard BeginStoryboardName="HideStripAtHundred"/>
+                            <BeginStoryboard>
+                                <Storyboard>
+                                    <DoubleAnimation Storyboard.TargetProperty="Height"
+                                                     To="4"
+                                                     Duration="0:0:0.12"/>
+                                    <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                     To="1"
+                                                     Duration="0:0:0.12"/>
+                                    <ThicknessAnimation Storyboard.TargetProperty="Margin"
+                                                        To="26,0,26,18"
+                                                        Duration="0:0:0.12"/>
+                                </Storyboard>
+                            </BeginStoryboard>
+                        </DataTrigger.ExitActions>
+                    </DataTrigger>
+
+                </Style.Triggers>
+            </Style>
+
+            <!-- Brand button: no ugly focus / no selection -->
+            <Style x:Key="BrandButtonStyle" TargetType="Button">
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="Padding" Value="0"/>
+                <Setter Property="Focusable" Value="False"/>
+                <Setter Property="IsTabStop" Value="False"/>
+                <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border CornerRadius="12" Background="Transparent">
+                                <ContentPresenter/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Opacity" Value="0.95"/>
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter Property="Opacity" Value="0.85"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- Small icon button -->
+            <Style x:Key="SmallIconButton" TargetType="Button">
+                <Setter Property="Width" Value="38"/>
+                <Setter Property="Height" Value="38"/>
+                <Setter Property="Padding" Value="0"/>
+                <Setter Property="Background" Value="#141A2E"/>
+                <Setter Property="BorderBrush" Value="{StaticResource StrokeGlow}"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="Foreground" Value="{StaticResource TextStrongLocal}"/>
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Focusable" Value="False"/>
+                <Setter Property="IsTabStop" Value="False"/>
+                <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border CornerRadius="12"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}">
+                                <ContentPresenter HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Background" Value="#1B2440"/>
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter Property="Background" Value="#0E1427"/>
+                                </Trigger>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter Property="Opacity" Value="0.55"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- News button near profile: match ProfileButton look -->
+            <Style x:Key="NewsTopButtonStyle" TargetType="Button" BasedOn="{StaticResource ProfileButton}">
+                <Setter Property="Margin" Value="0,0,10,0"/>
+                <Setter Property="Padding" Value="12,0"/>
+                <Setter Property="Height" Value="38"/>
+                <Setter Property="Focusable" Value="False"/>
+                <Setter Property="IsTabStop" Value="False"/>
+                <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            </Style>
+
+            <!-- Compact news card button (fixes padding/offset issues) -->
+            <Style x:Key="NewsCardButtonStyle" TargetType="Button">
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="Padding" Value="0"/>
+                <Setter Property="Margin" Value="0,0,0,10"/>
+                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                <Setter Property="VerticalContentAlignment" Value="Stretch"/>
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Focusable" Value="False"/>
+                <Setter Property="IsTabStop" Value="False"/>
+                <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <ContentPresenter/>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
         </ResourceDictionary>
     </Window.Resources>
 
-    <Border Style="{StaticResource RootBorderStyle}">
+    <!-- Root border with adaptive corner radius when Maximized -->
+    <Border x:Name="RootBorder">
+        <Border.Style>
+            <Style TargetType="Border" BasedOn="{StaticResource RootBorderStyle}">
+                <Style.Triggers>
+                    <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=WindowState}" Value="Maximized">
+                        <Setter Property="CornerRadius" Value="0"/>
+                        <Setter Property="Margin" Value="0"/>
+                    </DataTrigger>
+                </Style.Triggers>
+            </Style>
+        </Border.Style>
+
         <Grid>
 
             <!-- BACKGROUND -->
@@ -92,9 +300,7 @@
 
                         <!-- LEFT: brand -->
                         <Button Grid.Column="0"
-                                Background="Transparent"
-                                BorderThickness="0"
-                                Padding="0"
+                                Style="{StaticResource BrandButtonStyle}"
                                 ToolTip="Главная"
                                 Command="{Binding OpenStartCommand}">
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
@@ -106,10 +312,10 @@
 
                                 <StackPanel Margin="12,0,0,0">
                                     <TextBlock Text="LEGENDBORN"
-                                               FontWeight="Bold"
-                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               FontSize="12"
                                                Foreground="{StaticResource TextStrongLocal}"/>
-                                    <StackPanel Orientation="Horizontal">
+                                    <StackPanel Orientation="Horizontal" Opacity="0.80">
                                         <TextBlock Text="Launcher"
                                                    Foreground="{StaticResource TextDim}"
                                                    FontSize="11"/>
@@ -131,6 +337,37 @@
 
                         <!-- RIGHT -->
                         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+
+                            <!-- NEWS button (profile-like) -->
+                            <Button Style="{StaticResource NewsTopButtonStyle}"
+                                    ToolTip="Новости"
+                                    Click="OpenNewsTab_OnClick">
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Viewbox Width="16" Height="16" Margin="0,0,8,0">
+                                        <Canvas Width="16" Height="16">
+                                            <Rectangle Width="14" Height="14" Canvas.Left="1" Canvas.Top="1"
+                                                       RadiusX="2" RadiusY="2"
+                                                       Stroke="{StaticResource TextDimLocal}" StrokeThickness="1"
+                                                       Opacity="0.9"/>
+                                            <Rectangle Width="4" Height="5" Canvas.Left="3" Canvas.Top="4"
+                                                       Stroke="{StaticResource TextDimLocal}" StrokeThickness="1"
+                                                       Opacity="0.9"/>
+                                            <Line X1="8" Y1="5" X2="13" Y2="5"
+                                                  Stroke="{StaticResource TextDimLocal}" StrokeThickness="1"
+                                                  Opacity="0.9"/>
+                                            <Line X1="8" Y1="7" X2="13" Y2="7"
+                                                  Stroke="{StaticResource TextDimLocal}" StrokeThickness="1"
+                                                  Opacity="0.9"/>
+                                            <Line X1="3" Y1="11" X2="13" Y2="11"
+                                                  Stroke="{StaticResource TextDimLocal}" StrokeThickness="1"
+                                                  Opacity="0.9"/>
+                                        </Canvas>
+                                    </Viewbox>
+                                    <TextBlock Text="Новости"
+                                               Foreground="{StaticResource TextStrongLocal}"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
 
                             <!-- Profile -->
                             <Button Style="{StaticResource ProfileButton}"
@@ -171,6 +408,9 @@
 
                                 <Button.ContextMenu>
                                     <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                                        <MenuItem Header="{Binding Rezonite, StringFormat=Резонит: {0:N0}}"
+                                                  IsEnabled="False"/>
+                                        <Separator/>
                                         <MenuItem Header="Профиль" Command="{Binding OpenProfileCommand}"/>
                                         <Separator/>
                                         <MenuItem Header="Выйти" Command="{Binding SiteLogoutCommand}"/>
@@ -201,7 +441,8 @@
                 </Border>
 
                 <!-- CONTENT -->
-                <TabControl Grid.Row="2"
+                <TabControl x:Name="MainTabs"
+                            Grid.Row="2"
                             Style="{StaticResource HiddenTabsStyle}"
                             SelectedIndex="{Binding SelectedMenuIndex}">
 
@@ -324,140 +565,231 @@
                                         </Rectangle.Fill>
                                     </Rectangle>
 
-                                    <Border Background="#00000000" Padding="26">
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="1.55*"/>
-                                                <ColumnDefinition Width="26"/>
-                                                <ColumnDefinition Width="1*"/>
-                                            </Grid.ColumnDefinitions>
+                                    <!-- subtle official mark (top-right) -->
+                                    <TextBlock FontFamily="Segoe MDL2 Assets"
+                                               Text="&#xE73E;"
+                                               FontSize="16"
+                                               Foreground="{StaticResource TextDimLocal}"
+                                               Opacity="0.18"
+                                               HorizontalAlignment="Right"
+                                               VerticalAlignment="Top"
+                                               Margin="0,12,14,0"
+                                               ToolTip="Официальный сервер"/>
 
-                                            <!-- LEFT -->
-                                            <StackPanel Grid.Column="0"
-                                                        VerticalAlignment="Top"
-                                                        Margin="0,14,0,0">
+                                    <!-- Padding bottom reserved for thin progress strip -->
+                                    <Border Background="#00000000" Padding="26,26,26,44">
+                                        <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                                      HorizontalScrollBarVisibility="Disabled">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="1.55*"/>
+                                                    <ColumnDefinition Width="26"/>
+                                                    <ColumnDefinition Width="340"/>
+                                                </Grid.ColumnDefinitions>
 
-                                                <TextBlock Text="{Binding PackName}"
-                                                           FontSize="56"
-                                                           FontWeight="Bold"
-                                                           Foreground="{StaticResource TextStrong}"/>
+                                                <!-- LEFT -->
+                                                <StackPanel Grid.Column="0"
+                                                            VerticalAlignment="Top"
+                                                            Margin="0,12,0,0">
 
-                                                <TextBlock Margin="0,10,0,0"
-                                                           Foreground="{StaticResource TextDim}"
-                                                           FontSize="14"
-                                                           Text="{Binding BuildDisplayName}"/>
+                                                    <!-- Server header: bigger logo + one-line description -->
+                                                    <StackPanel Margin="0,0,0,14">
+                                                        <Image Source="pack://application:,,,/Assets/legendcraft.png"
+                                                               Height="200"
+                                                               Stretch="Uniform"
+                                                               HorizontalAlignment="Center"
+                                                               SnapsToDevicePixels="True"
+                                                               RenderOptions.BitmapScalingMode="HighQuality">
+                                                            <Image.Effect>
+                                                                <DropShadowEffect Color="#A855F7"
+                                                                                  BlurRadius="22"
+                                                                                  ShadowDepth="0"
+                                                                                  Opacity="0.35"/>
+                                                            </Image.Effect>
+                                                        </Image>
 
-                                                <!-- SERVER -->
-                                                <Border Margin="0,22,0,0"
-                                                        Style="{StaticResource FieldCardStyle}">
-                                                    <Grid>
-                                                        <Grid.RowDefinitions>
-                                                            <RowDefinition Height="Auto"/>
-                                                            <RowDefinition Height="12"/>
-                                                            <RowDefinition Height="Auto"/>
-                                                            <RowDefinition Height="8"/>
-                                                            <RowDefinition Height="Auto"/>
-                                                        </Grid.RowDefinitions>
+                                                        <TextBlock Margin="0,10,0,0"
+                                                                   Text="TechMagicRPG сервер, где начнётся твой путь"
+                                                                   Foreground="{StaticResource TextDimLocal}"
+                                                                   FontSize="13"
+                                                                   TextTrimming="CharacterEllipsis"/>
+                                                    </StackPanel>
 
-                                                        <TextBlock Text="Сервер"
-                                                                   FontWeight="SemiBold"
-                                                                   Foreground="{StaticResource TextStrongLocal}"/>
+                                                    <!-- NICK -->
+                                                    <Border Style="{StaticResource FieldCardStyle}">
+                                                        <StackPanel>
+                                                            <TextBlock Text="Ник (Minecraft)"
+                                                                       FontWeight="SemiBold"
+                                                                       Foreground="{StaticResource TextStrongLocal}"/>
 
-                                                        <ComboBox Grid.Row="2"
-                                                                  ItemsSource="{Binding Servers}"
-                                                                  SelectedItem="{Binding SelectedServer}"
-                                                                  DisplayMemberPath="Name"/>
+                                                            <TextBox Margin="0,12,0,0"
+                                                                     Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"/>
 
-                                                        <TextBlock Grid.Row="4"
+                                                            <!-- Compact status text (no percent here) -->
+                                                            <TextBlock Margin="0,10,0,0"
+                                                                       Text="{Binding StatusText, FallbackValue='Готов к запуску.'}"
+                                                                       Foreground="{StaticResource TextDimLocal}"
+                                                                       FontSize="12"
+                                                                       TextTrimming="CharacterEllipsis"/>
+                                                        </StackPanel>
+                                                    </Border>
+
+                                                    <!-- SERVER NEWS (compact, TOP 2) -->
+                                                    <Border Margin="0,16,0,0"
+                                                            Style="{StaticResource FieldCardStyle}">
+                                                        <Grid>
+                                                            <Grid.RowDefinitions>
+                                                                <RowDefinition Height="Auto"/>
+                                                                <RowDefinition Height="10"/>
+                                                                <RowDefinition Height="*"/>
+                                                            </Grid.RowDefinitions>
+
+                                                            <Grid Grid.Row="0">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                    <ColumnDefinition Width="Auto"/>
+                                                                </Grid.ColumnDefinitions>
+
+                                                                <TextBlock Text="Новости сервера"
+                                                                           FontWeight="Bold"
+                                                                           Foreground="{StaticResource TextStrongLocal}"
+                                                                           FontSize="13"/>
+
+                                                                <Button Grid.Column="1"
+                                                                        Style="{StaticResource GhostButton}"
+                                                                        Content="Все"
+                                                                        Height="30"
+                                                                        Padding="12,0"
+                                                                        Click="OpenNewsTab_OnClick"/>
+                                                            </Grid>
+
+                                                            <ItemsControl Grid.Row="2"
+                                                                          ItemsSource="{Binding ElementName=RootWindow, Path=ServerNewsTop2}">
+                                                                <ItemsControl.ItemsPanel>
+                                                                    <ItemsPanelTemplate>
+                                                                        <StackPanel/>
+                                                                    </ItemsPanelTemplate>
+                                                                </ItemsControl.ItemsPanel>
+
+                                                                <ItemsControl.ItemTemplate>
+                                                                    <DataTemplate>
+                                                                        <Button Style="{StaticResource NewsCardButtonStyle}"
+                                                                                Tag="{Binding Url}"
+                                                                                Click="OpenNewsItem_OnClick">
+                                                                            <Border Background="#101329"
+                                                                                    BorderBrush="{StaticResource StrokeGlow}"
+                                                                                    BorderThickness="1"
+                                                                                    CornerRadius="14"
+                                                                                    Padding="12">
+                                                                                <Grid>
+                                                                                    <Grid.RowDefinitions>
+                                                                                        <RowDefinition Height="Auto"/>
+                                                                                        <RowDefinition Height="6"/>
+                                                                                        <RowDefinition Height="Auto"/>
+                                                                                    </Grid.RowDefinitions>
+
+                                                                                    <Grid>
+                                                                                        <Grid.ColumnDefinitions>
+                                                                                            <ColumnDefinition Width="*"/>
+                                                                                            <ColumnDefinition Width="Auto"/>
+                                                                                        </Grid.ColumnDefinitions>
+
+                                                                                        <TextBlock Text="{Binding Title}"
+                                                                                                   Foreground="{StaticResource TextStrongLocal}"
+                                                                                                   FontWeight="SemiBold"
+                                                                                                   FontSize="12"
+                                                                                                   TextTrimming="CharacterEllipsis"/>
+                                                                                        <TextBlock Grid.Column="1"
+                                                                                                   Margin="12,0,0,0"
+                                                                                                   Foreground="{StaticResource TextDimLocal}"
+                                                                                                   FontSize="11"
+                                                                                                   Text="{Binding Date}"/>
+                                                                                    </Grid>
+
+                                                                                    <TextBlock Grid.Row="2"
+                                                                                               Foreground="{StaticResource TextDimLocal}"
+                                                                                               FontSize="12"
+                                                                                               TextWrapping="NoWrap"
+                                                                                               TextTrimming="CharacterEllipsis"
+                                                                                               Text="{Binding Summary}"/>
+                                                                                </Grid>
+                                                                            </Border>
+                                                                        </Button>
+                                                                    </DataTemplate>
+                                                                </ItemsControl.ItemTemplate>
+                                                            </ItemsControl>
+                                                        </Grid>
+                                                    </Border>
+
+                                                </StackPanel>
+
+                                                <!-- RIGHT -->
+                                                <Grid Grid.Column="2">
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="*"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                    </Grid.RowDefinitions>
+
+                                                    <!-- ACTIONS pinned bottom-right -->
+                                                    <StackPanel Grid.Row="1"
+                                                                VerticalAlignment="Bottom"
+                                                                HorizontalAlignment="Right">
+
+                                                        <!-- small icon row (ABOVE PLAY) -->
+                                                        <StackPanel Orientation="Horizontal"
+                                                                    HorizontalAlignment="Right"
+                                                                    Margin="0,0,0,10">
+
+                                                            <!-- Open game folder -->
+                                                            <Button Style="{StaticResource SmallIconButton}"
+                                                                    ToolTip="Открыть папку игры"
+                                                                    Command="{Binding OpenGameDirCommand}">
+                                                                <TextBlock FontFamily="Segoe MDL2 Assets"
+                                                                           Text="&#xE8B7;"
+                                                                           FontSize="16"/>
+                                                            </Button>
+
+                                                            <!-- Open site -->
+                                                            <Button Style="{StaticResource SmallIconButton}"
+                                                                    ToolTip="Открыть сайт"
+                                                                    Margin="10,0,0,0"
+                                                                    Click="OpenSite_OnClick">
+                                                                <TextBlock FontFamily="Segoe MDL2 Assets"
+                                                                           Text="&#xE774;"
+                                                                           FontSize="16"/>
+                                                            </Button>
+                                                        </StackPanel>
+
+                                                        <Button Style="{StaticResource PlayOrStopButtonStyle}"
+                                                                Click="PlayOrStop_OnClick"
+                                                                Height="58"
+                                                                FontSize="16"
+                                                                Padding="36,0"/>
+
+                                                        <TextBlock Margin="0,14,0,0"
                                                                    Foreground="{StaticResource TextDimLocal}"
                                                                    FontSize="12"
-                                                                   Text="{Binding ServerIp}"/>
-                                                    </Grid>
-                                                </Border>
+                                                                   HorizontalAlignment="Right">
+                                                            Сборка синхронизируется перед запуском.
+                                                        </TextBlock>
 
-                                                <!-- NICK + STATUS/PROGRESS STRIP -->
-                                                <Border Margin="0,18,0,0"
-                                                        Style="{StaticResource FieldCardStyle}">
-                                                    <StackPanel>
-                                                        <TextBlock Text="Ник (Minecraft)"
-                                                                   FontWeight="SemiBold"
-                                                                   Foreground="{StaticResource TextStrongLocal}"/>
-
-                                                        <TextBox Margin="0,12,0,0"
-                                                                 Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"/>
-
-                                                        <Border Style="{StaticResource StatusStripStyle}">
-                                                            <Grid>
-                                                                <Grid.RowDefinitions>
-                                                                    <RowDefinition Height="Auto"/>
-                                                                    <RowDefinition Height="10"/>
-                                                                    <RowDefinition Height="Auto"/>
-                                                                </Grid.RowDefinitions>
-
-                                                                <Grid Grid.Row="0">
-                                                                    <Grid.ColumnDefinitions>
-                                                                        <ColumnDefinition Width="*"/>
-                                                                        <ColumnDefinition Width="Auto"/>
-                                                                    </Grid.ColumnDefinitions>
-
-                                                                    <TextBlock Text="{Binding StatusText, FallbackValue='Вход выполнен.'}"
-                                                                               Foreground="{StaticResource TextDimLocal}"
-                                                                               FontSize="12"/>
-
-                                                                    <TextBlock Grid.Column="1"
-                                                                               Margin="12,0,0,0"
-                                                                               Foreground="{StaticResource TextDimLocal}"
-                                                                               FontSize="12"
-                                                                               Text="{Binding ProgressPercent, StringFormat={}{0:0}%}"/>
-                                                                </Grid>
-
-                                                                <ProgressBar Grid.Row="2"
-                                                                             Style="{StaticResource ProgressBarAccurateStyle}"
-                                                                             Minimum="0" Maximum="100"
-                                                                             Value="{Binding ProgressPercent}"/>
-                                                            </Grid>
-                                                        </Border>
                                                     </StackPanel>
-                                                </Border>
-
-                                            </StackPanel>
-
-                                            <!-- RIGHT -->
-                                            <StackPanel Grid.Column="2"
-                                                        VerticalAlignment="Center"
-                                                        HorizontalAlignment="Right"
-                                                        Width="320">
-
-                                                <Button Style="{StaticResource PlayOrStopButtonStyle}"
-                                                        Click="PlayOrStop_OnClick"
-                                                        Height="58"
-                                                        FontSize="16"
-                                                        Padding="36,0"/>
-
-                                                <Button Style="{StaticResource GhostButton}"
-                                                        Content="Проверить сборку"
-                                                        Command="{Binding RefreshVersionsCommand}"
-                                                        Margin="0,14,0,0"
-                                                        Height="44"
-                                                        Padding="18,0"/>
-
-                                                <TextBlock Margin="0,14,0,0"
-                                                           Foreground="{StaticResource TextDimLocal}"
-                                                           FontSize="12"
-                                                           HorizontalAlignment="Right">
-                                                    Сборка синхронизируется перед запуском.
-                                                </TextBlock>
-
-                                            </StackPanel>
-
-                                        </Grid>
+                                                </Grid>
+                                            </Grid>
+                                        </ScrollViewer>
                                     </Border>
+
+                                    <!-- Single thin strip at the bottom -->
+                                    <ProgressBar Style="{StaticResource BottomStripProgressBarStyle}"
+                                                 Minimum="0" Maximum="100"
+                                                 Value="{Binding ProgressPercent}"/>
+
                                 </Grid>
                             </Border>
                         </Grid>
                     </TabItem>
 
-                    <!-- 2) PROFILE -->
+                    <!-- 2) PROFILE (без изменений) -->
                     <TabItem>
                         <Grid>
                             <Grid.RowDefinitions>
@@ -651,7 +983,7 @@
                         </Grid>
                     </TabItem>
 
-                    <!-- 3) SETTINGS (merged into one card + divider stripe) -->
+                    <!-- 3) SETTINGS (без изменений) -->
                     <TabItem>
                         <Grid>
                             <Border Style="{StaticResource CardStyle}">
@@ -663,7 +995,6 @@
                                         <RowDefinition Height="*"/>
                                     </Grid.RowDefinitions>
 
-                                    <!-- HEADER + RIGHT ACTIONS -->
                                     <Grid Grid.Row="0">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
@@ -684,7 +1015,6 @@
                                         </Button>
                                     </Grid>
 
-                                    <!-- TOP SETTINGS CONTENT -->
                                     <Grid Grid.Row="1" Margin="0,14,0,0">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="1.25*"/>
@@ -736,22 +1066,20 @@
                                                     Padding="18,0"/>
 
                                             <Button Style="{StaticResource GhostButton}"
-                                                    Content="Открыть папку игры"
-                                                    Command="{Binding OpenGameDirCommand}"
+                                                    Content="Проверить сборку"
+                                                    Command="{Binding RefreshVersionsCommand}"
                                                     Margin="0,14,0,0"
                                                     Height="44"
                                                     Padding="18,0"/>
                                         </StackPanel>
                                     </Grid>
 
-                                    <!-- DIVIDER STRIPE -->
                                     <Border Grid.Row="2"
                                             Margin="0,18,0,18"
                                             Height="1"
                                             Background="{StaticResource DividerBrushLocal}"
                                             Opacity="0.9"/>
 
-                                    <!-- DIAGNOSTICS (bottom part in same card) -->
                                     <Grid Grid.Row="3">
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto"/>
@@ -835,6 +1163,135 @@
                                         </Expander>
                                     </Grid>
 
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+
+                    <!-- 4) NEWS (compact, not stretched) -->
+                    <TabItem>
+                        <Grid>
+                            <Border Style="{StaticResource ScreenFrameStyle}">
+                                <Grid>
+                                    <Image Source="pack://application:,,,/Assets/legendcraft.jpg"
+                                           Stretch="UniformToFill"
+                                           Opacity="0.18"/>
+                                    <Rectangle Fill="#B0060718"/>
+
+                                    <Border Padding="26">
+                                        <Grid>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="12"/>
+                                                <RowDefinition Height="*"/>
+                                            </Grid.RowDefinitions>
+
+                                            <!-- Header -->
+                                            <Grid Grid.Row="0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+
+                                                <StackPanel>
+                                                    <TextBlock Text="Новости"
+                                                               Foreground="{StaticResource TextStrongLocal}"
+                                                               FontSize="22"
+                                                               FontWeight="Bold"/>
+                                                    <TextBlock Margin="0,4,0,0"
+                                                               Foreground="{StaticResource TextDimLocal}"
+                                                               FontSize="12"
+                                                               Text="Обновления проекта и объявления сервера."/>
+                                                </StackPanel>
+
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
+                                                    <Button Style="{StaticResource GhostButton}"
+                                                            Content="Открыть сайт"
+                                                            Height="34"
+                                                            Padding="14,0"
+                                                            Margin="0,0,10,0"
+                                                            Click="OpenSite_OnClick"/>
+                                                    <Button Style="{StaticResource WinCtlButton}"
+                                                            ToolTip="На главную"
+                                                            Command="{Binding OpenStartCommand}">
+                                                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE711;" FontSize="14"/>
+                                                    </Button>
+                                                </StackPanel>
+                                            </Grid>
+
+                                            <!-- Body -->
+                                            <ScrollViewer Grid.Row="2"
+                                                          VerticalScrollBarVisibility="Auto"
+                                                          HorizontalScrollBarVisibility="Disabled">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="820"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <StackPanel Grid.Column="1">
+
+                                                        <ItemsControl ItemsSource="{Binding ElementName=RootWindow, Path=ProjectNews}">
+                                                            <ItemsControl.ItemsPanel>
+                                                                <ItemsPanelTemplate>
+                                                                    <StackPanel/>
+                                                                </ItemsPanelTemplate>
+                                                            </ItemsControl.ItemsPanel>
+
+                                                            <ItemsControl.ItemTemplate>
+                                                                <DataTemplate>
+                                                                    <Button Style="{StaticResource NewsCardButtonStyle}"
+                                                                            Tag="{Binding Url}"
+                                                                            Click="OpenNewsItem_OnClick">
+                                                                        <Border Background="#101329"
+                                                                                BorderBrush="{StaticResource StrokeGlow}"
+                                                                                BorderThickness="1"
+                                                                                CornerRadius="16"
+                                                                                Padding="14">
+                                                                            <Grid>
+                                                                                <Grid.RowDefinitions>
+                                                                                    <RowDefinition Height="Auto"/>
+                                                                                    <RowDefinition Height="6"/>
+                                                                                    <RowDefinition Height="Auto"/>
+                                                                                </Grid.RowDefinitions>
+
+                                                                                <Grid>
+                                                                                    <Grid.ColumnDefinitions>
+                                                                                        <ColumnDefinition Width="*"/>
+                                                                                        <ColumnDefinition Width="Auto"/>
+                                                                                    </Grid.ColumnDefinitions>
+
+                                                                                    <TextBlock Text="{Binding Title}"
+                                                                                               Foreground="{StaticResource TextStrongLocal}"
+                                                                                               FontWeight="Bold"
+                                                                                               FontSize="14"
+                                                                                               TextTrimming="CharacterEllipsis"/>
+                                                                                    <TextBlock Grid.Column="1"
+                                                                                               Margin="12,0,0,0"
+                                                                                               Foreground="{StaticResource TextDimLocal}"
+                                                                                               FontSize="12"
+                                                                                               Text="{Binding Date}"/>
+                                                                                </Grid>
+
+                                                                                <TextBlock Grid.Row="2"
+                                                                                           Foreground="{StaticResource TextDimLocal}"
+                                                                                           FontSize="12"
+                                                                                           TextWrapping="Wrap"
+                                                                                           Text="{Binding Summary}"/>
+                                                                            </Grid>
+                                                                        </Border>
+                                                                    </Button>
+                                                                </DataTemplate>
+                                                            </ItemsControl.ItemTemplate>
+                                                        </ItemsControl>
+
+                                                    </StackPanel>
+                                                </Grid>
+                                            </ScrollViewer>
+
+                                        </Grid>
+                                    </Border>
                                 </Grid>
                             </Border>
                         </Grid>

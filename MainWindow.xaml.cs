@@ -1,6 +1,8 @@
 ﻿using System;
+using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -15,10 +17,20 @@ namespace LegendBorn;
 
 public partial class MainWindow : Window
 {
+    private const int NewsTabIndex = 4;
+    private const string SiteUrl = "https://ru.legendborn.ru/";
+
     private bool _updatesChecked;
     private bool _isClosing;
 
     private readonly MainViewModel _vm;
+
+    // ===== responsive sizing =====
+    private bool _responsiveApplied;
+
+    // ===== maximize/restore =====
+    private Rect _restoreBounds;
+    private bool _hasRestoreBounds;
 
     // ===== prefs =====
     private enum LauncherGameUiMode { Hide, Minimize, None }
@@ -33,6 +45,20 @@ public partial class MainWindow : Window
 
     // ===== logs autoscroll =====
     private bool _logAutoScroll = true;
+    private ScrollChangedEventHandler? _logScrollHandler;
+
+    // ===== news models (UI-level, no VM dependency) =====
+    public sealed class NewsItem
+    {
+        public string Title { get; init; } = "";
+        public string Date { get; init; } = "";
+        public string Summary { get; init; } = "";
+        public string Url { get; init; } = "";
+    }
+
+    // XAML: ServerNewsTop2 + ProjectNews
+    public ObservableCollection<NewsItem> ServerNewsTop2 { get; } = new();
+    public ObservableCollection<NewsItem> ProjectNews { get; } = new();
 
     private static readonly string PrefsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -86,6 +112,9 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
+        // UI placeholder news (later: load from site/server)
+        SeedNews();
+
         LoadPrefs();
         ApplyModeToBindings();
 
@@ -99,9 +128,43 @@ public partial class MainWindow : Window
         Closed += MainWindow_OnClosed;
     }
 
+    private void SeedNews()
+    {
+        ServerNewsTop2.Clear();
+        ServerNewsTop2.Add(new NewsItem
+        {
+            Title = "Технические работы",
+            Date = DateTime.Now.ToString("dd.MM"),
+            Summary = "Сегодня возможны краткие перезапуски сервера. Спасибо за понимание.",
+            Url = SiteUrl
+        });
+        ServerNewsTop2.Add(new NewsItem
+        {
+            Title = "Обновление сборки",
+            Date = DateTime.Now.AddDays(-1).ToString("dd.MM"),
+            Summary = "Исправления стабильности и подготовка к новым механикам.",
+            Url = SiteUrl
+        });
+
+        ProjectNews.Clear();
+        ProjectNews.Add(new NewsItem
+        {
+            Title = "LegendBorn: Дорожная карта",
+            Date = DateTime.Now.ToString("dd.MM.yyyy"),
+            Summary = "Публикуем ближайшие цели и приоритеты разработки.",
+            Url = SiteUrl
+        });
+        ProjectNews.Add(new NewsItem
+        {
+            Title = "Launcher: улучшения интерфейса",
+            Date = DateTime.Now.ToString("dd.MM.yyyy"),
+            Summary = "Новый блок новостей, быстрые кнопки над «Играть», улучшенный top-bar.",
+            Url = SiteUrl
+        });
+    }
+
     private void MainWindow_OnClosed(object? sender, EventArgs e)
     {
-        // Дублируем “снятие крючков” на случай нестандартного завершения.
         TryUnhookLogsUi();
     }
 
@@ -111,23 +174,76 @@ public partial class MainWindow : Window
         _isClosing = true;
 
         try { _vm.PropertyChanged -= VmOnPropertyChanged; } catch { }
+
         TryUnhookLogsUi();
 
-        try { _vm.MarkClosing(); } catch { }
         try { SavePrefs(); } catch { }
+        try { _vm.MarkClosing(); } catch { }
     }
 
     private void MainWindow_OnLoaded(object sender, RoutedEventArgs e)
     {
+        ApplyResponsiveWindowSizeOnce();
         HookLogsUi();
 
-        if (_updatesChecked)
-            return;
+        if (_updatesChecked) return;
 
         _updatesChecked = true;
         _ = RunUpdateCheckSafeAsync();
     }
 
+    // ===================== Responsive Window Size =====================
+    private void ApplyResponsiveWindowSizeOnce()
+    {
+        if (_responsiveApplied) return;
+        _responsiveApplied = true;
+
+        try
+        {
+            var work = SystemParameters.WorkArea;
+
+            // safe margins
+            var maxW = Math.Max(800, work.Width - 80);
+            var maxH = Math.Max(540, work.Height - 80);
+
+            // presets: choose the biggest that fits
+            var presets = new (double w, double h)[]
+            {
+                (1280, 860),
+                (1200, 800),
+                (1100, 740),
+                (1020, 700),
+                (980, 660),
+                (920, 600),
+            };
+
+            (double w, double h) chosen = (Width, Height);
+
+            foreach (var p in presets)
+            {
+                if (p.w <= maxW && p.h <= maxH)
+                {
+                    chosen = p;
+                    break;
+                }
+            }
+
+            Width = Math.Min(chosen.w, maxW);
+            Height = Math.Min(chosen.h, maxH);
+
+            Left = work.Left + (work.Width - Width) / 2;
+            Top = work.Top + (work.Height - Height) / 2;
+
+            _restoreBounds = new Rect(Left, Top, Width, Height);
+            _hasRestoreBounds = true;
+        }
+        catch
+        {
+            // keep XAML size
+        }
+    }
+
+    // ===================== Logs UI =====================
     private void HookLogsUi()
     {
         try
@@ -135,7 +251,8 @@ public partial class MainWindow : Window
             if (_isClosing) return;
             if (LogListBox == null) return;
 
-            LogListBox.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(LogScrollViewer_ScrollChanged));
+            _logScrollHandler ??= LogScrollViewer_ScrollChanged;
+            LogListBox.AddHandler(ScrollViewer.ScrollChangedEvent, _logScrollHandler);
 
             if (_vm.LogLines is INotifyCollectionChanged ncc)
                 ncc.CollectionChanged += LogLines_CollectionChanged;
@@ -156,8 +273,8 @@ public partial class MainWindow : Window
 
         try
         {
-            if (LogListBox != null)
-                LogListBox.RemoveHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(LogScrollViewer_ScrollChanged));
+            if (LogListBox != null && _logScrollHandler != null)
+                LogListBox.RemoveHandler(ScrollViewer.ScrollChangedEvent, _logScrollHandler);
         }
         catch { }
     }
@@ -168,13 +285,12 @@ public partial class MainWindow : Window
         {
             if (_isClosing) return;
 
-            // Пользователь крутит колесом/ползунком.
-            // Если меняется ExtentHeight — значит добавились строки, тогда этот эвент не про user-scroll.
+            // If ExtentHeight changed — new items appended; not a user scroll event.
             if (e.ExtentHeightChange != 0)
                 return;
 
             var bottom = Math.Max(0, e.ExtentHeight - e.ViewportHeight);
-            _logAutoScroll = e.VerticalOffset >= bottom - 1.0; // "почти внизу"
+            _logAutoScroll = e.VerticalOffset >= bottom - 1.0;
         }
         catch { }
     }
@@ -184,7 +300,6 @@ public partial class MainWindow : Window
         if (_isClosing) return;
         if (!_logAutoScroll) return;
 
-        // Не дергаем UI слишком часто: один BeginInvoke достаточно.
         Dispatcher.BeginInvoke(new Action(() => ScrollLogsToEnd(force: false)));
     }
 
@@ -206,6 +321,7 @@ public partial class MainWindow : Window
         catch { }
     }
 
+    // ===================== Game running / mode =====================
     private void VmOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (_isClosing) return;
@@ -346,7 +462,6 @@ public partial class MainWindow : Window
 
             if (File.Exists(PrefsPath))
             {
-                // КРИТИЧНО: backupFileName = null у некоторых систем ломает Replace.
                 var bak = PrefsPath + ".bak";
                 try { if (File.Exists(bak)) File.Delete(bak); } catch { }
 
@@ -390,11 +505,47 @@ public partial class MainWindow : Window
 
         if (e.ClickCount == 2)
         {
-            WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+            ToggleMaximizeRestore();
             return;
         }
 
         try { DragMove(); } catch { }
+    }
+
+    private void ToggleMaximizeRestore()
+    {
+        try
+        {
+            if (WindowState == WindowState.Maximized)
+            {
+                WindowState = WindowState.Normal;
+
+                if (_hasRestoreBounds)
+                {
+                    Left = _restoreBounds.Left;
+                    Top = _restoreBounds.Top;
+                    Width = _restoreBounds.Width;
+                    Height = _restoreBounds.Height;
+                }
+
+                var wc = System.Windows.Shell.WindowChrome.GetWindowChrome(this);
+                if (wc != null) wc.CornerRadius = new CornerRadius(16);
+            }
+            else
+            {
+                if (WindowState == WindowState.Normal)
+                {
+                    _restoreBounds = new Rect(Left, Top, Width, Height);
+                    _hasRestoreBounds = true;
+                }
+
+                WindowState = WindowState.Maximized;
+
+                var wc = System.Windows.Shell.WindowChrome.GetWindowChrome(this);
+                if (wc != null) wc.CornerRadius = new CornerRadius(0);
+            }
+        }
+        catch { }
     }
 
     private static bool IsClickOnInteractive(DependencyObject? d)
@@ -433,6 +584,77 @@ public partial class MainWindow : Window
         catch { }
     }
 
+    // ===== Open launcher folder (optional handler; if you switch XAML from Command to Click) =====
+    private void OpenLauncherFolder_OnClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (_isClosing) return;
+
+            var dir = AppDomain.CurrentDomain.BaseDirectory;
+            if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
+                return;
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = dir,
+                UseShellExecute = true
+            });
+        }
+        catch { }
+    }
+
+    // ===== Open site =====
+    private void OpenSite_OnClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (_isClosing) return;
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = SiteUrl,
+                UseShellExecute = true
+            });
+        }
+        catch { }
+    }
+
+    // ===== Top bar / buttons: open News tab =====
+    private void OpenNewsTab_OnClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (_isClosing) return;
+
+            // Prefer updating VM (binding-safe), then UI fallback.
+            try { _vm.SelectedMenuIndex = NewsTabIndex; } catch { }
+
+            if (MainTabs != null)
+                MainTabs.SelectedIndex = NewsTabIndex;
+        }
+        catch { }
+    }
+
+    // ===== News item click (Button.Tag contains URL) =====
+    private void OpenNewsItem_OnClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (_isClosing) return;
+
+            if (sender is FrameworkElement fe && fe.Tag is string url && !string.IsNullOrWhiteSpace(url))
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = url,
+                    UseShellExecute = true
+                });
+            }
+        }
+        catch { }
+    }
+
     // ===== Copy link button also regenerates if missing =====
     private async void CopyOrRegenLoginLink_OnClick(object sender, RoutedEventArgs e)
     {
@@ -450,7 +672,7 @@ public partial class MainWindow : Window
             if (_vm.LoginViaSiteCommand?.CanExecute(null) == true)
                 _vm.LoginViaSiteCommand.Execute(null);
 
-            // ждём до ~4.5 сек, пока VM получит ссылку
+            // Wait up to ~4.5 sec for URL to appear in VM.
             for (var i = 0; i < 30; i++)
             {
                 if (_isClosing) return;
