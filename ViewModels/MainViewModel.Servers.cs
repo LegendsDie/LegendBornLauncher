@@ -4,11 +4,10 @@ using System.Threading;
 using System.Threading.Tasks;
 using LegendBorn.Services;
 
-namespace LegendBorn;
+namespace LegendBorn.ViewModels;
 
 public sealed partial class MainViewModel
 {
-    // Для корректного auto-update ServerIp при смене сервера
     private string _lastAutoServerIp = "";
     private string _previousSelectedServerAddress = "";
 
@@ -18,7 +17,6 @@ public sealed partial class MainViewModel
         {
             await LoadServersAsync(ct);
 
-            // OnSelectedServerChanged уже выставляет Versions/SelectedVersion
             if (_config.Current.AutoLogin)
                 await TryAutoLoginAsync(ct);
         }
@@ -35,13 +33,14 @@ public sealed partial class MainViewModel
     private void OnSelectedServerChanged(ServerEntry? value)
     {
         if (_isClosing) return;
+
         if (value is null)
         {
             RaisePackPresentation();
+            RefreshCanStates();
             return;
         }
 
-        // 1) ServerIp не "залипает": авто-обновляем IP только если пользователь не делал ручной override.
         try
         {
             var current = (ServerIp ?? "").Trim();
@@ -56,7 +55,7 @@ public sealed partial class MainViewModel
 
             if (shouldAuto && !string.IsNullOrWhiteSpace(addr))
             {
-                ServerIp = addr;          // setter сам сохранит LastServerIp
+                ServerIp = addr;
                 _lastAutoServerIp = addr;
             }
 
@@ -64,7 +63,6 @@ public sealed partial class MainViewModel
         }
         catch { }
 
-        // 2) UI label (версии)
         try
         {
             var label = MakeAutoVersionLabel(value);
@@ -72,7 +70,6 @@ public sealed partial class MainViewModel
         }
         catch { }
 
-        // 3) Persist selection (через _config)
         try
         {
             _config.Current.LastServerId = value.Id;
@@ -81,6 +78,7 @@ public sealed partial class MainViewModel
         catch { }
 
         RaisePackPresentation();
+        RefreshCanStates();
     }
 
     private async Task LoadServersAsync(CancellationToken ct)
@@ -137,7 +135,6 @@ public sealed partial class MainViewModel
                     _suppressSelectedServerSideEffects = false;
                 }
 
-                // side-effects once
                 OnSelectedServerChanged(SelectedServer);
             });
 

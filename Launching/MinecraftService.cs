@@ -1,11 +1,3 @@
-// MinecraftService.cs (v0.2.2)
-// - Обновлено под LauncherIdentity.UserAgent
-// - Параллельная загрузка файлов пака (ограниченный параллелизм)
-// - Исправлен критический баг: "config/" больше НЕ пропускается, если файла нет (теперь скачивается)
-// - Потокобезопасный прогресс по байтам (Interlocked) + throttled percent updates
-// - Потокобезопасное обновление PackState (lock)
-// - Снижено количество “лишних” дисковых операций и улучшена устойчивость к сбоям/зеркалам
-
 using CmlLib.Core;
 using CmlLib.Core.Auth;
 using CmlLib.Core.ProcessBuilder;

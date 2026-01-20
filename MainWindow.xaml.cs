@@ -13,12 +13,14 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using LegendBorn.Services;
+using LegendBorn.ViewModels;
 
 namespace LegendBorn;
 
 public partial class MainWindow : Window
 {
     private const int NewsTabIndex = 4;
+    private const int CopyLogsMaxLines = 120;
     private const string SiteUrl = "https://ru.legendborn.ru/";
 
     private bool _updatesChecked;
@@ -132,17 +134,35 @@ public partial class MainWindow : Window
         Closing += MainWindow_OnClosing;
         Closed += MainWindow_OnClosed;
 
-        // keep restore bounds current
         StateChanged += (_, __) =>
         {
             try
             {
                 if (_isClosing) return;
                 if (WindowState == WindowState.Normal)
-                {
-                    _restoreBounds = new Rect(Left, Top, Width, Height);
-                    _hasRestoreBounds = true;
-                }
+                    UpdateRestoreBoundsFromWindow();
+            }
+            catch { }
+        };
+
+        LocationChanged += (_, __) =>
+        {
+            try
+            {
+                if (_isClosing) return;
+                if (WindowState == WindowState.Normal)
+                    UpdateRestoreBoundsFromWindow();
+            }
+            catch { }
+        };
+
+        SizeChanged += (_, __) =>
+        {
+            try
+            {
+                if (_isClosing) return;
+                if (WindowState == WindowState.Normal)
+                    UpdateRestoreBoundsFromWindow();
             }
             catch { }
         };
@@ -224,7 +244,6 @@ public partial class MainWindow : Window
         {
             var work = SystemParameters.WorkArea;
 
-            // safe margins
             var maxW = Math.Max(800, work.Width - 80);
             var maxH = Math.Max(540, work.Height - 80);
 
@@ -254,12 +273,50 @@ public partial class MainWindow : Window
             Left = work.Left + (work.Width - Width) / 2;
             Top = work.Top + (work.Height - Height) / 2;
 
-            _restoreBounds = new Rect(Left, Top, Width, Height);
-            _hasRestoreBounds = true;
+            UpdateRestoreBoundsFromWindow();
         }
         catch
         {
             // keep XAML size
+        }
+    }
+
+    private void UpdateRestoreBoundsFromWindow()
+    {
+        try
+        {
+            _restoreBounds = new Rect(Left, Top, Width, Height);
+            _hasRestoreBounds = _restoreBounds.Width > 0 && _restoreBounds.Height > 0;
+        }
+        catch { }
+    }
+
+    private static Rect ClampToWorkArea(Rect r)
+    {
+        try
+        {
+            var work = SystemParameters.WorkArea;
+
+            var minW = 600.0;
+            var minH = 420.0;
+
+            var w = Math.Max(minW, Math.Min(r.Width, work.Width));
+            var h = Math.Max(minH, Math.Min(r.Height, work.Height));
+
+            var left = r.Left;
+            var top = r.Top;
+
+            if (left < work.Left) left = work.Left;
+            if (top < work.Top) top = work.Top;
+
+            if (left + w > work.Right) left = Math.Max(work.Left, work.Right - w);
+            if (top + h > work.Bottom) top = Math.Max(work.Top, work.Bottom - h);
+
+            return new Rect(left, top, w, h);
+        }
+        catch
+        {
+            return r;
         }
     }
 
@@ -277,7 +334,7 @@ public partial class MainWindow : Window
             if (_vm.LogLines is INotifyCollectionChanged ncc)
                 ncc.CollectionChanged += LogLines_CollectionChanged;
 
-            ScrollLogsToEnd(force: true);
+            Dispatcher.BeginInvoke(new Action(() => ScrollLogsToEnd(force: true)));
         }
         catch { }
     }
@@ -405,9 +462,12 @@ public partial class MainWindow : Window
                 ? WindowState.Normal
                 : _preGameWindowState;
 
-            Activate();
-            Topmost = true;
-            Topmost = false;
+            if (IsVisible)
+            {
+                Activate();
+                Topmost = true;
+                Topmost = false;
+            }
         }
         catch { }
     }
@@ -418,7 +478,7 @@ public partial class MainWindow : Window
         _gameUiMode = mode;
 
         ApplyModeToBindings();
-        SavePrefs();
+        try { SavePrefs(); } catch { }
     }
 
     private void ApplyModeToBindings()
@@ -445,7 +505,6 @@ public partial class MainWindow : Window
     {
         try
         {
-            // migrate from old location if needed
             if (!File.Exists(PrefsPath) && File.Exists(OldPrefsPath))
             {
                 try
@@ -544,6 +603,7 @@ public partial class MainWindow : Window
             if (d is Thumb) return true;
             if (d is ScrollBar) return true;
             if (d is Slider) return true;
+            if (d is PasswordBox) return true;
 
             d = VisualTreeHelper.GetParent(d);
         }
@@ -582,10 +642,11 @@ public partial class MainWindow : Window
 
                 if (_hasRestoreBounds)
                 {
-                    Left = _restoreBounds.Left;
-                    Top = _restoreBounds.Top;
-                    Width = _restoreBounds.Width;
-                    Height = _restoreBounds.Height;
+                    var r = ClampToWorkArea(_restoreBounds);
+                    Left = r.Left;
+                    Top = r.Top;
+                    Width = r.Width;
+                    Height = r.Height;
                 }
 
                 var wc = System.Windows.Shell.WindowChrome.GetWindowChrome(this);
@@ -594,10 +655,7 @@ public partial class MainWindow : Window
             else
             {
                 if (WindowState == WindowState.Normal)
-                {
-                    _restoreBounds = new Rect(Left, Top, Width, Height);
-                    _hasRestoreBounds = true;
-                }
+                    UpdateRestoreBoundsFromWindow();
 
                 WindowState = WindowState.Maximized;
 
@@ -634,22 +692,18 @@ public partial class MainWindow : Window
         TryOpenUrl(SiteUrl);
     }
 
-    // Top bar / buttons: open News tab
     private void OpenNewsTab_OnClick(object sender, RoutedEventArgs e)
     {
         try
         {
             if (_isClosing) return;
 
-            try { _vm.SelectedMenuIndex = NewsTabIndex; } catch { }
-
-            if (MainTabs != null)
-                MainTabs.SelectedIndex = NewsTabIndex;
+            // TwoWay binding на SelectedIndex — достаточно менять VM.
+            _vm.SelectedMenuIndex = NewsTabIndex;
         }
         catch { }
     }
 
-    // News item click (Button.Tag contains URL)
     private void OpenNewsItem_OnClick(object sender, RoutedEventArgs e)
     {
         try
@@ -662,7 +716,6 @@ public partial class MainWindow : Window
         catch { }
     }
 
-    // Copy link button also regenerates if missing
     private async void CopyOrRegenLoginLink_OnClick(object sender, RoutedEventArgs e)
     {
         try
@@ -714,10 +767,9 @@ public partial class MainWindow : Window
             if (_vm.LogLines is null || _vm.LogLines.Count == 0)
                 return;
 
-            // UI says "последние 100"
-            var lines = _vm.LogLines.Count <= 100
+            var lines = _vm.LogLines.Count <= CopyLogsMaxLines
                 ? _vm.LogLines.ToArray()
-                : _vm.LogLines.Skip(Math.Max(0, _vm.LogLines.Count - 100)).ToArray();
+                : _vm.LogLines.Skip(Math.Max(0, _vm.LogLines.Count - CopyLogsMaxLines)).ToArray();
 
             Clipboard.SetText(string.Join(Environment.NewLine, lines));
         }

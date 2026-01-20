@@ -291,7 +291,8 @@
                                 <Border Width="34" Height="34" CornerRadius="12" Background="#22FFFFFF" VerticalAlignment="Center">
                                     <Image Source="pack://application:,,,/Resources/Assets/logolauncher.png"
                                            Stretch="Uniform"
-                                           Margin="5"/>
+                                           Margin="5"
+                                           RenderOptions.BitmapScalingMode="HighQuality"/>
                                 </Border>
 
                                 <StackPanel Margin="12,0,0,0">
@@ -423,8 +424,10 @@
                 <TabControl x:Name="MainTabs"
                             Grid.Row="2"
                             Style="{StaticResource HiddenTabsStyle}"
-                            SelectedIndex="{Binding SelectedMenuIndex}">
+                            Focusable="False"
+                            SelectedIndex="{Binding SelectedMenuIndex, Mode=TwoWay}">
 
+                    <!-- 0: AUTH -->
                     <TabItem>
                         <Grid>
                             <Border Style="{StaticResource ScreenFrameStyle}">
@@ -522,13 +525,15 @@
                         </Grid>
                     </TabItem>
 
+                    <!-- 1: START -->
                     <TabItem>
                         <Grid>
                             <Border Style="{StaticResource ScreenFrameStyle}">
                                 <Grid>
                                     <Image Source="pack://application:,,,/Resources/Assets/legendcraft.jpg"
                                            Stretch="UniformToFill"
-                                           Opacity="0.42"/>
+                                           Opacity="0.42"
+                                           RenderOptions.BitmapScalingMode="HighQuality"/>
 
                                     <Rectangle Fill="#9A060718"/>
 
@@ -769,6 +774,7 @@
                         </Grid>
                     </TabItem>
 
+                    <!-- 2: PROFILE -->
                     <TabItem>
                         <Grid>
                             <Grid.RowDefinitions>
@@ -962,6 +968,7 @@
                         </Grid>
                     </TabItem>
 
+                    <!-- 3: SETTINGS -->
                     <TabItem>
                         <Grid>
                             <Border Style="{StaticResource CardStyle}">
@@ -1072,7 +1079,7 @@
                                         <Expander Grid.Row="1"
                                                   Margin="0,12,0,0"
                                                   Foreground="{StaticResource TextStrongLocal}"
-                                                  Header="Логи (последние 100)"
+                                                  Header="Логи (последние 120)"
                                                   IsExpanded="False">
 
                                             <Border Margin="0,10,0,0"
@@ -1146,13 +1153,15 @@
                         </Grid>
                     </TabItem>
 
+                    <!-- 4: NEWS -->
                     <TabItem>
                         <Grid>
                             <Border Style="{StaticResource ScreenFrameStyle}">
                                 <Grid>
                                     <Image Source="pack://application:,,,/Resources/Assets/legendcraft.jpg"
                                            Stretch="UniformToFill"
-                                           Opacity="0.18"/>
+                                           Opacity="0.18"
+                                           RenderOptions.BitmapScalingMode="HighQuality"/>
                                     <Rectangle Fill="#B0060718"/>
 
                                     <Border Padding="26">

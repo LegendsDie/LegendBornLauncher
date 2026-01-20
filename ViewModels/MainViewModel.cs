@@ -3,23 +3,25 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using LegendBorn.Mvvm;
 using LegendBorn.Models;
 using LegendBorn.Services;
 
-namespace LegendBorn;
+namespace LegendBorn.ViewModels;
 
 public sealed partial class MainViewModel : ObservableObject
 {
     internal const string SiteBaseUrl = "https://legendborn.ru";
-
-    // ВАЖНО: дефолтный IP, если пользователь не делал override
     private const string DefaultServerIp = "legendcraft.minerent.io";
 
-    // ===== Services / core =====
+    private const int MenuMinIndex = 0;
+    private const int MenuMaxIndex = 4; // 0..4 (включая News)
+
+    private const int RamMinMb = 1024;
+    private const int RamMaxHardCapMb = 65536;
+
     private readonly ConfigService _config;
     private readonly LogService _log;
 
@@ -30,56 +32,87 @@ public sealed partial class MainViewModel : ObservableObject
 
     private readonly string _gameDir;
 
-    // game process state
     private Process? _runningProcess;
-    private int _playGuard; // interlocked
+    private int _playGuard;
 
-    // guards
     private bool _commandsReady;
-
-    // used to prevent side-effects during initial server load
     private bool _suppressSelectedServerSideEffects;
 
-    // ===== Config save debounce =====
     private int _configSaveVersion;
+    private readonly SemaphoreSlim _configSaveLock = new(1, 1);
+
+    private long _totalSystemRamMb;
+    private int _maxAllowedRamMb;
+    private int _recommendedRamMb;
 
     private void ScheduleConfigSave()
     {
+        if (_isClosing) return;
+
         var v = Interlocked.Increment(ref _configSaveVersion);
         _ = Task.Run(async () =>
         {
-            try { await Task.Delay(250).ConfigureAwait(false); } catch { }
+            try { await Task.Delay(300).ConfigureAwait(false); } catch { }
+            if (_isClosing) return;
             if (v != _configSaveVersion) return;
-            SaveConfigSafe();
+
+            await SaveConfigSafeAsync().ConfigureAwait(false);
         });
     }
 
-    private void SaveConfigSafe()
+    private async Task SaveConfigSafeAsync()
     {
-        try { _config.Save(); }
-        catch (Exception ex)
+        if (_isClosing) return;
+
+        try
         {
-            try { _log.Error("Config save failed", ex); } catch { }
+            await _configSaveLock.WaitAsync().ConfigureAwait(false);
+            if (_isClosing) return;
+
+            try
+            {
+                try { _config.Current.Normalize(); } catch { }
+                _config.Save();
+            }
+            catch (Exception ex)
+            {
+                try { _log.Error("Config save failed", ex); } catch { }
+            }
+        }
+        finally
+        {
+            try { _configSaveLock.Release(); } catch { }
         }
     }
 
     private static string ResolveGameDir(string raw)
         => LauncherPaths.NormalizePathOr(raw, LauncherPaths.DefaultGameDir);
 
-    // ===== UI: Tabs (Auth / Start / Profile / Settings) =====
     private int _selectedMenuIndex;
     public int SelectedMenuIndex
     {
         get => _selectedMenuIndex;
         set
         {
-            if (Set(ref _selectedMenuIndex, value))
+            var normalized = value;
+            if (normalized < MenuMinIndex) normalized = MenuMinIndex;
+            if (normalized > MenuMaxIndex) normalized = MenuMaxIndex;
+
+            if (!Set(ref _selectedMenuIndex, normalized))
+                return;
+
+            try
             {
-                Raise(nameof(IsAuthPage));
-                Raise(nameof(IsStartPage));
-                Raise(nameof(IsProfilePage));
-                Raise(nameof(IsSettingsPage));
+                _config.Current.LastMenuIndex = _selectedMenuIndex;
+                ScheduleConfigSave();
             }
+            catch { }
+
+            Raise(nameof(IsAuthPage));
+            Raise(nameof(IsStartPage));
+            Raise(nameof(IsProfilePage));
+            Raise(nameof(IsSettingsPage));
+            Raise(nameof(IsNewsPage));
         }
     }
 
@@ -87,8 +120,8 @@ public sealed partial class MainViewModel : ObservableObject
     public bool IsStartPage { get => SelectedMenuIndex == 1; set { if (value) SelectedMenuIndex = 1; } }
     public bool IsProfilePage { get => SelectedMenuIndex == 2; set { if (value) SelectedMenuIndex = 2; } }
     public bool IsSettingsPage { get => SelectedMenuIndex == 3; set { if (value) SelectedMenuIndex = 3; } }
+    public bool IsNewsPage { get => SelectedMenuIndex == 4; set { if (value) SelectedMenuIndex = 4; } }
 
-    // ===== LAUNCHER VERSION =====
     public string LauncherVersion
     {
         get
@@ -106,7 +139,6 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
-    // ===== Server model (UI) =====
     public sealed class ServerEntry
     {
         public string Id { get; init; } = "";
@@ -137,15 +169,17 @@ public sealed partial class MainViewModel : ObservableObject
             if (!Set(ref _selectedServer, value))
                 return;
 
-            if (!_suppressSelectedServerSideEffects)
-                OnSelectedServerChanged(value);
+            if (_suppressSelectedServerSideEffects)
+            {
+                RaisePackPresentation();
+                RefreshCanStates();
+                return;
+            }
 
-            RaisePackPresentation();
-            RefreshCanStates();
+            OnSelectedServerChanged(value);
         }
     }
 
-    // ===== Pack display (UI) — зависит от сервера =====
     public string PackName => SelectedServer?.Name ?? "LegendCraft";
     public string MinecraftVersion => SelectedServer?.MinecraftVersion ?? "1.21.1";
     public string LoaderName => FormatLoaderName(SelectedServer?.LoaderName);
@@ -166,22 +200,25 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
-    // ===== RAM =====
-    public ObservableCollection<int> RamOptions { get; } = new()
-    {
-        2048, 3072, 4096, 6144, 8192, 12288, 16384
-    };
+    public ObservableCollection<int> RamOptions { get; } = new();
 
-    private int _ramMb = 4096;
+    public long TotalSystemRamMb => _totalSystemRamMb;
+    public int RecommendedRamMb => _recommendedRamMb;
+    public int MaxAllowedRamMb => _maxAllowedRamMb;
+
+    private int _ramMb;
     public int RamMb
     {
         get => _ramMb;
         set
         {
-            var normalized = RamOptions.Contains(value) ? value : 4096;
+            var normalized = NormalizeRamMb(value);
 
             if (!Set(ref _ramMb, normalized))
                 return;
+
+            EnsureRamOptionExists(normalized);
+            Raise(nameof(RamMbText));
 
             try
             {
@@ -194,11 +231,22 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
-    // ===== UI collections =====
+    public string RamMbText
+    {
+        get => RamMb.ToString();
+        set
+        {
+            var parsed = ParseDigitsToInt(value);
+            if (parsed is null)
+                return;
+
+            RamMb = parsed.Value;
+        }
+    }
+
     public ObservableCollection<string> Versions { get; } = new();
     public ObservableCollection<string> LogLines { get; } = new();
 
-    // ===== Profile / auth UI =====
     private UserProfile? _profile;
     public UserProfile? Profile
     {
@@ -275,8 +323,12 @@ public sealed partial class MainViewModel : ObservableObject
             if (!Set(ref _username, v))
                 return;
 
-            // сохраняем, но не ломаем сборку если поле ещё не добавлено в LauncherConfig
-            TrySetConfigValue(_config.Current, "LastUsername", _username);
+            try
+            {
+                _config.Current.LastUsername = _username;
+                ScheduleConfigSave();
+            }
+            catch { }
 
             RefreshCanStates();
         }
@@ -318,7 +370,7 @@ public sealed partial class MainViewModel : ObservableObject
             }
             else
             {
-                if (SelectedMenuIndex != 3)
+                if (SelectedMenuIndex != 3 && SelectedMenuIndex != 4)
                     SelectedMenuIndex = 0;
             }
 
@@ -384,7 +436,6 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
-    // ===== Login URL =====
     private string? _loginUrl;
     public string? LoginUrl
     {
@@ -398,7 +449,6 @@ public sealed partial class MainViewModel : ObservableObject
 
     public bool HasLoginUrl => !string.IsNullOrWhiteSpace(LoginUrl);
 
-    // ===== Derived flags =====
     public bool CanStop => _runningProcess is { HasExited: false };
 
     public bool CanPlay =>
@@ -414,7 +464,6 @@ public sealed partial class MainViewModel : ObservableObject
     public string PlayButtonText => IsBusy ? "..." : "Играть";
     public string LoginButtonText => IsWaitingSiteConfirm ? "Ожидание..." : "Авторизация";
 
-    // ===== Commands =====
     public AsyncRelayCommand RefreshVersionsCommand { get; private set; } = null!;
     public AsyncRelayCommand PlayCommand { get; private set; } = null!;
     public RelayCommand OpenGameDirCommand { get; private set; } = null!;
@@ -433,17 +482,19 @@ public sealed partial class MainViewModel : ObservableObject
 
     public AsyncRelayCommand CheckLauncherUpdatesCommand { get; private set; } = null!;
 
+    private static ConfigService? _fallbackConfig;
+    private static TokenStore? _fallbackTokens;
+
     public MainViewModel()
     {
-        SelectedMenuIndex = 0;
+        _selectedMenuIndex = 0;
 
-        // ===== Используем App-сервисы если они уже инициализированы =====
         _log = SafeGetAppLog();
-
         _config = SafeGetAppConfig();
         _tokenStore = SafeGetAppTokens();
 
-        // game dir
+        InitializeRamModel();
+
         _gameDir = ResolveGameDir(_config.Current.GameRootPath ?? "");
         try { Directory.CreateDirectory(_gameDir); } catch { }
 
@@ -453,7 +504,6 @@ public sealed partial class MainViewModel : ObservableObject
         {
             if (_isClosing) return;
             AppendLog(line);
-            try { _log.Info(line); } catch { }
         };
 
         _mc.ProgressPercent += (_, p) =>
@@ -465,22 +515,34 @@ public sealed partial class MainViewModel : ObservableObject
         InitCommands();
         _commandsReady = true;
 
-        // ===== Load Config (release-safe) =====
         try
         {
             var ip = (_config.Current.LastServerIp ?? DefaultServerIp).Trim();
             _serverIp = string.IsNullOrWhiteSpace(ip) ? DefaultServerIp : ip;
             Raise(nameof(ServerIp));
 
-            var ram = _config.Current.RamMb;
-            _ramMb = RamOptions.Contains(ram) ? ram : 4096;
+            var ramFromCfg = _config.Current.RamMb;
+            var initialRam = ramFromCfg > 0 ? ramFromCfg : _recommendedRamMb;
+            _ramMb = NormalizeRamMb(initialRam);
+            EnsureRamOptionExists(_ramMb);
             Raise(nameof(RamMb));
+            Raise(nameof(RamMbText));
 
-            var u = (TryGetConfigString(_config.Current, "LastUsername") ?? "Player").Trim();
+            var u = (_config.Current.LastUsername ?? "Player").Trim();
             _username = string.IsNullOrWhiteSpace(u) ? "Player" : u;
             Raise(nameof(Username));
 
-            TrySetConfigValue(_config.Current, "LastLauncherStartUtc", DateTimeOffset.UtcNow);
+            var menu = _config.Current.LastMenuIndex;
+            if (menu < MenuMinIndex || menu > MenuMaxIndex) menu = 0;
+            _selectedMenuIndex = menu;
+            Raise(nameof(SelectedMenuIndex));
+            Raise(nameof(IsAuthPage));
+            Raise(nameof(IsStartPage));
+            Raise(nameof(IsProfilePage));
+            Raise(nameof(IsSettingsPage));
+            Raise(nameof(IsNewsPage));
+
+            _config.Current.LastLauncherStartUtc = DateTimeOffset.UtcNow;
         }
         catch { }
 
@@ -488,6 +550,74 @@ public sealed partial class MainViewModel : ObservableObject
 
         _ = InitializeAsyncSafe();
         RefreshCanStates();
+    }
+
+    private void InitializeRamModel()
+    {
+        _totalSystemRamMb = GetTotalPhysicalMemoryMb();
+        _maxAllowedRamMb = ComputeMaxAllowedRamMb(_totalSystemRamMb);
+        _recommendedRamMb = ComputeRecommendedRamMb(_totalSystemRamMb, _maxAllowedRamMb);
+
+        BuildRamOptions(_maxAllowedRamMb, _recommendedRamMb);
+    }
+
+    private void BuildRamOptions(int maxAllowedMb, int recommendedMb)
+    {
+        RamOptions.Clear();
+
+        var hardMax = Math.Clamp(maxAllowedMb, RamMinMb, RamMaxHardCapMb);
+        var steps = new[] { 1024, 2048, 3072, 4096, 6144, 8192, 10240, 12288, 16384, 20480, 24576, 32768, 49152, 65536 };
+
+        foreach (var s in steps)
+        {
+            if (s < RamMinMb) continue;
+            if (s > hardMax) continue;
+            RamOptions.Add(s);
+        }
+
+        EnsureRamOptionExists(recommendedMb);
+    }
+
+    private void EnsureRamOptionExists(int value)
+    {
+        value = Math.Clamp(value, RamMinMb, RamMaxHardCapMb);
+
+        if (RamOptions.Contains(value))
+            return;
+
+        RamOptions.Add(value);
+
+        var ordered = RamOptions.Distinct().OrderBy(x => x).ToArray();
+        RamOptions.Clear();
+        foreach (var v in ordered) RamOptions.Add(v);
+    }
+
+    private int NormalizeRamMb(int requestedMb)
+    {
+        var max = _maxAllowedRamMb > 0 ? _maxAllowedRamMb : ComputeMaxAllowedRamMb(GetTotalPhysicalMemoryMb());
+        max = Math.Clamp(max, RamMinMb, RamMaxHardCapMb);
+
+        if (requestedMb <= 0)
+            requestedMb = _recommendedRamMb > 0 ? _recommendedRamMb : 4096;
+
+        requestedMb = Math.Clamp(requestedMb, RamMinMb, max);
+
+        // округление до 256МБ, чтобы были аккуратные значения
+        requestedMb = (requestedMb / 256) * 256;
+        if (requestedMb < RamMinMb) requestedMb = RamMinMb;
+
+        return requestedMb;
+    }
+
+    private static int? ParseDigitsToInt(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return null;
+
+        var digits = new string(s.Where(char.IsDigit).ToArray());
+        if (digits.Length == 0) return null;
+
+        if (!int.TryParse(digits, out var v)) return null;
+        return v;
     }
 
     private void InitCommands()
@@ -508,7 +638,7 @@ public sealed partial class MainViewModel : ObservableObject
             SiteLogout,
             () => !_isClosing && (IsLoggedIn || IsWaitingSiteConfirm));
 
-        ClearLogCommand = new RelayCommand(() => LogLines.Clear());
+        ClearLogCommand = new RelayCommand(() => PostToUi(() => LogLines.Clear()));
 
         OpenSettingsCommand = new RelayCommand(() => SelectedMenuIndex = 3);
         OpenStartCommand = new RelayCommand(() => SelectedMenuIndex = IsLoggedIn ? 1 : 0);
@@ -529,7 +659,6 @@ public sealed partial class MainViewModel : ObservableObject
             () => !_isClosing && !IsBusy);
     }
 
-    // ===== helpers: safe access to App services =====
     private static LogService SafeGetAppLog()
     {
         try { return App.Log ?? LogService.Noop; }
@@ -544,9 +673,9 @@ public sealed partial class MainViewModel : ObservableObject
         }
         catch { }
 
-        var cfg = new ConfigService(LauncherPaths.ConfigFile);
-        try { cfg.LoadOrCreate(); } catch { }
-        return cfg;
+        _fallbackConfig ??= new ConfigService(LauncherPaths.ConfigFile);
+        try { _fallbackConfig.LoadOrCreate(); } catch { }
+        return _fallbackConfig;
     }
 
     private static TokenStore SafeGetAppTokens()
@@ -557,49 +686,7 @@ public sealed partial class MainViewModel : ObservableObject
         }
         catch { }
 
-        return new TokenStore(LauncherPaths.TokenFile);
-    }
-
-    // ===== helpers: config reflection (чтобы VM не падала, если поле ещё не добавлено в LauncherConfig) =====
-    private static void TrySetConfigValue(object cfg, string propertyName, object? value)
-    {
-        try
-        {
-            var p = cfg.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
-            if (p is null || !p.CanWrite) return;
-
-            if (value is null)
-            {
-                p.SetValue(cfg, null);
-                return;
-            }
-
-            var t = Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType;
-
-            if (t.IsInstanceOfType(value))
-            {
-                p.SetValue(cfg, value);
-                return;
-            }
-
-            // попытка конвертации для простых типов
-            var converted = Convert.ChangeType(value, t);
-            p.SetValue(cfg, converted);
-        }
-        catch { }
-    }
-
-    private static string? TryGetConfigString(object cfg, string propertyName)
-    {
-        try
-        {
-            var p = cfg.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
-            if (p is null || !p.CanRead) return null;
-            return p.GetValue(cfg) as string;
-        }
-        catch
-        {
-            return null;
-        }
+        _fallbackTokens ??= new TokenStore(LauncherPaths.TokenFile);
+        return _fallbackTokens;
     }
 }

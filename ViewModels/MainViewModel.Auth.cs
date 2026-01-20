@@ -8,7 +8,7 @@ using System.Windows;
 using LegendBorn.Models;
 using LegendBorn.Services;
 
-namespace LegendBorn;
+namespace LegendBorn.ViewModels;
 
 public sealed partial class MainViewModel
 {
@@ -48,7 +48,8 @@ public sealed partial class MainViewModel
             var ub = new UriBuilder(fullUrl);
             var query = (ub.Query ?? "").TrimStart('?');
 
-            if (query.IndexOf("deviceid=", StringComparison.OrdinalIgnoreCase) < 0)
+            if (query.IndexOf("deviceid=", StringComparison.OrdinalIgnoreCase) < 0 &&
+                query.IndexOf("deviceId=", StringComparison.OrdinalIgnoreCase) < 0)
             {
                 if (!string.IsNullOrWhiteSpace(query)) query += "&";
                 query += "deviceId=" + Uri.EscapeDataString(deviceId);

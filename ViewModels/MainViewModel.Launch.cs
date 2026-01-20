@@ -5,17 +5,16 @@ using System.Threading;
 using System.Threading.Tasks;
 using LegendBorn.Services;
 
-namespace LegendBorn;
+namespace LegendBorn.ViewModels;
 
 public sealed partial class MainViewModel
 {
+    private const string DefaultPackBaseUrl = "https://legendborn.ru/launcher/pack/";
+
     private static readonly string[] SourceForgePackMirrors =
     {
         "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/"
     };
-
-    private const string BunnyPackMirror =
-        "https://legendborn-pack.b-cdn.net/launcher/pack/";
 
     private static bool IsLegendbornHost(string? url)
         => !string.IsNullOrWhiteSpace(url) &&
@@ -29,18 +28,11 @@ public sealed partial class MainViewModel
         => !string.IsNullOrWhiteSpace(url) &&
            url.Contains("downloads.sourceforge.net", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsBunny(string? url)
-    {
-        if (string.IsNullOrWhiteSpace(url)) return false;
-        url = url.ToLowerInvariant();
-        return url.Contains("b-cdn.net") || url.Contains("bunny");
-    }
-
     private static string[] BuildPackMirrors(ServerEntry s)
     {
         var baseUrl = EnsureSlash(s.PackBaseUrl);
         if (string.IsNullOrWhiteSpace(baseUrl))
-            baseUrl = EnsureSlash("https://legendborn.ru/launcher/pack/");
+            baseUrl = EnsureSlash(DefaultPackBaseUrl);
 
         var extra = (s.PackMirrors ?? Array.Empty<string>())
             .Select(EnsureSlash)
@@ -57,28 +49,22 @@ public sealed partial class MainViewModel
 
         if (IsLegendbornHost(baseUrl))
         {
-            var bunny = EnsureSlash(BunnyPackMirror);
-            if (!string.IsNullOrWhiteSpace(bunny) &&
-                !all.Any(u => u.Equals(bunny, StringComparison.OrdinalIgnoreCase)))
-                all.Add(bunny);
-
             if (!all.Any(IsSourceForgeMaster))
                 all.AddRange(SourceForgePackMirrors.Select(EnsureSlash).Where(x => !string.IsNullOrWhiteSpace(x)));
         }
 
         if (all.Count == 0)
         {
-            all.Add(EnsureSlash("https://legendborn.ru/launcher/pack/"));
-            all.Add(EnsureSlash(BunnyPackMirror));
+            all.Add(EnsureSlash(DefaultPackBaseUrl));
+            all.AddRange(SourceForgePackMirrors.Select(EnsureSlash).Where(x => !string.IsNullOrWhiteSpace(x)));
         }
 
         return all
             .OrderBy(u =>
             {
                 if (u.Equals(baseUrl, StringComparison.OrdinalIgnoreCase)) return 0;
-                if (IsBunny(u)) return 1;
-                if (IsSourceForgeMaster(u)) return 2;
-                return 3;
+                if (IsSourceForgeMaster(u)) return 1;
+                return 2;
             })
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -141,7 +127,7 @@ public sealed partial class MainViewModel
             var username = (Username ?? "Player").Trim();
             if (string.IsNullOrWhiteSpace(username)) username = "Player";
 
-            var ram = RamOptions.Contains(RamMb) ? RamMb : 4096;
+            var ram = NormalizeRamMb(RamMb);
             if (ram < 1024) ram = 1024;
 
             IsBusy = true;
@@ -158,11 +144,13 @@ public sealed partial class MainViewModel
                 syncPack: SelectedServer.SyncPack,
                 ct: _lifetimeCts.Token);
 
-            Versions.Clear();
-            Versions.Add(launchVersionId);
-            SelectedVersion = launchVersionId;
+            InvokeOnUi(() =>
+            {
+                Versions.Clear();
+                Versions.Add(launchVersionId);
+                SelectedVersion = launchVersionId;
+            });
 
-            // сохраняем настройки
             try
             {
                 _config.Current.RamMb = ram;

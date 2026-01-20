@@ -1,3 +1,4 @@
+// TokenStore.cs
 using System;
 using System.IO;
 using System.Security.Cryptography;
@@ -9,7 +10,6 @@ namespace LegendBorn.Services;
 
 public sealed class TokenStore
 {
-    // ВАЖНО: после релиза не менять, иначе старые токены не расшифруются
     private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("LegendBornLauncher.v1");
 
     private static readonly JsonSerializerOptions JsonOpts = new()
@@ -35,7 +35,6 @@ public sealed class TokenStore
     {
         lock (_sync)
         {
-            // Если токенов нет или AccessToken пустой — чистим, чтобы не ломать автологин.
             if (tokens is null || string.IsNullOrWhiteSpace(tokens.AccessToken))
             {
                 ClearInternal();
@@ -58,7 +57,6 @@ public sealed class TokenStore
 
                 if (File.Exists(_filePath))
                 {
-                    // backup помогает, если что-то пойдет не так на файловой системе
                     var bak = _filePath + ".bak";
                     try
                     {
@@ -66,7 +64,6 @@ public sealed class TokenStore
                     }
                     catch
                     {
-                        // если Replace не поддерживается (редко) — fallback на Move
                         File.Delete(_filePath);
                         File.Move(tmp, _filePath);
                     }
@@ -78,7 +75,6 @@ public sealed class TokenStore
             }
             catch
             {
-                // не валим запуск
                 TryDelete(_filePath + ".tmp");
             }
         }
@@ -93,20 +89,14 @@ public sealed class TokenStore
 
             try
             {
-                // читаем байты
                 var protectedBytes = File.ReadAllBytes(_filePath);
-
-                // расшифровка DPAPI
                 var data = ProtectedData.Unprotect(protectedBytes, Entropy, DataProtectionScope.CurrentUser);
-
                 var raw = Encoding.UTF8.GetString(data);
 
-                // 1) основной формат: JSON AuthTokens
                 var tokens = TryDeserializeTokens(raw);
                 if (tokens is not null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
                     return tokens;
 
-                // 2) fallback: если вдруг когда-то сохраняли просто строковый токен
                 var maybeToken = raw?.Trim();
                 if (!string.IsNullOrWhiteSpace(maybeToken) && !maybeToken.StartsWith("{"))
                     return new AuthTokens { AccessToken = maybeToken };
@@ -115,8 +105,8 @@ public sealed class TokenStore
             }
             catch
             {
-                // файл битый — удаляем, чтобы не зацикливать автологин
                 TryDelete(_filePath);
+                TryDelete(_filePath + ".tmp");
                 return null;
             }
         }
@@ -134,8 +124,6 @@ public sealed class TokenStore
     {
         TryDelete(_filePath);
         TryDelete(_filePath + ".tmp");
-        // backup можно оставлять, но обычно лучше чистить только tmp
-        // TryDelete(_filePath + ".bak");
     }
 
     private static AuthTokens? TryDeserializeTokens(string? raw)
@@ -145,14 +133,10 @@ public sealed class TokenStore
 
         try
         {
-            // Если это JSON — пробуем распарсить
             if (raw.TrimStart().StartsWith("{"))
                 return JsonSerializer.Deserialize<AuthTokens>(raw, JsonOpts);
         }
-        catch
-        {
-            // ignore
-        }
+        catch { }
 
         return null;
     }

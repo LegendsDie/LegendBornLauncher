@@ -1,32 +1,24 @@
 using System;
-using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
-using LegendBorn.Services;
 
-namespace LegendBorn;
+namespace LegendBorn.ViewModels;
 
 public sealed partial class MainViewModel
 {
-    // ===== Release-safety flags =====
     private volatile bool _isClosing;
-
-    // общий lifetime токен для любых длительных операций
     private readonly CancellationTokenSource _lifetimeCts = new();
 
-    /// <summary>
-    /// Вызови в MainWindow.Closing, чтобы остановить любые фоновые операции/обновления.
-    /// </summary>
     public void MarkClosing()
     {
         _isClosing = true;
 
         try { _lifetimeCts.Cancel(); } catch { }
 
-        // CancelLoginWait определён ТОЛЬКО в MainViewModel.Auth.cs
         CancelLoginWait();
     }
 
@@ -44,7 +36,6 @@ public sealed partial class MainViewModel
         }
     }
 
-    // ===== UI helpers =====
     private void PostToUi(Action action, DispatcherPriority priority = DispatcherPriority.Background)
     {
         try
@@ -75,12 +66,11 @@ public sealed partial class MainViewModel
         catch { }
     }
 
-    // ===== Progress throttle =====
-    private const int ProgressUiMinIntervalMs = 80; // ~12.5 fps
+    private const int ProgressUiMinIntervalMs = 80;
 
     private int _pendingProgress = -1;
     private long _lastProgressUiTick;
-    private int _progressPumpScheduled; // 0/1
+    private int _progressPumpScheduled;
 
     private void OnMinecraftProgress(int p)
     {
@@ -128,7 +118,6 @@ public sealed partial class MainViewModel
         PostToUi(() => ProgressPercent = p);
     }
 
-    // ===== Misc helpers =====
     private static string EnsureSlash(string url)
     {
         url = (url ?? "").Trim();
@@ -165,9 +154,12 @@ public sealed partial class MainViewModel
 
     private void SetVersionsUi(string label)
     {
-        Versions.Clear();
-        Versions.Add(label);
-        SelectedVersion = label;
+        InvokeOnUi(() =>
+        {
+            Versions.Clear();
+            Versions.Add(label);
+            SelectedVersion = label;
+        });
     }
 
     private static string MakeAutoVersionLabel(ServerEntry s)
@@ -187,66 +179,27 @@ public sealed partial class MainViewModel
         return $"AUTO • {L(loaderType)} {lver} ({mc})";
     }
 
-    // ===== Logs =====
-    private const int MaxLogLines = 100;
-
-    private static readonly string LogDir = LauncherPaths.LogsDir;
-    private static readonly string LogFile = Path.Combine(LogDir, "launcher.log");
-
-    private long _lastFileLogTick;
+    private const int MaxLogLines = 120;
 
     private void AppendLog(string text)
     {
         if (_isClosing) return;
 
-        var line = $"[{DateTime.Now:HH:mm:ss}] {text}";
+        var uiLine = $"[{DateTime.Now:HH:mm:ss}] {text}";
 
         PostToUi(() =>
         {
             if (_isClosing) return;
 
-            LogLines.Add(line);
+            LogLines.Add(uiLine);
 
             while (LogLines.Count > MaxLogLines)
                 LogLines.RemoveAt(0);
         });
 
-        TryAppendLogToFile(line);
+        try { _log.Info(text); } catch { }
     }
 
-    private void TryAppendLogToFile(string line)
-    {
-        try
-        {
-            if (_isClosing) return;
-
-            var now = Environment.TickCount64;
-            var elapsed = now - Interlocked.Read(ref _lastFileLogTick);
-            if (elapsed < 10) return;
-            Interlocked.Exchange(ref _lastFileLogTick, now);
-
-            Directory.CreateDirectory(LogDir);
-
-            try
-            {
-                if (File.Exists(LogFile))
-                {
-                    var fi = new FileInfo(LogFile);
-                    if (fi.Length > 2_000_000)
-                    {
-                        var bak = Path.Combine(LogDir, $"launcher_{DateTime.Now:yyyyMMdd_HHmmss}.log");
-                        File.Move(LogFile, bak, overwrite: true);
-                    }
-                }
-            }
-            catch { }
-
-            File.AppendAllText(LogFile, line + Environment.NewLine);
-        }
-        catch { }
-    }
-
-    // ===== CanExecute refresh =====
     private void RefreshCanStates()
     {
         if (_isClosing) return;
@@ -257,6 +210,7 @@ public sealed partial class MainViewModel
         Raise(nameof(LoginButtonText));
         Raise(nameof(HasLoginUrl));
         Raise(nameof(LoginStateText));
+        Raise(nameof(RamMbText));
 
         if (!_commandsReady) return;
 
@@ -298,7 +252,6 @@ public sealed partial class MainViewModel
         }
     }
 
-    // ===== MC name helpers =====
     private static bool IsValidMcName(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return false;
@@ -331,7 +284,6 @@ public sealed partial class MainViewModel
         return cleaned;
     }
 
-    // ===== init wrapper =====
     private async Task InitializeAsyncSafe()
     {
         try
@@ -347,5 +299,72 @@ public sealed partial class MainViewModel
             AppendLog("Инициализация: ошибка.");
             AppendLog(ex.Message);
         }
+    }
+
+    // ===== RAM helpers (Windows) =====
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    private struct MEMORYSTATUSEX
+    {
+        public uint dwLength;
+        public uint dwMemoryLoad;
+        public ulong ullTotalPhys;
+        public ulong ullAvailPhys;
+        public ulong ullTotalPageFile;
+        public ulong ullAvailPageFile;
+        public ulong ullTotalVirtual;
+        public ulong ullAvailVirtual;
+        public ulong ullAvailExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+
+    private static long GetTotalPhysicalMemoryMb()
+    {
+        try
+        {
+            var ms = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
+            if (!GlobalMemoryStatusEx(ref ms))
+                return 0;
+
+            return (long)(ms.ullTotalPhys / (1024UL * 1024UL));
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static int ComputeMaxAllowedRamMb(long totalMb)
+    {
+        if (totalMb <= 0)
+            return 16384;
+
+        // оставляем системе минимум 2GB, но не меньше 25% RAM (на слабых ПК)
+        var reserve = Math.Max(2048, (int)(totalMb * 0.25));
+        var max = (int)Math.Max(1024, totalMb - reserve);
+
+        // не даём улетать слишком высоко
+        max = Math.Min(max, RamMaxHardCapMb);
+        return Math.Max(max, RamMinMb);
+    }
+
+    private static int ComputeRecommendedRamMb(long totalMb, int maxAllowedMb)
+    {
+        // простая, но рабочая шкала по типичным конфигам ПК
+        int rec;
+        if (totalMb <= 0) rec = 4096;
+        else if (totalMb <= 6144) rec = 2048;
+        else if (totalMb <= 10240) rec = 4096;
+        else if (totalMb <= 14336) rec = 6144;
+        else if (totalMb <= 20480) rec = 8192;
+        else if (totalMb <= 28672) rec = 12288;
+        else rec = 16384;
+
+        rec = Math.Clamp(rec, RamMinMb, Math.Max(RamMinMb, maxAllowedMb));
+        rec = (rec / 256) * 256;
+        if (rec < RamMinMb) rec = RamMinMb;
+        return rec;
     }
 }
