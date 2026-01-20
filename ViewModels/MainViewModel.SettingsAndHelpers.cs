@@ -1,11 +1,11 @@
 using System;
-using System.Configuration;
 using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows;
 using System.Windows.Threading;
-using LegendBorn.Properties;
+using LegendBorn.Services;
 
 namespace LegendBorn;
 
@@ -28,8 +28,8 @@ public sealed partial class MainViewModel
 
         CancelLoginWait();
 
-        // ВАЖНО (0.2.2): НЕ DISPOSE'им CTS тут — иначе фоновые таски могут получить ObjectDisposedException.
-        // CLR сам заберёт ресурсы при закрытии процесса, а нам нужна стабильность shutdown.
+        // ВАЖНО: не Dispose'им CTS здесь — чтобы фоновые таски не ловили ObjectDisposedException.
+        // CLR сам заберёт ресурсы при закрытии процесса.
     }
 
     // ===== merged login strip text (for Start->Nick block) =====
@@ -50,12 +50,6 @@ public sealed partial class MainViewModel
         }
     }
 
-    private static void SaveSettingsSafe()
-    {
-        try { Settings.Default.Save(); }
-        catch { }
-    }
-
     // ===== UI helpers =====
     private void PostToUi(Action action, DispatcherPriority priority = DispatcherPriority.Background)
     {
@@ -63,7 +57,7 @@ public sealed partial class MainViewModel
         {
             if (_isClosing) return;
 
-            var disp = App.Current?.Dispatcher;
+            var disp = Application.Current?.Dispatcher;
             if (disp is null) return;
 
             if (disp.CheckAccess()) action();
@@ -78,7 +72,7 @@ public sealed partial class MainViewModel
         {
             if (_isClosing) return;
 
-            var disp = App.Current?.Dispatcher;
+            var disp = Application.Current?.Dispatcher;
             if (disp is null) return;
 
             if (disp.CheckAccess()) action();
@@ -203,11 +197,9 @@ public sealed partial class MainViewModel
     // ===== Logs =====
     private const int MaxLogLines = 100;
 
-    private static readonly string LogDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "LegendBorn", "logs");
-
+    private static readonly string LogDir = LauncherPaths.LogsDir;
     private static readonly string LogFile = Path.Combine(LogDir, "launcher.log");
+
     private long _lastFileLogTick;
 
     private void AppendLog(string text)
@@ -259,6 +251,20 @@ public sealed partial class MainViewModel
             File.AppendAllText(LogFile, line + Environment.NewLine);
         }
         catch { }
+    }
+
+    // ===== Config helpers =====
+    private void TrySetConfigValueSafe(Action updateAction)
+    {
+        try
+        {
+            updateAction();
+            ScheduleConfigSave();
+        }
+        catch
+        {
+            // ignore
+        }
     }
 
     // ===== CanExecute refresh =====
@@ -344,42 +350,6 @@ public sealed partial class MainViewModel
         if (cleaned.Length < 3) cleaned = (cleaned + "___").Substring(0, 3);
         if (cleaned.Length > 16) cleaned = cleaned.Substring(0, 16);
         return cleaned;
-    }
-
-    // ===== Settings helpers =====
-    private static string? TryLoadStringSetting(string key, string? fallback)
-    {
-        try
-        {
-            var v = Settings.Default[key];
-            if (v is string s) return string.IsNullOrWhiteSpace(s) ? fallback : s;
-            return fallback;
-        }
-        catch (SettingsPropertyNotFoundException) { return fallback; }
-        catch { return fallback; }
-    }
-
-    private static int TryLoadIntSetting(string key, int fallback)
-    {
-        try
-        {
-            var v = Settings.Default[key];
-            if (v is int i) return i;
-            if (v is string s && int.TryParse(s, out var parsed)) return parsed;
-        }
-        catch (SettingsPropertyNotFoundException) { }
-        catch { }
-        return fallback;
-    }
-
-    private static void TrySaveSetting(string key, object value)
-    {
-        try
-        {
-            Settings.Default[key] = value;
-        }
-        catch (SettingsPropertyNotFoundException) { }
-        catch { }
     }
 
     // ===== init wrapper =====

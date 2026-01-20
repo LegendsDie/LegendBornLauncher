@@ -4,7 +4,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using LegendBorn.Models;
-using LegendBorn.Services;
 
 namespace LegendBorn;
 
@@ -24,13 +23,69 @@ public sealed partial class MainViewModel
         try { cts.Dispose(); } catch { }
     }
 
-    private async Task TrySendDailyLauncherLoginEventAsync()
+    private static bool LooksLikeUnauthorized(Exception ex)
+    {
+        // Без доступа к статус-коду: делаем безопасный эвристический детект
+        var msg = (ex.Message ?? "").ToLowerInvariant();
+        return msg.Contains("401") || msg.Contains("403") || msg.Contains("unauthorized") || msg.Contains("forbidden");
+    }
+
+    private static string BuildConnectUrl(string deviceId, string connectUrl)
+    {
+        var path = string.IsNullOrWhiteSpace(connectUrl) ? "/launcher/connect" : connectUrl.Trim();
+
+        var fullUrl = path.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+            ? path
+            : SiteBaseUrl + (path.StartsWith("/") ? path : "/" + path);
+
+        // гарантируем deviceId в query
+        try
+        {
+            var ub = new UriBuilder(fullUrl);
+            var q = ub.Query; // includes '?'
+            var query = string.IsNullOrWhiteSpace(q) ? "" : q.TrimStart('?');
+
+            // если уже есть deviceId — не добавляем
+            if (query.IndexOf("deviceid=", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                if (!string.IsNullOrWhiteSpace(query)) query += "&";
+                query += "deviceId=" + Uri.EscapeDataString(deviceId);
+                ub.Query = query;
+            }
+
+            return ub.Uri.ToString();
+        }
+        catch
+        {
+            // fallback если UriBuilder упал
+            if (!fullUrl.Contains("deviceId=", StringComparison.OrdinalIgnoreCase) &&
+                !fullUrl.Contains("deviceid=", StringComparison.OrdinalIgnoreCase))
+            {
+                fullUrl += (fullUrl.Contains("?") ? "&" : "?") + "deviceId=" + Uri.EscapeDataString(deviceId);
+            }
+
+            return fullUrl;
+        }
+    }
+
+    private static DateTimeOffset BuildDeadline(long expiresAtUnix)
+    {
+        try
+        {
+            if (expiresAtUnix > 0)
+                return DateTimeOffset.FromUnixTimeSeconds(expiresAtUnix);
+        }
+        catch { }
+
+        return DateTimeOffset.UtcNow.AddMinutes(10);
+    }
+
+    private async Task TrySendDailyLauncherLoginEventAsync(CancellationToken ct)
     {
         try
         {
             if (_isClosing) return;
-            if (_tokens is null || !_tokens.HasAccessToken)
-                return;
+            if (_tokens is null || !_tokens.HasAccessToken) return;
 
             var key = "launcher_login";
             var idem = $"launcher_login:{DateTime.UtcNow:yyyy-MM-dd}";
@@ -45,15 +100,60 @@ public sealed partial class MainViewModel
                     launcher = LauncherIdentity.InformationalVersion,
                     v = "1"
                 },
-                ct: CancellationToken.None);
+                ct: ct);
 
             if (resp is not null && resp.Ok && resp.Balance >= 0)
             {
-                // если сервер возвращает баланс — обновим UI
                 PostToUi(() => Rezonite = resp.Balance);
             }
         }
-        catch { }
+        catch
+        {
+            // не валим запуск/логин
+        }
+    }
+
+    private async Task ApplySuccessfulLoginAsync(AuthTokens tokens, CancellationToken ct)
+    {
+        _tokens = tokens;
+
+        var me = await _site.GetMeAsync(tokens.SafeAccessToken, ct);
+        Profile = me;
+
+        SiteUserName = string.IsNullOrWhiteSpace(me.UserName) ? "Пользователь" : me.UserName;
+        IsLoggedIn = true;
+
+        var mcName = string.IsNullOrWhiteSpace(me.MinecraftName) ? SiteUserName : me.MinecraftName!;
+        Username = MakeValidMcName(mcName);
+
+        await TrySendDailyLauncherLoginEventAsync(ct);
+
+        if (!me.CanPlay)
+        {
+            StatusText = string.IsNullOrWhiteSpace(me.Reason) ? "Доступ к игре ограничен." : me.Reason!;
+            AppendLog(StatusText);
+        }
+        else
+        {
+            StatusText = "Вход выполнен.";
+            AppendLog($"Сайт: вошли как {SiteUserName}");
+        }
+    }
+
+    private void ApplyLoggedOutUiState(string statusText)
+    {
+        _tokens = null;
+
+        Profile = null;
+        Rezonite = 0;
+
+        IsLoggedIn = false;
+        IsWaitingSiteConfirm = false;
+        SiteUserName = "Не вошли";
+
+        LoginUrl = null;
+
+        StatusText = statusText;
     }
 
     private async Task TryAutoLoginAsync(CancellationToken ct)
@@ -75,46 +175,26 @@ public sealed partial class MainViewModel
             IsBusy = true;
             StatusText = "Проверка входа на сайте...";
 
-            _tokens = saved;
-
-            var me = await _site.GetMeAsync(_tokens.SafeAccessToken, ct);
-            Profile = me;
-
-            SiteUserName = string.IsNullOrWhiteSpace(me.UserName) ? "Пользователь" : me.UserName;
-            IsLoggedIn = true;
-
-            var mcName = string.IsNullOrWhiteSpace(me.MinecraftName) ? SiteUserName : me.MinecraftName!;
-            Username = MakeValidMcName(mcName);
-
-            await TrySendDailyLauncherLoginEventAsync();
-
-            if (!me.CanPlay)
-            {
-                StatusText = string.IsNullOrWhiteSpace(me.Reason) ? "Доступ к игре ограничен." : me.Reason!;
-                AppendLog(StatusText);
-            }
-            else
-            {
-                StatusText = "Вход выполнен.";
-                AppendLog($"Сайт: вошли как {SiteUserName}");
-            }
+            await ApplySuccessfulLoginAsync(saved, ct);
         }
         catch (OperationCanceledException)
         {
             StatusText = "Отменено.";
         }
-        catch
+        catch (Exception ex)
         {
-            _tokens = null;
-            _tokenStore.Clear();
-
-            Profile = null;
-            Rezonite = 0;
-
-            IsLoggedIn = false;
-            SiteUserName = "Не вошли";
-
-            StatusText = "Требуется вход.";
+            // ВАЖНО: если это временная сеть — токены НЕ удаляем
+            if (LooksLikeUnauthorized(ex))
+            {
+                _tokenStore.Clear();
+                ApplyLoggedOutUiState("Требуется вход.");
+            }
+            else
+            {
+                // оставляем токены на диске для следующей попытки
+                ApplyLoggedOutUiState("Не удалось проверить вход (сеть/сайт).");
+                AppendLog("Автовход: не удалось проверить токен. Проверь интернет/доступность сайта.");
+            }
         }
         finally
         {
@@ -150,18 +230,9 @@ public sealed partial class MainViewModel
 
             IsBusy = false;
 
-            var path = string.IsNullOrWhiteSpace(connectUrl) ? "/launcher/connect" : connectUrl.Trim();
-            var fullUrl = path.StartsWith("http", StringComparison.OrdinalIgnoreCase)
-                ? path
-                : SiteBaseUrl + (path.StartsWith("/") ? path : "/" + path);
-
-            if (!fullUrl.Contains("deviceId=", StringComparison.OrdinalIgnoreCase) &&
-                !fullUrl.Contains("deviceid=", StringComparison.OrdinalIgnoreCase))
-            {
-                fullUrl += (fullUrl.Contains("?") ? "&" : "?") + "deviceId=" + Uri.EscapeDataString(deviceId);
-            }
-
+            var fullUrl = BuildConnectUrl(deviceId, connectUrl);
             LoginUrl = fullUrl;
+
             AppendLog($"Ссылка для входа: {fullUrl}");
 
             if (!TryOpenUrlInBrowser(fullUrl, out var openError))
@@ -174,13 +245,12 @@ public sealed partial class MainViewModel
                 StatusText = "Подтверди вход на сайте.";
             }
 
-            var hardDeadline = expiresAtUnix > 0
-                ? DateTimeOffset.FromUnixTimeSeconds(expiresAtUnix)
-                : DateTimeOffset.UtcNow.AddMinutes(10);
+            var deadline = BuildDeadline(expiresAtUnix);
 
+            // ожидание подтверждения — НЕ Busy, но Waiting=true (UI доступен: Copy/Open)
             while (!_loginCts.IsCancellationRequested && !_isClosing)
             {
-                if (DateTimeOffset.UtcNow > hardDeadline)
+                if (DateTimeOffset.UtcNow > deadline)
                 {
                     AppendLog("Время ожидания подтверждения истекло.");
                     StatusText = "Не подтверждено. Попробуй снова.";
@@ -200,30 +270,11 @@ public sealed partial class MainViewModel
                     continue;
                 }
 
-                _tokens = tokens;
+                // сохраняем токены
                 _tokenStore.Save(tokens);
 
-                var me = await _site.GetMeAsync(tokens.SafeAccessToken, _loginCts.Token);
-                Profile = me;
-
-                SiteUserName = string.IsNullOrWhiteSpace(me.UserName) ? "Пользователь" : me.UserName;
-                IsLoggedIn = true;
-
-                var mcName = string.IsNullOrWhiteSpace(me.MinecraftName) ? SiteUserName : me.MinecraftName!;
-                Username = MakeValidMcName(mcName);
-
-                await TrySendDailyLauncherLoginEventAsync();
-
-                if (!me.CanPlay)
-                {
-                    StatusText = string.IsNullOrWhiteSpace(me.Reason) ? "Доступ к игре ограничен." : me.Reason!;
-                    AppendLog(StatusText);
-                }
-                else
-                {
-                    StatusText = "Вход выполнен.";
-                    AppendLog($"Сайт: вошли как {SiteUserName}");
-                }
+                // применяем успешный вход
+                await ApplySuccessfulLoginAsync(tokens, _loginCts.Token);
 
                 return;
             }

@@ -3,7 +3,9 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
+using System.Windows;
 using LegendBorn.Mvvm;
 using LegendBorn.Models;
 using LegendBorn.Services;
@@ -14,8 +16,8 @@ public sealed partial class MainViewModel : ObservableObject
 {
     private const string SiteBaseUrl = "https://legendborn.ru";
 
-    // ВАЖНО: дефолтный IP из Settings.settings (если пользователь не менял вручную)
-    private const string DefaultServerIp = "legendcraft.minerent.io";
+    // fallback если нет данных сервера/конфига
+    private const string DefaultServerIpFallback = "legendcraft.minerent.io";
 
     // ===== Services / core =====
     private readonly MinecraftService _mc;
@@ -34,6 +36,33 @@ public sealed partial class MainViewModel : ObservableObject
 
     // used to prevent side-effects during initial server load
     private bool _suppressSelectedServerSideEffects;
+
+    // ===== Config save debounce =====
+    private int _configSaveVersion;
+
+    private void ScheduleConfigSave()
+    {
+        // debounce, чтобы не писать конфиг на каждый символ
+        var v = Interlocked.Increment(ref _configSaveVersion);
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(250).ConfigureAwait(false);
+            if (v != _configSaveVersion) return;
+            SaveConfigSafe();
+        });
+    }
+
+    private void SaveConfigSafe()
+    {
+        try
+        {
+            App.Config.Save();
+        }
+        catch
+        {
+            // release-safe: не валим UI
+        }
+    }
 
     // ===== UI: Tabs (Auth / Start / Profile / Settings) =====
     private int _selectedMenuIndex;
@@ -109,6 +138,24 @@ public sealed partial class MainViewModel : ObservableObject
             if (!_suppressSelectedServerSideEffects)
                 OnSelectedServerChanged(value);
 
+            // обновляем зависимые UI поля
+            Raise(nameof(PackName));
+            Raise(nameof(MinecraftVersion));
+            Raise(nameof(LoaderName));
+            Raise(nameof(LoaderVersion));
+            Raise(nameof(BuildDisplayName));
+
+            // сохраняем выбор сервера в конфиг
+            try
+            {
+                if (value is not null)
+                {
+                    App.Config.Current.LastServerId = value.Id;
+                    ScheduleConfigSave();
+                }
+            }
+            catch { }
+
             RefreshCanStates();
         }
     }
@@ -151,8 +198,14 @@ public sealed partial class MainViewModel : ObservableObject
             if (!Set(ref _ramMb, normalized))
                 return;
 
-            TrySaveSetting("RamMb", _ramMb);
-            SaveSettingsSafe();
+            // config
+            try
+            {
+                App.Config.Current.RamMb = _ramMb;
+                ScheduleConfigSave();
+            }
+            catch { }
+
             RefreshCanStates();
         }
     }
@@ -239,13 +292,22 @@ public sealed partial class MainViewModel : ObservableObject
             if (!Set(ref _username, v))
                 return;
 
-            TrySaveSetting("Username", _username);
-            SaveSettingsSafe();
+            // config
+            try
+            {
+                // если хочешь хранить ник в конфиге — добавь поле в LauncherConfig:
+                // public string? Username {get;set;}
+                // Тогда раскомментируй:
+                // App.Config.Current.Username = _username;
+                ScheduleConfigSave();
+            }
+            catch { }
+
             RefreshCanStates();
         }
     }
 
-    private string _serverIp = DefaultServerIp;
+    private string _serverIp = DefaultServerIpFallback;
     public string ServerIp
     {
         get => _serverIp;
@@ -256,8 +318,14 @@ public sealed partial class MainViewModel : ObservableObject
             if (!Set(ref _serverIp, v))
                 return;
 
-            TrySaveSetting("ServerIp", _serverIp);
-            SaveSettingsSafe();
+            // config
+            try
+            {
+                App.Config.Current.LastServerIp = _serverIp;
+                ScheduleConfigSave();
+            }
+            catch { }
+
             RefreshCanStates();
         }
     }
@@ -360,6 +428,7 @@ public sealed partial class MainViewModel : ObservableObject
     // ===== Derived flags =====
     public bool CanStop => _runningProcess is { HasExited: false };
 
+    // _isClosing объявлен в другом partial? (оставляем как есть)
     public bool CanPlay =>
         !_isClosing &&
         !IsBusy &&
@@ -396,48 +465,63 @@ public sealed partial class MainViewModel : ObservableObject
     {
         SelectedMenuIndex = 0;
 
-        _gameDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "LegendBorn", "Game");
-        Directory.CreateDirectory(_gameDir);
+        // берём из конфига или дефолт
+        string gameDir;
+        try
+        {
+            gameDir = (App.Config.Current.GameRootPath ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(gameDir))
+                gameDir = LauncherPaths.DefaultGameDir;
+        }
+        catch
+        {
+            gameDir = LauncherPaths.DefaultGameDir;
+        }
 
-        _tokenStore = new TokenStore(Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "LegendBorn", "auth.dat"));
+        _gameDir = gameDir;
+        try { Directory.CreateDirectory(_gameDir); } catch { }
+
+        // токены — единые из App
+        _tokenStore = App.Tokens;
 
         _mc = new MinecraftService(_gameDir);
 
         _mc.Log += (_, line) =>
         {
             if (_isClosing) return;
-            AppendLog(line);
+            SafeUi(() => AppendLog(line));
         };
 
         _mc.ProgressPercent += (_, p) =>
         {
             if (_isClosing) return;
-            OnMinecraftProgress(p);
+            SafeUi(() => OnMinecraftProgress(p));
         };
 
         InitCommands();
         _commandsReady = true;
 
-        // ===== Load Settings (релиз-safe) =====
+        // ===== Load Config (релиз-safe) =====
         try
         {
-            var u = TryLoadStringSetting("Username", "Player") ?? "Player";
-            _username = string.IsNullOrWhiteSpace(u) ? "Player" : u.Trim();
+            // Username (если добавишь поле в LauncherConfig — подхватим)
+            // var u = (App.Config.Current.Username ?? "Player").Trim();
+            // _username = string.IsNullOrWhiteSpace(u) ? "Player" : u;
+            _username = "Player";
             Raise(nameof(Username));
 
-            var ip = TryLoadStringSetting("ServerIp", DefaultServerIp) ?? DefaultServerIp;
-            _serverIp = (ip ?? "").Trim();
+            var ip = (App.Config.Current.LastServerIp ?? DefaultServerIpFallback).Trim();
+            _serverIp = string.IsNullOrWhiteSpace(ip) ? DefaultServerIpFallback : ip;
             Raise(nameof(ServerIp));
 
-            var ram = TryLoadIntSetting("RamMb", 4096);
+            var ram = App.Config.Current.RamMb;
             _ramMb = RamOptions.Contains(ram) ? ram : 4096;
             Raise(nameof(RamMb));
         }
-        catch { }
+        catch
+        {
+            // ignore
+        }
 
         _ = InitializeAsyncSafe();
         RefreshCanStates();
@@ -483,5 +567,21 @@ public sealed partial class MainViewModel : ObservableObject
                 await UpdateService.CheckAndUpdateAsync(silent: false, showNoUpdates: true);
             },
             () => !_isClosing && !IsBusy);
+    }
+
+    private static void SafeUi(Action action)
+    {
+        try
+        {
+            var d = Application.Current?.Dispatcher;
+            if (d is null || d.CheckAccess())
+                action();
+            else
+                d.Invoke(action);
+        }
+        catch
+        {
+            // ignore
+        }
     }
 }

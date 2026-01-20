@@ -46,6 +46,7 @@ public sealed partial class MainViewModel
             .Select(EnsureSlash)
             .Where(u => !string.IsNullOrWhiteSpace(u))
             .Where(u => !IsSourceForgeDownloads(u))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
         var all = new[] { baseUrl }
@@ -54,6 +55,7 @@ public sealed partial class MainViewModel
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        // Если базовый хост legendborn — добавляем дефолтные зеркала (bunny + sourceforge)
         if (IsLegendbornHost(baseUrl))
         {
             var bunny = EnsureSlash(BunnyPackMirror);
@@ -65,12 +67,14 @@ public sealed partial class MainViewModel
                 all.AddRange(SourceForgePackMirrors.Select(EnsureSlash).Where(x => !string.IsNullOrWhiteSpace(x)));
         }
 
+        // fallback на крайний случай
         if (all.Count == 0)
         {
             all.Add(EnsureSlash("https://legendborn.ru/launcher/pack/"));
             all.Add(EnsureSlash(BunnyPackMirror));
         }
 
+        // порядок приоритета: baseUrl -> bunny -> sourceforge -> всё остальное
         return all
             .OrderBy(u =>
             {
@@ -132,11 +136,19 @@ public sealed partial class MainViewModel
             return;
         }
 
+        // защита от двойного запуска
         if (Interlocked.Exchange(ref _playGuard, 1) == 1)
             return;
 
         try
         {
+            // нормализуем данные
+            var username = (Username ?? "Player").Trim();
+            if (string.IsNullOrWhiteSpace(username)) username = "Player";
+
+            var ram = RamOptions.Contains(RamMb) ? RamMb : 4096;
+            if (ram < 1024) ram = 1024;
+
             IsBusy = true;
             StatusText = $"Подготовка {BuildDisplayName}...";
             ProgressPercent = 0;
@@ -155,22 +167,36 @@ public sealed partial class MainViewModel
             Versions.Add(launchVersionId);
             SelectedVersion = launchVersionId;
 
-            TrySaveSetting("Username", Username);
-            TrySaveSetting("RamMb", RamMb);
-            TrySaveSetting("SelectedServerId", SelectedServer.Id);
-            TrySaveSetting("ServerIp", ServerIp);
-            SaveSettingsSafe();
+            // ===== сохраняем настройки в launcher.config.json (через App.Config) =====
+            try
+            {
+                App.Config.Current.RamMb = ram;
+                App.Config.Current.LastServerId = SelectedServer.Id;
+
+                // Если пользователь руками ввёл ServerIp — сохраняем, иначе сохраняем адрес сервера
+                var ipToSave = (ServerIp ?? "").Trim();
+                if (string.IsNullOrWhiteSpace(ipToSave))
+                    ipToSave = (SelectedServer.Address ?? "").Trim();
+
+                App.Config.Current.LastServerIp = ipToSave;
+                ScheduleConfigSave();
+            }
+            catch { }
 
             StatusText = "Запуск игры...";
 
-            var ip = !string.IsNullOrWhiteSpace(ServerIp)
-                ? ServerIp.Trim()
-                : (string.IsNullOrWhiteSpace(SelectedServer.Address) ? null : SelectedServer.Address.Trim());
+            // IP для подключения: приоритет — ручной ввод, иначе Address выбранного сервера
+            var ip = (ServerIp ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(ip))
+                ip = (SelectedServer.Address ?? "").Trim();
+
+            if (string.IsNullOrWhiteSpace(ip))
+                ip = null; // можно запускать без авто-коннекта к серверу
 
             _runningProcess = await _mc.BuildAndLaunchAsync(
                 version: launchVersionId,
-                username: Username.Trim(),
-                ramMb: RamMb,
+                username: username,
+                ramMb: ram,
                 serverIp: ip);
 
             HookProcessExited(_runningProcess);

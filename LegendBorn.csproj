@@ -9,11 +9,11 @@
         <ImplicitUsings>enable</ImplicitUsings>
 
         <!-- App version -->
-        <Version>0.2.5</Version>
-        <AssemblyVersion>0.2.5.0</AssemblyVersion>
-        <FileVersion>0.2.5.0</FileVersion>
+        <Version>0.2.6</Version>
+        <AssemblyVersion>0.2.6.0</AssemblyVersion>
+        <FileVersion>0.2.6.0</FileVersion>
 
-        <InformationalVersion>0.2.5</InformationalVersion>
+        <InformationalVersion>0.2.6</InformationalVersion>
         <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 
         <StartupObject>LegendBorn.App</StartupObject>
@@ -27,18 +27,30 @@
     </ItemGroup>
 
     <ItemGroup>
-        <Resource Include="Assets\legendcraft.jpg" />
         <None Remove="Assets\launcherstart.png" />
-        <Resource Include="Assets\launcherstart.png" />
         <None Remove="Assets\logolauncher.png" />
-        <Resource Include="Assets\logolauncher.png" />
         <None Remove="Assets\legendcraft.png" />
-        <Resource Include="Assets\legendcraft.png" />
     </ItemGroup>
 
     <ItemGroup>
         <ApplicationDefinition Remove="App.xaml" />
         <Page Include="App.xaml" />
+        <Page Update="Resources\Themes\LauncherTheme.xaml">
+          <Generator>MSBuild:Compile</Generator>
+        </Page>
+    </ItemGroup>
+
+    <ItemGroup>
+      <Folder Include="Properties\" />
+      <Folder Include="Resources\" />
+      <Folder Include="Views\" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <Resource Include="Resources\Assets\launcherstart.png" />
+      <Resource Include="Resources\Assets\legendcraft.jpg" />
+      <Resource Include="Resources\Assets\legendcraft.png" />
+      <Resource Include="Resources\Assets\logolauncher.png" />
     </ItemGroup>
 
 </Project>
