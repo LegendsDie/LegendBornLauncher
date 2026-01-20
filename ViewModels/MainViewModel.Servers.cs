@@ -19,7 +19,8 @@ public sealed partial class MainViewModel
             await LoadServersAsync(ct);
 
             // OnSelectedServerChanged уже выставляет Versions/SelectedVersion
-            await TryAutoLoginAsync(ct);
+            if (_config.Current.AutoLogin)
+                await TryAutoLoginAsync(ct);
         }
         catch (OperationCanceledException)
         {
@@ -34,16 +35,13 @@ public sealed partial class MainViewModel
     private void OnSelectedServerChanged(ServerEntry? value)
     {
         if (_isClosing) return;
-
         if (value is null)
         {
             RaisePackPresentation();
             return;
         }
 
-        // === КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ 0.2.2 ===
-        // ServerIp больше не "залипает" и не ломает смену сервера:
-        // авто-обновляем IP только если пользователь не делал ручной override.
+        // 1) ServerIp не "залипает": авто-обновляем IP только если пользователь не делал ручной override.
         try
         {
             var current = (ServerIp ?? "").Trim();
@@ -58,7 +56,7 @@ public sealed partial class MainViewModel
 
             if (shouldAuto && !string.IsNullOrWhiteSpace(addr))
             {
-                ServerIp = addr;
+                ServerIp = addr;          // setter сам сохранит LastServerIp
                 _lastAutoServerIp = addr;
             }
 
@@ -66,15 +64,22 @@ public sealed partial class MainViewModel
         }
         catch { }
 
-        // Apply UI state
-        var label = MakeAutoVersionLabel(value);
-        SetVersionsUi(label);
+        // 2) UI label (версии)
+        try
+        {
+            var label = MakeAutoVersionLabel(value);
+            SetVersionsUi(label);
+        }
+        catch { }
 
-        // Persist selection
-        TrySaveSetting("SelectedServerId", value.Id);
-        SaveSettingsSafe();
+        // 3) Persist selection (через _config)
+        try
+        {
+            _config.Current.LastServerId = value.Id;
+            ScheduleConfigSave();
+        }
+        catch { }
 
-        // Update pack labels
         RaisePackPresentation();
     }
 
@@ -89,6 +94,9 @@ public sealed partial class MainViewModel
             var list = await _servers.GetServersOrDefaultAsync(
                 mirrors: ServerListService.DefaultServersMirrors,
                 ct: ct);
+
+            var savedId = "";
+            try { savedId = (_config.Current.LastServerId ?? "").Trim(); } catch { }
 
             InvokeOnUi(() =>
             {
@@ -117,13 +125,11 @@ public sealed partial class MainViewModel
                     });
                 }
 
-                var savedId = TryLoadStringSetting("SelectedServerId", null);
-
                 _suppressSelectedServerSideEffects = true;
                 try
                 {
                     SelectedServer =
-                        Servers.FirstOrDefault(x => x.Id.Equals(savedId ?? "", StringComparison.OrdinalIgnoreCase)) ??
+                        Servers.FirstOrDefault(x => x.Id.Equals(savedId, StringComparison.OrdinalIgnoreCase)) ??
                         Servers.FirstOrDefault();
                 }
                 finally
@@ -131,7 +137,7 @@ public sealed partial class MainViewModel
                     _suppressSelectedServerSideEffects = false;
                 }
 
-                // run side-effects once
+                // side-effects once
                 OnSelectedServerChanged(SelectedServer);
             });
 

@@ -1,3 +1,5 @@
+using System;
+using System.IO;
 using System.Text.Json;
 using LegendBorn.Models;
 
@@ -8,7 +10,9 @@ public sealed class ConfigService
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        PropertyNameCaseInsensitive = true,
+        ReadCommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true
     };
 
     public string ConfigPath { get; }
@@ -23,10 +27,13 @@ public sealed class ConfigService
     {
         try
         {
+            var dir = Path.GetDirectoryName(ConfigPath);
+            if (!string.IsNullOrWhiteSpace(dir))
+                Directory.CreateDirectory(dir);
+
             if (!File.Exists(ConfigPath))
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath)!);
-                Save();
+                Save(); // создаём файл из Current
                 return Current;
             }
 
@@ -47,15 +54,50 @@ public sealed class ConfigService
 
     public void Save()
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath)!);
-        var json = JsonSerializer.Serialize(Current, JsonOptions);
-        File.WriteAllText(ConfigPath, json);
+        try
+        {
+            var dir = Path.GetDirectoryName(ConfigPath);
+            if (!string.IsNullOrWhiteSpace(dir))
+                Directory.CreateDirectory(dir);
+
+            var tmp = ConfigPath + ".tmp";
+            var json = JsonSerializer.Serialize(Current, JsonOptions);
+            File.WriteAllText(tmp, json);
+
+            if (File.Exists(ConfigPath))
+            {
+                try
+                {
+                    File.Replace(tmp, ConfigPath, destinationBackupFileName: null, ignoreMetadataErrors: true);
+                }
+                catch
+                {
+                    File.Delete(ConfigPath);
+                    File.Move(tmp, ConfigPath);
+                }
+            }
+            else
+            {
+                File.Move(tmp, ConfigPath);
+            }
+        }
+        catch
+        {
+            // release-safe ignore
+            try
+            {
+                var tmp = ConfigPath + ".tmp";
+                if (File.Exists(tmp)) File.Delete(tmp);
+            }
+            catch { }
+        }
     }
 
     private void TryBackupBrokenConfig()
     {
         try
         {
+            if (!File.Exists(ConfigPath)) return;
             var bak = ConfigPath + ".broken." + DateTime.UtcNow.ToString("yyyyMMddHHmmss") + ".bak";
             File.Copy(ConfigPath, bak, overwrite: true);
         }

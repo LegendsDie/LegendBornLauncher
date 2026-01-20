@@ -26,13 +26,10 @@ public sealed partial class MainViewModel
 
         try { _lifetimeCts.Cancel(); } catch { }
 
+        // CancelLoginWait определён ТОЛЬКО в MainViewModel.Auth.cs
         CancelLoginWait();
-
-        // ВАЖНО: не Dispose'им CTS здесь — чтобы фоновые таски не ловили ObjectDisposedException.
-        // CLR сам заберёт ресурсы при закрытии процесса.
     }
 
-    // ===== merged login strip text (for Start->Nick block) =====
     public string LoginStateText
     {
         get
@@ -43,10 +40,7 @@ public sealed partial class MainViewModel
                 if (IsWaitingSiteConfirm) return "Ожидаю подтверждение входа на сайте...";
                 return "Требуется вход.";
             }
-            catch
-            {
-                return "—";
-            }
+            catch { return "—"; }
         }
     }
 
@@ -81,7 +75,7 @@ public sealed partial class MainViewModel
         catch { }
     }
 
-    // ===== Progress throttle (release-safe) =====
+    // ===== Progress throttle =====
     private const int ProgressUiMinIntervalMs = 80; // ~12.5 fps
 
     private int _pendingProgress = -1;
@@ -131,7 +125,6 @@ public sealed partial class MainViewModel
         if (p < 0) return;
 
         Interlocked.Exchange(ref _lastProgressUiTick, Environment.TickCount64);
-
         PostToUi(() => ProgressPercent = p);
     }
 
@@ -251,20 +244,6 @@ public sealed partial class MainViewModel
             File.AppendAllText(LogFile, line + Environment.NewLine);
         }
         catch { }
-    }
-
-    // ===== Config helpers =====
-    private void TrySetConfigValueSafe(Action updateAction)
-    {
-        try
-        {
-            updateAction();
-            ScheduleConfigSave();
-        }
-        catch
-        {
-            // ignore
-        }
     }
 
     // ===== CanExecute refresh =====

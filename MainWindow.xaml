@@ -4,7 +4,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="LegendBorn"
-        Icon="pack://application:,,,/Assets/logolauncher.png"
+        Icon="pack://application:,,,/Resources/Assets/logolauncher.png"
         Width="1100" Height="740"
         MinWidth="920" MinHeight="600"
         WindowStartupLocation="CenterScreen"
@@ -29,20 +29,17 @@
     <Window.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="Themes/LauncherTheme.xaml"/>
+                <ResourceDictionary Source="/Resources/Themes/LauncherTheme.xaml"/>
             </ResourceDictionary.MergedDictionaries>
 
-            <!-- Background (Auth screen) -->
             <ImageBrush x:Key="AuthStartBg"
-                        ImageSource="pack://application:,,,/Assets/launcherstart.png"
+                        ImageSource="pack://application:,,,/Resources/Assets/launcherstart.png"
                         Stretch="UniformToFill"/>
 
-            <!-- Local fallback -->
             <SolidColorBrush x:Key="TextStrongLocal" Color="#EAF0FF"/>
             <SolidColorBrush x:Key="TextDimLocal" Color="#A9B4D6"/>
             <SolidColorBrush x:Key="DividerBrushLocal" Color="#2A2F49"/>
 
-            <!-- Bottom thin progress strip (delayed hide so it doesn't "blink") -->
             <Style x:Key="BottomStripProgressBarStyle"
                    TargetType="ProgressBar"
                    BasedOn="{StaticResource ProgressBarAccurateStyle}">
@@ -54,12 +51,10 @@
                 <Setter Property="Opacity" Value="1"/>
                 <Style.Triggers>
 
-                    <!-- Hide when ProgressPercent == 0, but with delay + cancellation -->
                     <DataTrigger Binding="{Binding ProgressPercent}" Value="0">
                         <DataTrigger.EnterActions>
                             <BeginStoryboard x:Name="HideStripAtZero">
                                 <Storyboard>
-                                    <!-- Wait a bit, then fade/collapse -->
                                     <DoubleAnimation Storyboard.TargetProperty="Opacity"
                                                      To="0"
                                                      Duration="0:0:0.25"
@@ -76,7 +71,6 @@
                             </BeginStoryboard>
                         </DataTrigger.EnterActions>
                         <DataTrigger.ExitActions>
-                            <!-- If progress moved off 0 quickly, cancel scheduled hide -->
                             <StopStoryboard BeginStoryboardName="HideStripAtZero"/>
                             <BeginStoryboard>
                                 <Storyboard>
@@ -94,7 +88,6 @@
                         </DataTrigger.ExitActions>
                     </DataTrigger>
 
-                    <!-- Hide when ProgressPercent == 100, but keep visible longer (no instant disappear) -->
                     <DataTrigger Binding="{Binding ProgressPercent}" Value="100">
                         <DataTrigger.EnterActions>
                             <BeginStoryboard x:Name="HideStripAtHundred">
@@ -115,7 +108,6 @@
                             </BeginStoryboard>
                         </DataTrigger.EnterActions>
                         <DataTrigger.ExitActions>
-                            <!-- If progress leaves 100 (e.g., next phase), cancel scheduled hide -->
                             <StopStoryboard BeginStoryboardName="HideStripAtHundred"/>
                             <BeginStoryboard>
                                 <Storyboard>
@@ -136,7 +128,6 @@
                 </Style.Triggers>
             </Style>
 
-            <!-- Brand button: no ugly focus / no selection -->
             <Style x:Key="BrandButtonStyle" TargetType="Button">
                 <Setter Property="Background" Value="Transparent"/>
                 <Setter Property="BorderThickness" Value="0"/>
@@ -164,7 +155,6 @@
                 </Setter>
             </Style>
 
-            <!-- Small icon button -->
             <Style x:Key="SmallIconButton" TargetType="Button">
                 <Setter Property="Width" Value="38"/>
                 <Setter Property="Height" Value="38"/>
@@ -203,7 +193,6 @@
                 </Setter>
             </Style>
 
-            <!-- News button near profile: match ProfileButton look -->
             <Style x:Key="NewsTopButtonStyle" TargetType="Button" BasedOn="{StaticResource ProfileButton}">
                 <Setter Property="Margin" Value="0,0,10,0"/>
                 <Setter Property="Padding" Value="12,0"/>
@@ -213,7 +202,6 @@
                 <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
             </Style>
 
-            <!-- Compact news card button (fixes padding/offset issues) -->
             <Style x:Key="NewsCardButtonStyle" TargetType="Button">
                 <Setter Property="Background" Value="Transparent"/>
                 <Setter Property="BorderThickness" Value="0"/>
@@ -237,7 +225,6 @@
         </ResourceDictionary>
     </Window.Resources>
 
-    <!-- Root border with adaptive corner radius when Maximized -->
     <Border x:Name="RootBorder">
         <Border.Style>
             <Style TargetType="Border" BasedOn="{StaticResource RootBorderStyle}">
@@ -252,7 +239,6 @@
 
         <Grid>
 
-            <!-- BACKGROUND -->
             <Grid>
                 <Rectangle>
                     <Rectangle.Fill>
@@ -289,7 +275,6 @@
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
-                <!-- TOP BAR -->
                 <Border Grid.Row="0" Style="{StaticResource TopBarStyle}">
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -298,14 +283,13 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
-                        <!-- LEFT: brand -->
                         <Button Grid.Column="0"
                                 Style="{StaticResource BrandButtonStyle}"
                                 ToolTip="Главная"
                                 Command="{Binding OpenStartCommand}">
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                 <Border Width="34" Height="34" CornerRadius="12" Background="#22FFFFFF" VerticalAlignment="Center">
-                                    <Image Source="pack://application:,,,/Assets/logolauncher.png"
+                                    <Image Source="pack://application:,,,/Resources/Assets/logolauncher.png"
                                            Stretch="Uniform"
                                            Margin="5"/>
                                 </Border>
@@ -330,15 +314,12 @@
                             </StackPanel>
                         </Button>
 
-                        <!-- DRAG AREA -->
                         <Border Grid.Column="1"
                                 Background="Transparent"
                                 MouseLeftButtonDown="TitleBar_OnMouseLeftButtonDown"/>
 
-                        <!-- RIGHT -->
                         <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
 
-                            <!-- NEWS button (profile-like) -->
                             <Button Style="{StaticResource NewsTopButtonStyle}"
                                     ToolTip="Новости"
                                     Click="OpenNewsTab_OnClick">
@@ -369,7 +350,6 @@
                                 </StackPanel>
                             </Button>
 
-                            <!-- Profile -->
                             <Button Style="{StaticResource ProfileButton}"
                                     Margin="0,0,10,0"
                                     Visibility="{Binding IsLoggedIn, Converter={StaticResource BoolToVis}}"
@@ -440,13 +420,11 @@
                     </Grid>
                 </Border>
 
-                <!-- CONTENT -->
                 <TabControl x:Name="MainTabs"
                             Grid.Row="2"
                             Style="{StaticResource HiddenTabsStyle}"
                             SelectedIndex="{Binding SelectedMenuIndex}">
 
-                    <!-- 0) AUTH -->
                     <TabItem>
                         <Grid>
                             <Border Style="{StaticResource ScreenFrameStyle}">
@@ -544,12 +522,11 @@
                         </Grid>
                     </TabItem>
 
-                    <!-- 1) START -->
                     <TabItem>
                         <Grid>
                             <Border Style="{StaticResource ScreenFrameStyle}">
                                 <Grid>
-                                    <Image Source="pack://application:,,,/Assets/legendcraft.jpg"
+                                    <Image Source="pack://application:,,,/Resources/Assets/legendcraft.jpg"
                                            Stretch="UniformToFill"
                                            Opacity="0.42"/>
 
@@ -565,7 +542,6 @@
                                         </Rectangle.Fill>
                                     </Rectangle>
 
-                                    <!-- subtle official mark (top-right) -->
                                     <TextBlock FontFamily="Segoe MDL2 Assets"
                                                Text="&#xE73E;"
                                                FontSize="16"
@@ -576,7 +552,6 @@
                                                Margin="0,12,14,0"
                                                ToolTip="Официальный сервер"/>
 
-                                    <!-- Padding bottom reserved for thin progress strip -->
                                     <Border Background="#00000000" Padding="26,26,26,44">
                                         <ScrollViewer VerticalScrollBarVisibility="Auto"
                                                       HorizontalScrollBarVisibility="Disabled">
@@ -587,35 +562,29 @@
                                                     <ColumnDefinition Width="340"/>
                                                 </Grid.ColumnDefinitions>
 
-                                                <!-- LEFT -->
                                                 <StackPanel Grid.Column="0"
                                                             VerticalAlignment="Top"
                                                             Margin="0,12,0,0">
 
-                                                    <!-- Server header: bigger logo + one-line description -->
                                                     <StackPanel Margin="0,0,0,14">
-                                                        <Image Source="pack://application:,,,/Assets/legendcraft.png"
-                                                               Height="200"
-                                                               Stretch="Uniform"
-                                                               HorizontalAlignment="Center"
-                                                               SnapsToDevicePixels="True"
-                                                               RenderOptions.BitmapScalingMode="HighQuality">
-                                                            <Image.Effect>
-                                                                <DropShadowEffect Color="#A855F7"
-                                                                                  BlurRadius="22"
-                                                                                  ShadowDepth="0"
-                                                                                  Opacity="0.35"/>
-                                                            </Image.Effect>
-                                                        </Image>
-
-                                                        <TextBlock Margin="0,10,0,0"
-                                                                   Text="TechMagicRPG сервер, где начнётся твой путь"
+                                                        <TextBlock Text="{Binding PackName}"
+                                                                   Foreground="{StaticResource TextStrongLocal}"
+                                                                   FontSize="26"
+                                                                   FontWeight="Bold"
+                                                                   TextTrimming="CharacterEllipsis"/>
+                                                        <TextBlock Margin="0,6,0,0"
+                                                                   Text="{Binding BuildDisplayName}"
                                                                    Foreground="{StaticResource TextDimLocal}"
                                                                    FontSize="13"
                                                                    TextTrimming="CharacterEllipsis"/>
+                                                        <TextBlock Margin="0,8,0,0"
+                                                                   Text="TechMagicRPG сервер, где начнётся твой путь"
+                                                                   Foreground="{StaticResource TextDimLocal}"
+                                                                   FontSize="12"
+                                                                   Opacity="0.92"
+                                                                   TextTrimming="CharacterEllipsis"/>
                                                     </StackPanel>
 
-                                                    <!-- NICK -->
                                                     <Border Style="{StaticResource FieldCardStyle}">
                                                         <StackPanel>
                                                             <TextBlock Text="Ник (Minecraft)"
@@ -625,7 +594,6 @@
                                                             <TextBox Margin="0,12,0,0"
                                                                      Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"/>
 
-                                                            <!-- Compact status text (no percent here) -->
                                                             <TextBlock Margin="0,10,0,0"
                                                                        Text="{Binding StatusText, FallbackValue='Готов к запуску.'}"
                                                                        Foreground="{StaticResource TextDimLocal}"
@@ -634,7 +602,6 @@
                                                         </StackPanel>
                                                     </Border>
 
-                                                    <!-- SERVER NEWS (compact, TOP 2) -->
                                                     <Border Margin="0,16,0,0"
                                                             Style="{StaticResource FieldCardStyle}">
                                                         <Grid>
@@ -723,24 +690,38 @@
 
                                                 </StackPanel>
 
-                                                <!-- RIGHT -->
-                                                <Grid Grid.Column="2">
+                                                <Grid Grid.Column="2" Margin="0,12,0,0">
                                                     <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto"/>
                                                         <RowDefinition Height="*"/>
                                                         <RowDefinition Height="Auto"/>
                                                     </Grid.RowDefinitions>
 
-                                                    <!-- ACTIONS pinned bottom-right -->
-                                                    <StackPanel Grid.Row="1"
-                                                                VerticalAlignment="Bottom"
-                                                                HorizontalAlignment="Right">
+                                                    <Image Grid.Row="0"
+                                                           Source="pack://application:,,,/Resources/Assets/legendcraft.png"
+                                                           Height="170"
+                                                           MaxWidth="320"
+                                                           Stretch="Uniform"
+                                                           HorizontalAlignment="Right"
+                                                           Margin="0,0,0,14"
+                                                           SnapsToDevicePixels="True"
+                                                           RenderOptions.BitmapScalingMode="HighQuality">
+                                                        <Image.Effect>
+                                                            <DropShadowEffect Color="#A855F7"
+                                                                              BlurRadius="22"
+                                                                              ShadowDepth="0"
+                                                                              Opacity="0.28"/>
+                                                        </Image.Effect>
+                                                    </Image>
 
-                                                        <!-- small icon row (ABOVE PLAY) -->
+                                                    <StackPanel Grid.Row="2"
+                                                                VerticalAlignment="Bottom"
+                                                                HorizontalAlignment="Right"
+                                                                Margin="0,0,0,0">
+
                                                         <StackPanel Orientation="Horizontal"
                                                                     HorizontalAlignment="Right"
                                                                     Margin="0,0,0,10">
-
-                                                            <!-- Open game folder -->
                                                             <Button Style="{StaticResource SmallIconButton}"
                                                                     ToolTip="Открыть папку игры"
                                                                     Command="{Binding OpenGameDirCommand}">
@@ -749,7 +730,6 @@
                                                                            FontSize="16"/>
                                                             </Button>
 
-                                                            <!-- Open site -->
                                                             <Button Style="{StaticResource SmallIconButton}"
                                                                     ToolTip="Открыть сайт"
                                                                     Margin="10,0,0,0"
@@ -775,11 +755,11 @@
 
                                                     </StackPanel>
                                                 </Grid>
+
                                             </Grid>
                                         </ScrollViewer>
                                     </Border>
 
-                                    <!-- Single thin strip at the bottom -->
                                     <ProgressBar Style="{StaticResource BottomStripProgressBarStyle}"
                                                  Minimum="0" Maximum="100"
                                                  Value="{Binding ProgressPercent}"/>
@@ -789,7 +769,6 @@
                         </Grid>
                     </TabItem>
 
-                    <!-- 2) PROFILE (без изменений) -->
                     <TabItem>
                         <Grid>
                             <Grid.RowDefinitions>
@@ -983,7 +962,6 @@
                         </Grid>
                     </TabItem>
 
-                    <!-- 3) SETTINGS (без изменений) -->
                     <TabItem>
                         <Grid>
                             <Border Style="{StaticResource CardStyle}">
@@ -1168,12 +1146,11 @@
                         </Grid>
                     </TabItem>
 
-                    <!-- 4) NEWS (compact, not stretched) -->
                     <TabItem>
                         <Grid>
                             <Border Style="{StaticResource ScreenFrameStyle}">
                                 <Grid>
-                                    <Image Source="pack://application:,,,/Assets/legendcraft.jpg"
+                                    <Image Source="pack://application:,,,/Resources/Assets/legendcraft.jpg"
                                            Stretch="UniformToFill"
                                            Opacity="0.18"/>
                                     <Rectangle Fill="#B0060718"/>
@@ -1186,7 +1163,6 @@
                                                 <RowDefinition Height="*"/>
                                             </Grid.RowDefinitions>
 
-                                            <!-- Header -->
                                             <Grid Grid.Row="0">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="*"/>
@@ -1219,7 +1195,6 @@
                                                 </StackPanel>
                                             </Grid>
 
-                                            <!-- Body -->
                                             <ScrollViewer Grid.Row="2"
                                                           VerticalScrollBarVisibility="Auto"
                                                           HorizontalScrollBarVisibility="Disabled">
@@ -1231,7 +1206,6 @@
                                                     </Grid.ColumnDefinitions>
 
                                                     <StackPanel Grid.Column="1">
-
                                                         <ItemsControl ItemsSource="{Binding ElementName=RootWindow, Path=ProjectNews}">
                                                             <ItemsControl.ItemsPanel>
                                                                 <ItemsPanelTemplate>
@@ -1285,7 +1259,6 @@
                                                                 </DataTemplate>
                                                             </ItemsControl.ItemTemplate>
                                                         </ItemsControl>
-
                                                     </StackPanel>
                                                 </Grid>
                                             </ScrollViewer>

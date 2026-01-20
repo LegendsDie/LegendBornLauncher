@@ -3,9 +3,9 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Windows;
 using LegendBorn.Mvvm;
 using LegendBorn.Models;
 using LegendBorn.Services;
@@ -14,12 +14,15 @@ namespace LegendBorn;
 
 public sealed partial class MainViewModel : ObservableObject
 {
-    private const string SiteBaseUrl = "https://legendborn.ru";
+    internal const string SiteBaseUrl = "https://legendborn.ru";
 
-    // fallback если нет данных сервера/конфига
-    private const string DefaultServerIpFallback = "legendcraft.minerent.io";
+    // ВАЖНО: дефолтный IP, если пользователь не делал override
+    private const string DefaultServerIp = "legendcraft.minerent.io";
 
     // ===== Services / core =====
+    private readonly ConfigService _config;
+    private readonly LogService _log;
+
     private readonly MinecraftService _mc;
     private readonly ServerListService _servers = new();
     private readonly SiteAuthService _site = new();
@@ -42,11 +45,10 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void ScheduleConfigSave()
     {
-        // debounce, чтобы не писать конфиг на каждый символ
         var v = Interlocked.Increment(ref _configSaveVersion);
         _ = Task.Run(async () =>
         {
-            await Task.Delay(250).ConfigureAwait(false);
+            try { await Task.Delay(250).ConfigureAwait(false); } catch { }
             if (v != _configSaveVersion) return;
             SaveConfigSafe();
         });
@@ -54,15 +56,15 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void SaveConfigSafe()
     {
-        try
+        try { _config.Save(); }
+        catch (Exception ex)
         {
-            App.Config.Save();
-        }
-        catch
-        {
-            // release-safe: не валим UI
+            try { _log.Error("Config save failed", ex); } catch { }
         }
     }
+
+    private static string ResolveGameDir(string raw)
+        => LauncherPaths.NormalizePathOr(raw, LauncherPaths.DefaultGameDir);
 
     // ===== UI: Tabs (Auth / Start / Profile / Settings) =====
     private int _selectedMenuIndex;
@@ -138,24 +140,7 @@ public sealed partial class MainViewModel : ObservableObject
             if (!_suppressSelectedServerSideEffects)
                 OnSelectedServerChanged(value);
 
-            // обновляем зависимые UI поля
-            Raise(nameof(PackName));
-            Raise(nameof(MinecraftVersion));
-            Raise(nameof(LoaderName));
-            Raise(nameof(LoaderVersion));
-            Raise(nameof(BuildDisplayName));
-
-            // сохраняем выбор сервера в конфиг
-            try
-            {
-                if (value is not null)
-                {
-                    App.Config.Current.LastServerId = value.Id;
-                    ScheduleConfigSave();
-                }
-            }
-            catch { }
-
+            RaisePackPresentation();
             RefreshCanStates();
         }
     }
@@ -198,10 +183,9 @@ public sealed partial class MainViewModel : ObservableObject
             if (!Set(ref _ramMb, normalized))
                 return;
 
-            // config
             try
             {
-                App.Config.Current.RamMb = _ramMb;
+                _config.Current.RamMb = _ramMb;
                 ScheduleConfigSave();
             }
             catch { }
@@ -288,40 +272,29 @@ public sealed partial class MainViewModel : ObservableObject
         set
         {
             var v = string.IsNullOrWhiteSpace(value) ? "Player" : value.Trim();
-
             if (!Set(ref _username, v))
                 return;
 
-            // config
-            try
-            {
-                // если хочешь хранить ник в конфиге — добавь поле в LauncherConfig:
-                // public string? Username {get;set;}
-                // Тогда раскомментируй:
-                // App.Config.Current.Username = _username;
-                ScheduleConfigSave();
-            }
-            catch { }
+            // сохраняем, но не ломаем сборку если поле ещё не добавлено в LauncherConfig
+            TrySetConfigValue(_config.Current, "LastUsername", _username);
 
             RefreshCanStates();
         }
     }
 
-    private string _serverIp = DefaultServerIpFallback;
+    private string _serverIp = DefaultServerIp;
     public string ServerIp
     {
         get => _serverIp;
         set
         {
             var v = (value ?? "").Trim();
-
             if (!Set(ref _serverIp, v))
                 return;
 
-            // config
             try
             {
-                App.Config.Current.LastServerIp = _serverIp;
+                _config.Current.LastServerIp = _serverIp;
                 ScheduleConfigSave();
             }
             catch { }
@@ -428,7 +401,6 @@ public sealed partial class MainViewModel : ObservableObject
     // ===== Derived flags =====
     public bool CanStop => _runningProcess is { HasExited: false };
 
-    // _isClosing объявлен в другом partial? (оставляем как есть)
     public bool CanPlay =>
         !_isClosing &&
         !IsBusy &&
@@ -465,63 +437,54 @@ public sealed partial class MainViewModel : ObservableObject
     {
         SelectedMenuIndex = 0;
 
-        // берём из конфига или дефолт
-        string gameDir;
-        try
-        {
-            gameDir = (App.Config.Current.GameRootPath ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(gameDir))
-                gameDir = LauncherPaths.DefaultGameDir;
-        }
-        catch
-        {
-            gameDir = LauncherPaths.DefaultGameDir;
-        }
+        // ===== Используем App-сервисы если они уже инициализированы =====
+        _log = SafeGetAppLog();
 
-        _gameDir = gameDir;
+        _config = SafeGetAppConfig();
+        _tokenStore = SafeGetAppTokens();
+
+        // game dir
+        _gameDir = ResolveGameDir(_config.Current.GameRootPath ?? "");
         try { Directory.CreateDirectory(_gameDir); } catch { }
-
-        // токены — единые из App
-        _tokenStore = App.Tokens;
 
         _mc = new MinecraftService(_gameDir);
 
         _mc.Log += (_, line) =>
         {
             if (_isClosing) return;
-            SafeUi(() => AppendLog(line));
+            AppendLog(line);
+            try { _log.Info(line); } catch { }
         };
 
         _mc.ProgressPercent += (_, p) =>
         {
             if (_isClosing) return;
-            SafeUi(() => OnMinecraftProgress(p));
+            OnMinecraftProgress(p);
         };
 
         InitCommands();
         _commandsReady = true;
 
-        // ===== Load Config (релиз-safe) =====
+        // ===== Load Config (release-safe) =====
         try
         {
-            // Username (если добавишь поле в LauncherConfig — подхватим)
-            // var u = (App.Config.Current.Username ?? "Player").Trim();
-            // _username = string.IsNullOrWhiteSpace(u) ? "Player" : u;
-            _username = "Player";
-            Raise(nameof(Username));
-
-            var ip = (App.Config.Current.LastServerIp ?? DefaultServerIpFallback).Trim();
-            _serverIp = string.IsNullOrWhiteSpace(ip) ? DefaultServerIpFallback : ip;
+            var ip = (_config.Current.LastServerIp ?? DefaultServerIp).Trim();
+            _serverIp = string.IsNullOrWhiteSpace(ip) ? DefaultServerIp : ip;
             Raise(nameof(ServerIp));
 
-            var ram = App.Config.Current.RamMb;
+            var ram = _config.Current.RamMb;
             _ramMb = RamOptions.Contains(ram) ? ram : 4096;
             Raise(nameof(RamMb));
+
+            var u = (TryGetConfigString(_config.Current, "LastUsername") ?? "Player").Trim();
+            _username = string.IsNullOrWhiteSpace(u) ? "Player" : u;
+            Raise(nameof(Username));
+
+            TrySetConfigValue(_config.Current, "LastLauncherStartUtc", DateTimeOffset.UtcNow);
         }
-        catch
-        {
-            // ignore
-        }
+        catch { }
+
+        ScheduleConfigSave();
 
         _ = InitializeAsyncSafe();
         RefreshCanStates();
@@ -551,10 +514,7 @@ public sealed partial class MainViewModel : ObservableObject
         OpenStartCommand = new RelayCommand(() => SelectedMenuIndex = IsLoggedIn ? 1 : 0);
 
         OpenProfileCommand = new RelayCommand(
-            () =>
-            {
-                if (IsLoggedIn) SelectedMenuIndex = 2;
-            },
+            () => { if (IsLoggedIn) SelectedMenuIndex = 2; },
             () => !_isClosing && IsLoggedIn);
 
         OpenLoginUrlCommand = new RelayCommand(OpenLoginUrl, () => !_isClosing && HasLoginUrl);
@@ -569,19 +529,77 @@ public sealed partial class MainViewModel : ObservableObject
             () => !_isClosing && !IsBusy);
     }
 
-    private static void SafeUi(Action action)
+    // ===== helpers: safe access to App services =====
+    private static LogService SafeGetAppLog()
+    {
+        try { return App.Log ?? LogService.Noop; }
+        catch { return LogService.Noop; }
+    }
+
+    private static ConfigService SafeGetAppConfig()
     {
         try
         {
-            var d = Application.Current?.Dispatcher;
-            if (d is null || d.CheckAccess())
-                action();
-            else
-                d.Invoke(action);
+            if (App.Config is not null) return App.Config;
+        }
+        catch { }
+
+        var cfg = new ConfigService(LauncherPaths.ConfigFile);
+        try { cfg.LoadOrCreate(); } catch { }
+        return cfg;
+    }
+
+    private static TokenStore SafeGetAppTokens()
+    {
+        try
+        {
+            if (App.Tokens is not null) return App.Tokens;
+        }
+        catch { }
+
+        return new TokenStore(LauncherPaths.TokenFile);
+    }
+
+    // ===== helpers: config reflection (чтобы VM не падала, если поле ещё не добавлено в LauncherConfig) =====
+    private static void TrySetConfigValue(object cfg, string propertyName, object? value)
+    {
+        try
+        {
+            var p = cfg.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
+            if (p is null || !p.CanWrite) return;
+
+            if (value is null)
+            {
+                p.SetValue(cfg, null);
+                return;
+            }
+
+            var t = Nullable.GetUnderlyingType(p.PropertyType) ?? p.PropertyType;
+
+            if (t.IsInstanceOfType(value))
+            {
+                p.SetValue(cfg, value);
+                return;
+            }
+
+            // попытка конвертации для простых типов
+            var converted = Convert.ChangeType(value, t);
+            p.SetValue(cfg, converted);
+        }
+        catch { }
+    }
+
+    private static string? TryGetConfigString(object cfg, string propertyName)
+    {
+        try
+        {
+            var p = cfg.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
+            if (p is null || !p.CanRead) return null;
+            return p.GetValue(cfg) as string;
         }
         catch
         {
-            // ignore
+            return null;
         }
     }
 }

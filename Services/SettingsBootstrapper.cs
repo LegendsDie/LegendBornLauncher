@@ -1,139 +1,170 @@
 using System;
-using System.Configuration;
 using System.IO;
-using LegendBorn.Properties;
+using System.Text.Json;
+using LegendBorn.Models;
 
 namespace LegendBorn.Services;
 
 /// <summary>
-/// Релизный bootstrap пользовательских настроек.
+/// Релизный bootstrap конфигурации лаунчера (launcher.config.json).
 /// Цели:
-/// 1) Гарантировать Settings.Upgrade() один раз после обновления.
-/// 2) Удерживать "схему" конфига (ConfigVersion) отдельно от версии лаунчера.
-/// 3) Самовосстановление при битом user.config (ConfigurationErrorsException).
+/// 1) Гарантировать наличие валидного конфига.
+/// 2) Держать версию схемы (ConfigSchemaVersion) отдельно от версии лаунчера.
+/// 3) Самовосстановление при битом JSON (backup + reset).
 /// </summary>
 internal static class SettingsBootstrapper
 {
-    // Config schema version (НЕ равно версии лаунчера).
-    // Менять только при реальных изменениях схемы/миграциях.
-    private const string ConfigSchemaVersion = "0.2.0";
+    private const string ConfigSchemaVersion = "0.2.6";
 
-    /// <summary>
-    /// Вызвать один раз при старте приложения, до создания UI/VM.
-    /// </summary>
+    private static readonly JsonSerializerOptions JsonOpts = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = true,
+        ReadCommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true
+    };
+
+    private static string ConfigPath => LauncherPaths.ConfigFile;
+    private static string ConfigDir => Path.GetDirectoryName(ConfigPath) ?? LauncherPaths.AppDir;
+
     public static void Bootstrap()
     {
         try
         {
-            EnsureUpgraded();
-            EnsureSchemaVersion();
-            SaveSafe();
-        }
-        catch (ConfigurationErrorsException cex)
-        {
-            // Битый user.config — удаляем и пробуем заново (release-safe).
-            try { ResetCorruptedUserConfig(cex); } catch { }
+            Directory.CreateDirectory(ConfigDir);
 
+            var cfg = ReadOrCreateDefault();
+            EnsureSchemaVersion(cfg);
+            SaveSafe(cfg);
+        }
+        catch
+        {
+            // release-safe: при любой проблеме пробуем восстановить
             try
             {
-                // Повторная попытка после reset
-                EnsureUpgraded(force: true);
-                EnsureSchemaVersion();
-                SaveSafe();
+                ResetCorruptedConfig();
+                Directory.CreateDirectory(ConfigDir);
+
+                var cfg = CreateDefaultConfig();
+                EnsureSchemaVersion(cfg);
+                SaveSafe(cfg);
             }
             catch
             {
-                // В худшем случае: не валим запуск
+                // не валим запуск
             }
-        }
-        catch
-        {
-            // Не валим запуск в релизе
         }
     }
 
-    private static void EnsureUpgraded(bool force = false)
+    private static LauncherConfig ReadOrCreateDefault()
+    {
+        if (!File.Exists(ConfigPath))
+        {
+            var fresh = CreateDefaultConfig();
+            SaveSafe(fresh);
+            return fresh;
+        }
+
+        try
+        {
+            var json = File.ReadAllText(ConfigPath);
+            var cfg = JsonSerializer.Deserialize<LauncherConfig>(json, JsonOpts);
+            return cfg ?? CreateDefaultConfig();
+        }
+        catch
+        {
+            ResetCorruptedConfig();
+            var fresh = CreateDefaultConfig();
+            SaveSafe(fresh);
+            return fresh;
+        }
+    }
+
+    private static void EnsureSchemaVersion(LauncherConfig cfg)
+    {
+        var current = (cfg.ConfigSchemaVersion ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(current))
+            current = "0.0.0";
+
+        // Миграции добавляются сюда:
+        // if (current == "0.2.5") { ... }
+
+        if (!string.Equals(current, ConfigSchemaVersion, StringComparison.OrdinalIgnoreCase))
+            cfg.ConfigSchemaVersion = ConfigSchemaVersion;
+
+        // лёгкая нормализация (чтобы релиз был стабильнее)
+        if (cfg.RamMb < 1024) cfg.RamMb = 4096;
+        cfg.LastServerIp ??= "";
+        cfg.GameRootPath ??= "";
+    }
+
+    private static LauncherConfig CreateDefaultConfig()
+    {
+        return new LauncherConfig
+        {
+            ConfigSchemaVersion = ConfigSchemaVersion,
+            LastServerId = null,
+            AutoLogin = true,
+            GameRootPath = "",
+            RamMb = 4096,
+            JavaPath = null,
+            LastServerIp = "",
+            LastSuccessfulLoginUtc = null
+        };
+    }
+
+    private static void SaveSafe(LauncherConfig cfg)
     {
         try
         {
-            // Если force=true — пытаемся Upgrade даже если флаг уже true (на случай reset).
-            if (force || !Settings.Default.SettingsUpgraded)
+            var tmp = ConfigPath + ".tmp";
+            var json = JsonSerializer.Serialize(cfg, JsonOpts);
+
+            File.WriteAllText(tmp, json);
+
+            if (File.Exists(ConfigPath))
             {
-                try { Settings.Default.Upgrade(); } catch { }
-                Settings.Default.SettingsUpgraded = true;
+                try
+                {
+                    File.Replace(tmp, ConfigPath, destinationBackupFileName: null, ignoreMetadataErrors: true);
+                }
+                catch
+                {
+                    File.Delete(ConfigPath);
+                    File.Move(tmp, ConfigPath);
+                }
             }
-        }
-        catch { }
-    }
-
-    private static void EnsureSchemaVersion()
-    {
-        try
-        {
-            var cv = (Settings.Default.ConfigVersion ?? string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(cv))
-                cv = "0.0.0";
-
-            // Здесь в будущем добавляются реальные миграции:
-            // if (cv == "0.2.0") { ... } и т.п.
-
-            if (!cv.Equals(ConfigSchemaVersion, StringComparison.OrdinalIgnoreCase))
-                Settings.Default.ConfigVersion = ConfigSchemaVersion;
-        }
-        catch { }
-    }
-
-    private static void SaveSafe()
-    {
-        try { Settings.Default.Save(); }
-        catch { }
-    }
-
-    /// <summary>
-    /// Удаляет повреждённый user.config, чтобы Settings мог пересоздать файл.
-    /// </summary>
-    private static void ResetCorruptedUserConfig(ConfigurationErrorsException ex)
-    {
-        // Часто файл лежит по пути из ex.Filename.
-        // Если он пустой — пытаемся вычислить стандартный user.config.
-        var file = (ex.Filename ?? string.Empty).Trim();
-
-        if (string.IsNullOrWhiteSpace(file) || !File.Exists(file))
-        {
-            file = TryResolveUserConfigPath();
-        }
-
-        if (string.IsNullOrWhiteSpace(file) || !File.Exists(file))
-            return;
-
-        try
-        {
-            // Чтобы не терять файл полностью — делаем backup рядом.
-            var dir = Path.GetDirectoryName(file);
-            var bak = Path.Combine(dir ?? "", $"user_corrupt_{DateTime.Now:yyyyMMdd_HHmmss}.config");
-            File.Copy(file, bak, overwrite: true);
-        }
-        catch { }
-
-        try
-        {
-            File.Delete(file);
-        }
-        catch { }
-    }
-
-    private static string TryResolveUserConfigPath()
-    {
-        try
-        {
-            // AppDomain.CurrentDomain.SetupInformation.ConfigurationFile — это обычно app.exe.config,
-            // а user.config лежит глубже. Берём путь через ConfigurationManager.
-            var config = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.PerUserRoamingAndLocal);
-            return config.FilePath;
+            else
+            {
+                File.Move(tmp, ConfigPath);
+            }
         }
         catch
         {
-            return "";
+            try
+            {
+                var tmp = ConfigPath + ".tmp";
+                if (File.Exists(tmp)) File.Delete(tmp);
+            }
+            catch { }
+        }
+    }
+
+    private static void ResetCorruptedConfig()
+    {
+        try
+        {
+            if (!File.Exists(ConfigPath))
+                return;
+
+            var bak = Path.Combine(ConfigDir, $"launcher_corrupt_{DateTime.Now:yyyyMMdd_HHmmss}.json");
+            try { File.Copy(ConfigPath, bak, overwrite: true); } catch { }
+
+            try { File.Delete(ConfigPath); } catch { }
+        }
+        catch
+        {
+            // ignore
         }
     }
 }

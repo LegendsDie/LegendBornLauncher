@@ -1,9 +1,12 @@
 using System;
 using System.Diagnostics;
+using System.Net;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using LegendBorn.Models;
+using LegendBorn.Services;
 
 namespace LegendBorn;
 
@@ -25,7 +28,9 @@ public sealed partial class MainViewModel
 
     private static bool LooksLikeUnauthorized(Exception ex)
     {
-        // Без доступа к статус-коду: делаем безопасный эвристический детект
+        if (ex is HttpRequestException hre && hre.StatusCode is HttpStatusCode sc)
+            return sc is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden;
+
         var msg = (ex.Message ?? "").ToLowerInvariant();
         return msg.Contains("401") || msg.Contains("403") || msg.Contains("unauthorized") || msg.Contains("forbidden");
     }
@@ -38,14 +43,11 @@ public sealed partial class MainViewModel
             ? path
             : SiteBaseUrl + (path.StartsWith("/") ? path : "/" + path);
 
-        // гарантируем deviceId в query
         try
         {
             var ub = new UriBuilder(fullUrl);
-            var q = ub.Query; // includes '?'
-            var query = string.IsNullOrWhiteSpace(q) ? "" : q.TrimStart('?');
+            var query = (ub.Query ?? "").TrimStart('?');
 
-            // если уже есть deviceId — не добавляем
             if (query.IndexOf("deviceid=", StringComparison.OrdinalIgnoreCase) < 0)
             {
                 if (!string.IsNullOrWhiteSpace(query)) query += "&";
@@ -57,7 +59,6 @@ public sealed partial class MainViewModel
         }
         catch
         {
-            // fallback если UriBuilder упал
             if (!fullUrl.Contains("deviceId=", StringComparison.OrdinalIgnoreCase) &&
                 !fullUrl.Contains("deviceid=", StringComparison.OrdinalIgnoreCase))
             {
@@ -103,14 +104,9 @@ public sealed partial class MainViewModel
                 ct: ct);
 
             if (resp is not null && resp.Ok && resp.Balance >= 0)
-            {
                 PostToUi(() => Rezonite = resp.Balance);
-            }
         }
-        catch
-        {
-            // не валим запуск/логин
-        }
+        catch { }
     }
 
     private async Task ApplySuccessfulLoginAsync(AuthTokens tokens, CancellationToken ct)
@@ -125,6 +121,13 @@ public sealed partial class MainViewModel
 
         var mcName = string.IsNullOrWhiteSpace(me.MinecraftName) ? SiteUserName : me.MinecraftName!;
         Username = MakeValidMcName(mcName);
+
+        try
+        {
+            _config.Current.LastSuccessfulLoginUtc = DateTimeOffset.UtcNow;
+            ScheduleConfigSave();
+        }
+        catch { }
 
         await TrySendDailyLauncherLoginEventAsync(ct);
 
@@ -174,7 +177,6 @@ public sealed partial class MainViewModel
         {
             IsBusy = true;
             StatusText = "Проверка входа на сайте...";
-
             await ApplySuccessfulLoginAsync(saved, ct);
         }
         catch (OperationCanceledException)
@@ -183,7 +185,6 @@ public sealed partial class MainViewModel
         }
         catch (Exception ex)
         {
-            // ВАЖНО: если это временная сеть — токены НЕ удаляем
             if (LooksLikeUnauthorized(ex))
             {
                 _tokenStore.Clear();
@@ -191,7 +192,6 @@ public sealed partial class MainViewModel
             }
             else
             {
-                // оставляем токены на диске для следующей попытки
                 ApplyLoggedOutUiState("Не удалось проверить вход (сеть/сайт).");
                 AppendLog("Автовход: не удалось проверить токен. Проверь интернет/доступность сайта.");
             }
@@ -212,8 +212,6 @@ public sealed partial class MainViewModel
         if (_isClosing) return;
 
         CancelLoginWait();
-
-        // login CTS linked to lifetime: при закрытии — отмена ожидания
         _loginCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
 
         try
@@ -232,7 +230,6 @@ public sealed partial class MainViewModel
 
             var fullUrl = BuildConnectUrl(deviceId, connectUrl);
             LoginUrl = fullUrl;
-
             AppendLog($"Ссылка для входа: {fullUrl}");
 
             if (!TryOpenUrlInBrowser(fullUrl, out var openError))
@@ -247,7 +244,6 @@ public sealed partial class MainViewModel
 
             var deadline = BuildDeadline(expiresAtUnix);
 
-            // ожидание подтверждения — НЕ Busy, но Waiting=true (UI доступен: Copy/Open)
             while (!_loginCts.IsCancellationRequested && !_isClosing)
             {
                 if (DateTimeOffset.UtcNow > deadline)
@@ -270,12 +266,8 @@ public sealed partial class MainViewModel
                     continue;
                 }
 
-                // сохраняем токены
                 _tokenStore.Save(tokens);
-
-                // применяем успешный вход
                 await ApplySuccessfulLoginAsync(tokens, _loginCts.Token);
-
                 return;
             }
         }

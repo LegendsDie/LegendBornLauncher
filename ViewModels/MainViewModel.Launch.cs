@@ -55,7 +55,6 @@ public sealed partial class MainViewModel
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        // Если базовый хост legendborn — добавляем дефолтные зеркала (bunny + sourceforge)
         if (IsLegendbornHost(baseUrl))
         {
             var bunny = EnsureSlash(BunnyPackMirror);
@@ -67,14 +66,12 @@ public sealed partial class MainViewModel
                 all.AddRange(SourceForgePackMirrors.Select(EnsureSlash).Where(x => !string.IsNullOrWhiteSpace(x)));
         }
 
-        // fallback на крайний случай
         if (all.Count == 0)
         {
             all.Add(EnsureSlash("https://legendborn.ru/launcher/pack/"));
             all.Add(EnsureSlash(BunnyPackMirror));
         }
 
-        // порядок приоритета: baseUrl -> bunny -> sourceforge -> всё остальное
         return all
             .OrderBy(u =>
             {
@@ -136,13 +133,11 @@ public sealed partial class MainViewModel
             return;
         }
 
-        // защита от двойного запуска
         if (Interlocked.Exchange(ref _playGuard, 1) == 1)
             return;
 
         try
         {
-            // нормализуем данные
             var username = (Username ?? "Player").Trim();
             if (string.IsNullOrWhiteSpace(username)) username = "Player";
 
@@ -167,31 +162,29 @@ public sealed partial class MainViewModel
             Versions.Add(launchVersionId);
             SelectedVersion = launchVersionId;
 
-            // ===== сохраняем настройки в launcher.config.json (через App.Config) =====
+            // сохраняем настройки
             try
             {
-                App.Config.Current.RamMb = ram;
-                App.Config.Current.LastServerId = SelectedServer.Id;
+                _config.Current.RamMb = ram;
+                _config.Current.LastServerId = SelectedServer.Id;
 
-                // Если пользователь руками ввёл ServerIp — сохраняем, иначе сохраняем адрес сервера
                 var ipToSave = (ServerIp ?? "").Trim();
                 if (string.IsNullOrWhiteSpace(ipToSave))
                     ipToSave = (SelectedServer.Address ?? "").Trim();
 
-                App.Config.Current.LastServerIp = ipToSave;
+                _config.Current.LastServerIp = ipToSave;
                 ScheduleConfigSave();
             }
             catch { }
 
             StatusText = "Запуск игры...";
 
-            // IP для подключения: приоритет — ручной ввод, иначе Address выбранного сервера
             var ip = (ServerIp ?? "").Trim();
             if (string.IsNullOrWhiteSpace(ip))
                 ip = (SelectedServer.Address ?? "").Trim();
 
             if (string.IsNullOrWhiteSpace(ip))
-                ip = null; // можно запускать без авто-коннекта к серверу
+                ip = null;
 
             _runningProcess = await _mc.BuildAndLaunchAsync(
                 version: launchVersionId,
@@ -247,10 +240,7 @@ public sealed partial class MainViewModel
                 });
             };
         }
-        catch
-        {
-            // ignore
-        }
+        catch { }
     }
 
     private MinecraftService.LoaderSpec CreateLoaderSpecFromServer(ServerEntry s)

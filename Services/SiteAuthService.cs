@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -15,7 +16,7 @@ public sealed class SiteAuthService
     private const string SiteBaseUrl = "https://legendborn.ru/";
 
     // safety: ответы API не должны быть большими
-    private const long MaxResponseBytes = 512 * 1024; // 512 KB
+    private const int MaxResponseBytes = 512 * 1024; // 512 KB
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -52,20 +53,32 @@ public sealed class SiteAuthService
         => (token ?? string.Empty).Trim().Trim('"');
 
     private static bool IsRetryableStatus(HttpStatusCode code)
-        => (int)code >= 500 || code == HttpStatusCode.RequestTimeout || code == HttpStatusCode.TooManyRequests;
+        => (int)code >= 500
+           || code == HttpStatusCode.RequestTimeout
+           || code == HttpStatusCode.TooManyRequests;
 
     private static async Task<string> ReadBodyAsync(HttpResponseMessage resp, CancellationToken ct)
     {
-        // читаем стримом, чтобы не получить огромный ответ
         await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
 
-        using var ms = new System.IO.MemoryStream();
-        await stream.CopyToAsync(ms, ct).ConfigureAwait(false);
+        // читаем лимитированно, чтобы не принять огромный ответ
+        var buffer = new byte[16 * 1024];
+        var total = 0;
 
-        if (ms.Length > MaxResponseBytes)
-            throw new InvalidOperationException("Ответ сервера слишком большой.");
+        using var ms = new MemoryStream();
 
-        ct.ThrowIfCancellationRequested();
+        while (true)
+        {
+            var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
+            if (read <= 0) break;
+
+            total += read;
+            if (total > MaxResponseBytes)
+                throw new InvalidOperationException("Ответ сервера слишком большой.");
+
+            ms.Write(buffer, 0, read);
+        }
+
         return Encoding.UTF8.GetString(ms.ToArray());
     }
 
@@ -84,14 +97,14 @@ public sealed class SiteAuthService
         value = false;
         if (!root.TryGetProperty(name, out var p)) return false;
 
-        if (p.ValueKind == JsonValueKind.True) { value = true; return true; }
+        if (p.ValueKind == JsonValueKind.True)  { value = true;  return true; }
         if (p.ValueKind == JsonValueKind.False) { value = false; return true; }
         return false;
     }
 
     private static TimeSpan GetRetryDelay(HttpResponseMessage resp, int attemptIndex)
     {
-        // 1) Retry-After, если есть
+        // 1) Retry-After
         try
         {
             var ra = resp.Headers.RetryAfter;
@@ -109,7 +122,7 @@ public sealed class SiteAuthService
         }
         catch { }
 
-        // 2) fallback: мягкий backoff
+        // 2) fallback backoff
         var ms = 250 * Math.Max(1, attemptIndex);
         return TimeSpan.FromMilliseconds(Math.Min(ms, 1500));
     }
@@ -146,6 +159,7 @@ public sealed class SiteAuthService
                 if (IsRetryableStatus(resp.StatusCode))
                 {
                     last = new HttpRequestException("Retryable status: " + (int)resp.StatusCode);
+
                     var delay = GetRetryDelay(resp, i);
                     resp.Dispose();
 
@@ -324,7 +338,6 @@ public sealed class SiteAuthService
         if (!resp.IsSuccessStatusCode)
             return null;
 
-        // Релиз-safe: сервер мог вернуть старый или новый формат.
         var respJson = await ReadBodyAsync(resp, ct).ConfigureAwait(false);
 
         try
@@ -338,7 +351,6 @@ public sealed class SiteAuthService
             var rewarded = false;
             if (!TryGetBool(root, "rewarded", out rewarded))
             {
-                // legacy: duplicated => rewarded=false
                 if (TryGetBool(root, "duplicated", out var duplicated))
                     rewarded = !duplicated && ok;
                 else
@@ -360,7 +372,6 @@ public sealed class SiteAuthService
         }
         catch
         {
-            // fallback: пробуем прямую десериализацию
             return JsonSerializer.Deserialize<LauncherEventResponse>(respJson, JsonOptions);
         }
     }

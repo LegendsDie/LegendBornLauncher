@@ -4,6 +4,7 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
@@ -34,7 +35,6 @@ public partial class MainWindow : Window
 
     // ===== prefs =====
     private enum LauncherGameUiMode { Hide, Minimize, None }
-
     private LauncherGameUiMode _gameUiMode = LauncherGameUiMode.Hide; // default
     private bool _settingModeGuard;
 
@@ -56,13 +56,18 @@ public partial class MainWindow : Window
         public string Url { get; init; } = "";
     }
 
-    // XAML: ServerNewsTop2 + ProjectNews
+    // XAML binds via ElementName=RootWindow
     public ObservableCollection<NewsItem> ServerNewsTop2 { get; } = new();
     public ObservableCollection<NewsItem> ProjectNews { get; } = new();
 
-    private static readonly string PrefsPath = Path.Combine(
+    // prefs location (0.2.6+): %AppData%\LegendBorn\launcher.prefs.json
+    private static readonly string PrefsPath = Path.Combine(LauncherPaths.AppDir, "launcher.prefs.json");
+
+    // migration path (older builds used "LegendCraft")
+    private static readonly string OldPrefsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "LegendCraft", "launcher_prefs.json");
+        "LegendCraft",
+        "launcher_prefs.json");
 
     public bool GameUiModeHide
     {
@@ -112,9 +117,9 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
-        // UI placeholder news (later: load from site/server)
         SeedNews();
 
+        // prefs can be loaded before VM (they target Window DP)
         LoadPrefs();
         ApplyModeToBindings();
 
@@ -126,22 +131,39 @@ public partial class MainWindow : Window
         Loaded += MainWindow_OnLoaded;
         Closing += MainWindow_OnClosing;
         Closed += MainWindow_OnClosed;
+
+        // keep restore bounds current
+        StateChanged += (_, __) =>
+        {
+            try
+            {
+                if (_isClosing) return;
+                if (WindowState == WindowState.Normal)
+                {
+                    _restoreBounds = new Rect(Left, Top, Width, Height);
+                    _hasRestoreBounds = true;
+                }
+            }
+            catch { }
+        };
     }
 
     private void SeedNews()
     {
+        var now = DateTime.Now;
+
         ServerNewsTop2.Clear();
         ServerNewsTop2.Add(new NewsItem
         {
             Title = "Технические работы",
-            Date = DateTime.Now.ToString("dd.MM"),
+            Date = now.ToString("dd.MM"),
             Summary = "Сегодня возможны краткие перезапуски сервера. Спасибо за понимание.",
             Url = SiteUrl
         });
         ServerNewsTop2.Add(new NewsItem
         {
             Title = "Обновление сборки",
-            Date = DateTime.Now.AddDays(-1).ToString("dd.MM"),
+            Date = now.AddDays(-1).ToString("dd.MM"),
             Summary = "Исправления стабильности и подготовка к новым механикам.",
             Url = SiteUrl
         });
@@ -150,15 +172,15 @@ public partial class MainWindow : Window
         ProjectNews.Add(new NewsItem
         {
             Title = "LegendBorn: Дорожная карта",
-            Date = DateTime.Now.ToString("dd.MM.yyyy"),
+            Date = now.ToString("dd.MM.yyyy"),
             Summary = "Публикуем ближайшие цели и приоритеты разработки.",
             Url = SiteUrl
         });
         ProjectNews.Add(new NewsItem
         {
             Title = "Launcher: улучшения интерфейса",
-            Date = DateTime.Now.ToString("dd.MM.yyyy"),
-            Summary = "Новый блок новостей, быстрые кнопки над «Играть», улучшенный top-bar.",
+            Date = now.ToString("dd.MM.yyyy"),
+            Summary = "Новый блок новостей, быстрые кнопки и улучшенный top-bar.",
             Url = SiteUrl
         });
     }
@@ -187,8 +209,8 @@ public partial class MainWindow : Window
         HookLogsUi();
 
         if (_updatesChecked) return;
-
         _updatesChecked = true;
+
         _ = RunUpdateCheckSafeAsync();
     }
 
@@ -206,7 +228,6 @@ public partial class MainWindow : Window
             var maxW = Math.Max(800, work.Width - 80);
             var maxH = Math.Max(540, work.Height - 80);
 
-            // presets: choose the biggest that fits
             var presets = new (double w, double h)[]
             {
                 (1280, 860),
@@ -218,7 +239,6 @@ public partial class MainWindow : Window
             };
 
             (double w, double h) chosen = (Width, Height);
-
             foreach (var p in presets)
             {
                 if (p.w <= maxW && p.h <= maxH)
@@ -285,7 +305,7 @@ public partial class MainWindow : Window
         {
             if (_isClosing) return;
 
-            // If ExtentHeight changed — new items appended; not a user scroll event.
+            // new items appended; not user scroll
             if (e.ExtentHeightChange != 0)
                 return;
 
@@ -358,8 +378,7 @@ public partial class MainWindow : Window
         {
             if (_gameUiMode == LauncherGameUiMode.Hide)
             {
-                if (IsVisible)
-                    Hide();
+                if (IsVisible) Hide();
             }
             else if (_gameUiMode == LauncherGameUiMode.Minimize)
             {
@@ -426,6 +445,17 @@ public partial class MainWindow : Window
     {
         try
         {
+            // migrate from old location if needed
+            if (!File.Exists(PrefsPath) && File.Exists(OldPrefsPath))
+            {
+                try
+                {
+                    LauncherPaths.EnsureParentDirForFile(PrefsPath);
+                    File.Copy(OldPrefsPath, PrefsPath, overwrite: true);
+                }
+                catch { }
+            }
+
             if (!File.Exists(PrefsPath))
             {
                 _gameUiMode = LauncherGameUiMode.Hide;
@@ -434,11 +464,12 @@ public partial class MainWindow : Window
 
             var json = File.ReadAllText(PrefsPath);
             var dto = JsonSerializer.Deserialize<PrefsDto>(json);
-            var s = (dto?.GameUiMode ?? "").Trim();
 
-            _gameUiMode = s.Equals("Minimize", StringComparison.OrdinalIgnoreCase) ? LauncherGameUiMode.Minimize
-                       : s.Equals("None", StringComparison.OrdinalIgnoreCase) ? LauncherGameUiMode.None
-                       : LauncherGameUiMode.Hide;
+            var s = (dto?.GameUiMode ?? "").Trim();
+            _gameUiMode =
+                s.Equals(nameof(LauncherGameUiMode.Minimize), StringComparison.OrdinalIgnoreCase) ? LauncherGameUiMode.Minimize :
+                s.Equals(nameof(LauncherGameUiMode.None), StringComparison.OrdinalIgnoreCase) ? LauncherGameUiMode.None :
+                LauncherGameUiMode.Hide;
         }
         catch
         {
@@ -450,9 +481,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            var dir = Path.GetDirectoryName(PrefsPath);
-            if (!string.IsNullOrWhiteSpace(dir))
-                Directory.CreateDirectory(dir);
+            LauncherPaths.EnsureParentDirForFile(PrefsPath);
 
             var dto = new PrefsDto { GameUiMode = _gameUiMode.ToString() };
             var json = JsonSerializer.Serialize(dto, new JsonSerializerOptions { WriteIndented = true });
@@ -482,15 +511,46 @@ public partial class MainWindow : Window
     {
         try
         {
-            if (_isClosing)
-                return;
-
+            if (_isClosing) return;
             await UpdateService.CheckAndUpdateAsync(silent: false, showNoUpdates: false);
         }
         catch { }
     }
 
-    // ===== XAML handlers =====
+    // ===================== Helpers =====================
+    private static void TryOpenUrl(string url)
+    {
+        try
+        {
+            url = (url ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(url)) return;
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = url,
+                UseShellExecute = true
+            });
+        }
+        catch { }
+    }
+
+    private static bool IsClickOnInteractive(DependencyObject? d)
+    {
+        while (d != null)
+        {
+            if (d is ButtonBase) return true;
+            if (d is TextBoxBase) return true;
+            if (d is Selector) return true;
+            if (d is Thumb) return true;
+            if (d is ScrollBar) return true;
+            if (d is Slider) return true;
+
+            d = VisualTreeHelper.GetParent(d);
+        }
+        return false;
+    }
+
+    // ===================== XAML handlers =====================
     private void Close_OnClick(object sender, RoutedEventArgs e) => Close();
 
     private void Minimize_OnClick(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
@@ -548,23 +608,7 @@ public partial class MainWindow : Window
         catch { }
     }
 
-    private static bool IsClickOnInteractive(DependencyObject? d)
-    {
-        while (d != null)
-        {
-            if (d is ButtonBase) return true;
-            if (d is TextBoxBase) return true;
-            if (d is Selector) return true;
-            if (d is Thumb) return true;
-            if (d is ScrollBar) return true;
-            if (d is Slider) return true;
-
-            d = VisualTreeHelper.GetParent(d);
-        }
-        return false;
-    }
-
-    // ===== One button: Play OR Stop =====
+    // One button: Play OR Stop
     private void PlayOrStop_OnClick(object sender, RoutedEventArgs e)
     {
         try
@@ -584,50 +628,19 @@ public partial class MainWindow : Window
         catch { }
     }
 
-    // ===== Open launcher folder (optional handler; if you switch XAML from Command to Click) =====
-    private void OpenLauncherFolder_OnClick(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            if (_isClosing) return;
-
-            var dir = AppDomain.CurrentDomain.BaseDirectory;
-            if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
-                return;
-
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = dir,
-                UseShellExecute = true
-            });
-        }
-        catch { }
-    }
-
-    // ===== Open site =====
     private void OpenSite_OnClick(object sender, RoutedEventArgs e)
     {
-        try
-        {
-            if (_isClosing) return;
-
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = SiteUrl,
-                UseShellExecute = true
-            });
-        }
-        catch { }
+        if (_isClosing) return;
+        TryOpenUrl(SiteUrl);
     }
 
-    // ===== Top bar / buttons: open News tab =====
+    // Top bar / buttons: open News tab
     private void OpenNewsTab_OnClick(object sender, RoutedEventArgs e)
     {
         try
         {
             if (_isClosing) return;
 
-            // Prefer updating VM (binding-safe), then UI fallback.
             try { _vm.SelectedMenuIndex = NewsTabIndex; } catch { }
 
             if (MainTabs != null)
@@ -636,7 +649,7 @@ public partial class MainWindow : Window
         catch { }
     }
 
-    // ===== News item click (Button.Tag contains URL) =====
+    // News item click (Button.Tag contains URL)
     private void OpenNewsItem_OnClick(object sender, RoutedEventArgs e)
     {
         try
@@ -644,18 +657,12 @@ public partial class MainWindow : Window
             if (_isClosing) return;
 
             if (sender is FrameworkElement fe && fe.Tag is string url && !string.IsNullOrWhiteSpace(url))
-            {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = url,
-                    UseShellExecute = true
-                });
-            }
+                TryOpenUrl(url);
         }
         catch { }
     }
 
-    // ===== Copy link button also regenerates if missing =====
+    // Copy link button also regenerates if missing
     private async void CopyOrRegenLoginLink_OnClick(object sender, RoutedEventArgs e)
     {
         try
@@ -677,7 +684,7 @@ public partial class MainWindow : Window
             {
                 if (_isClosing) return;
 
-                await Task.Delay(150);
+                await Task.Delay(150).ConfigureAwait(true);
 
                 if (_vm.HasLoginUrl)
                 {
@@ -698,7 +705,6 @@ public partial class MainWindow : Window
         catch { }
     }
 
-    // ===== Copy logs =====
     private void CopyLogs_OnClick(object sender, RoutedEventArgs e)
     {
         try
@@ -708,8 +714,12 @@ public partial class MainWindow : Window
             if (_vm.LogLines is null || _vm.LogLines.Count == 0)
                 return;
 
-            var text = string.Join(Environment.NewLine, _vm.LogLines);
-            Clipboard.SetText(text);
+            // UI says "последние 100"
+            var lines = _vm.LogLines.Count <= 100
+                ? _vm.LogLines.ToArray()
+                : _vm.LogLines.Skip(Math.Max(0, _vm.LogLines.Count - 100)).ToArray();
+
+            Clipboard.SetText(string.Join(Environment.NewLine, lines));
         }
         catch { }
     }

@@ -13,12 +13,12 @@ public partial class App : Application
     public static ConfigService Config { get; private set; } = null!;
     public static TokenStore Tokens { get; private set; } = null!;
     public static LogService Log { get; private set; } = null!;
+    public static CrashReporter Crash { get; private set; } = null!;
 
     [STAThread]
     private static void Main(string[] args)
     {
         // Velopack hooks должны вызываться до старта WPF UI.
-        // В релизе не даём этому уронить запуск (на случай странной среды/падения native части).
         try
         {
             VelopackApp.Build().Run();
@@ -41,46 +41,61 @@ public partial class App : Application
         // Папки / пути
         try
         {
-            Directory.CreateDirectory(LauncherPaths.AppDir);
-            Directory.CreateDirectory(LauncherPaths.LogsDir);
+            LauncherPaths.EnsureAppDirs();
         }
         catch
         {
             // ignore (release-safe)
         }
 
-        // Инициализация базовых сервисов (конфиг, токены, лог)
+        // ===== Лог =====
         try
         {
-            Log = new LogService(Path.Combine(LauncherPaths.LogsDir, "launcher.log"));
+            Log = new LogService(LauncherPaths.LauncherLogFile);
+            Log.Info("LogService initialized.");
         }
         catch
         {
-            // если лог не поднялся — делаем заглушку, чтобы не падать
             Log = LogService.Noop;
         }
 
+        // ===== CrashReporter (до остального) =====
+        try
+        {
+            Crash = new CrashReporter(Log);
+            Log.Info("CrashReporter created.");
+        }
+        catch (Exception ex)
+        {
+            try { Log.Error("CrashReporter init failed", ex); } catch { }
+            Crash = new CrashReporter(LogService.Noop);
+        }
+
+        // ===== Конфиг =====
         try
         {
             Config = new ConfigService(LauncherPaths.ConfigFile);
             Config.LoadOrCreate();
+            Log.Info("ConfigService initialized.");
         }
         catch (Exception ex)
         {
-            // конфиг не должен ломать запуск
-            Log.Error("Config init failed", ex);
-            // fallback: пустой конфиг в памяти
+            try { Log.Error("Config init failed", ex); } catch { }
+
             Config = new ConfigService(LauncherPaths.ConfigFile);
             try { Config.LoadOrCreate(); } catch { }
         }
 
+        // ===== Токены =====
         try
         {
             Tokens = new TokenStore(LauncherPaths.TokenFile);
+            Log.Info("TokenStore initialized.");
         }
         catch (Exception ex)
         {
-            Log.Error("TokenStore init failed", ex);
+            try { Log.Error("TokenStore init failed", ex); } catch { }
+
             // fallback на временный путь
             var tmp = Path.Combine(Path.GetTempPath(), "LegendBornLauncher.tokens.dat");
             Tokens = new TokenStore(tmp);
@@ -95,33 +110,65 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
-        // Глобальная защита от падений UI
+        // CrashReporter: подписки на глобальные исключения
+        try
+        {
+            Crash.Install(this);
+        }
+        catch (Exception ex)
+        {
+            try { Log.Error("CrashReporter install failed", ex); } catch { }
+        }
+
+        // Дополнительная страховка (в релизе полезно держать)
         DispatcherUnhandledException += (_, ex) =>
         {
-            try { Log.Error("UI unhandled exception", ex.Exception); } catch { }
-            MessageBox.Show(
-                "Произошла непредвиденная ошибка. Подробности записаны в лог лаунчера.",
-                "LegendBorn Launcher",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
+            try { Log.Error("UI unhandled exception (App hook)", ex.Exception); } catch { }
 
-            ex.Handled = true; // не роняем приложение
+            try
+            {
+                MessageBox.Show(
+                    "Произошла непредвиденная ошибка. Подробности записаны в лог лаунчера.",
+                    "LegendBorn Launcher",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+            }
+            catch { }
+
+            ex.Handled = true;
         };
 
-        // Ошибки из задач/потоков
         TaskScheduler.UnobservedTaskException += (_, ex) =>
         {
-            try { Log.Error("Unobserved task exception", ex.Exception); } catch { }
-            ex.SetObserved();
+            try { Log.Error("Unobserved task exception (App hook)", ex.Exception); } catch { }
+            try { ex.SetObserved(); } catch { }
         };
 
         AppDomain.CurrentDomain.UnhandledException += (_, ex) =>
         {
-            try { Log.Error("AppDomain unhandled exception", ex.ExceptionObject as Exception); } catch { }
-            // тут уже может быть поздно показывать UI, но лог запишем
+            try { Log.Error("AppDomain unhandled exception (App hook)", ex.ExceptionObject as Exception); } catch { }
         };
 
         // Лог запуска
-        try { Log.Info($"Launcher started. Version: {GetType().Assembly.GetName().Version}"); } catch { }
+        try
+        {
+            var ver = LauncherIdentity.InformationalVersion;
+            Log.Info($"Launcher started. Version: {ver}");
+        }
+        catch { }
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        try { Log.Info("Launcher exiting."); } catch { }
+
+        try
+        {
+            // Сбрасываем хвост очереди логов перед выходом
+            Log.Dispose();
+        }
+        catch { }
+
+        base.OnExit(e);
     }
 }

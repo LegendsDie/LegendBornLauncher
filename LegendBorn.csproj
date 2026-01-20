@@ -27,9 +27,9 @@
     </ItemGroup>
 
     <ItemGroup>
-        <None Remove="Assets\launcherstart.png" />
-        <None Remove="Assets\logolauncher.png" />
-        <None Remove="Assets\legendcraft.png" />
+        <None Remove="Resouces\Assets\launcherstart.png" />
+        <None Remove="Resouces\Assets\logolauncher.png" />
+        <None Remove="Resouces\Assets\legendcraft.png" />
     </ItemGroup>
 
     <ItemGroup>
