@@ -22,7 +22,7 @@ public sealed class LauncherConfig
 
     // RamMb <= 0 => AUTO
     // ✅ ТЗ: ручной ввод 4..16 GB
-    public int RamMb { get; set; } = 0;
+    public int RamMb { get; set; } = RamMinMb; // ✅ дефолт теперь 4GB (не 1GB)
 
     public string? JavaPath { get; set; }
 
@@ -77,19 +77,17 @@ public sealed class LauncherConfig
         if (total <= 0)
             return RamMinMb; // ✅ минимум 4GB
 
-        // ✅ Auto: держим ОС живой, но в рамках 4..16GB
-        // Берём 50% от RAM, но не выше 16GB и не ниже 4GB
+        // ✅ Auto: 50% от RAM, но:
+        // - минимум 4GB
+        // - максимум 16GB
+        // - оставляем системе минимум 2GB
         var rec = (int)Math.Round(total * 0.50);
 
-        // оставляем системе запас: минимум 2GB
         var maxByReserve = Math.Max(RamMinMb, total - 2048);
-
-        // финальный максимум: reserve + hardcap(16GB)
         var hardMax = Math.Min(RamMaxMb, maxByReserve);
 
         rec = Clamp(rec, RamMinMb, hardMax);
 
-        // округлим до 256MB
         rec = (rec / 256) * 256;
         if (rec < RamMinMb) rec = RamMinMb;
         if (rec > RamMaxMb) rec = RamMaxMb;
@@ -107,29 +105,22 @@ public sealed class LauncherConfig
         if (mb <= 0)
             return 0;
 
-        // ✅ ТЗ: 4..16GB
         mb = Clamp(mb, min: RamMinMb, max: RamMaxMb);
 
         var total = TryGetTotalPhysicalMemoryMb();
         if (total > 0)
         {
-            // Не даём поставить больше физической памяти с запасом на ОС
             // запас минимум 2GB
             var maxAllowed = Math.Max(RamMinMb, total - 2048);
-
-            // и всё равно не выше 16GB
             maxAllowed = Math.Min(maxAllowed, RamMaxMb);
 
             if (mb > maxAllowed)
                 mb = maxAllowed;
         }
 
-        if (mb < RamMinMb) mb = RamMinMb;
-        if (mb > RamMaxMb) mb = RamMaxMb;
-
-        // округление до 256MB
         mb = (mb / 256) * 256;
         if (mb < RamMinMb) mb = RamMinMb;
+        if (mb > RamMaxMb) mb = RamMaxMb;
 
         return mb;
     }

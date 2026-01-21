@@ -20,9 +20,9 @@ public sealed partial class MainViewModel : ObservableObject
     private const int MenuMinIndex = 0;
     private const int MenuMaxIndex = 4; // 0..4 (включая News)
 
-    // ✅ ТЗ: RAM 4..16 GB
-    private const int RamMinMb = 4096;
-    private const int RamMaxHardCapMb = 16384;
+    // ✅ ТЗ: RAM 4..16 GB (берём из схемы конфига)
+    private const int RamMinMb = LauncherConfig.RamMinMb;          // 4096
+    private const int RamMaxHardCapMb = LauncherConfig.RamMaxMb;   // 16384
 
     private readonly ConfigService _config;
     private readonly LogService _log;
@@ -316,26 +316,95 @@ public sealed partial class MainViewModel : ObservableObject
     }
 
     private string _username = "Player";
+
+    /// <summary>
+    /// ✅ Важно: защита от перетирания ника сайтом.
+    /// Если конфиг уже содержит нормальный ник (не "Player"),
+    /// то попытки выставить ник, совпадающий с профилем сайта, игнорируются.
+    /// Это позволяет:
+    /// - с сайта взять ник только при первой авторизации (когда в конфиге пусто/Player)
+    /// - потом ник остаётся пользовательским (из конфига), пока пользователь сам не поменяет
+    /// </summary>
     public string Username
     {
         get => _username;
         set
         {
-            var v = string.IsNullOrWhiteSpace(value) ? "Player" : value.Trim();
-            v = MakeValidMcName(v);
+            var raw = string.IsNullOrWhiteSpace(value) ? "Player" : value.Trim();
+            var v = MakeValidMcName(raw);
+
+            // вычисляем "предложение сайта" (если мы залогинены и профиль загружен)
+            var siteSuggested = GetSiteSuggestedMcName();
+
+            // сохранённое значение из конфига (то, что мы считаем источником истины)
+            string savedCfg = "";
+            try { savedCfg = (_config.Current.LastUsername ?? "").Trim(); } catch { }
+
+            var savedCfgValid = string.IsNullOrWhiteSpace(savedCfg) ? "" : MakeValidMcName(savedCfg);
+
+            var hasUserNickInConfig =
+                !string.IsNullOrWhiteSpace(savedCfgValid) &&
+                !savedCfgValid.Equals("Player", StringComparison.OrdinalIgnoreCase);
+
+            var isSitePush =
+                !string.IsNullOrWhiteSpace(siteSuggested) &&
+                v.Equals(siteSuggested, StringComparison.OrdinalIgnoreCase);
+
+            // ✅ Если сайт пытается установить ник, но в конфиге уже есть пользовательский ник —
+            // не перетираем. Оставляем конфиг как главный источник.
+            if (isSitePush && hasUserNickInConfig && !savedCfgValid.Equals(siteSuggested, StringComparison.OrdinalIgnoreCase))
+            {
+                // если текущий уже равен конфигу — ничего не делаем
+                if (_username.Equals(savedCfgValid, StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                // иначе мягко возвращаем ник из конфига
+                if (!Set(ref _username, savedCfgValid))
+                    return;
+
+                Raise(nameof(UserInitial));
+                RefreshCanStates();
+                return;
+            }
 
             if (!Set(ref _username, v))
                 return;
 
             try
             {
-                // ✅ всегда считаем, что ввод/изменение Username = пользовательский выбор (сохраняем)
+                // ✅ любые изменения в UI считаем пользовательскими и сохраняем
                 _config.Current.LastUsername = _username;
                 ScheduleConfigSave();
             }
             catch { }
 
+            Raise(nameof(UserInitial));
             RefreshCanStates();
+        }
+    }
+
+    private string? GetSiteSuggestedMcName()
+    {
+        try
+        {
+            if (!IsLoggedIn || Profile is null)
+                return null;
+
+            // логика как на сайте: если MinecraftName пустой — берём display name
+            var candidate =
+                !string.IsNullOrWhiteSpace(Profile.MinecraftName) ? Profile.MinecraftName :
+                !string.IsNullOrWhiteSpace(SiteUserName) && SiteUserName != "Не вошли" ? SiteUserName :
+                !string.IsNullOrWhiteSpace(Profile.UserName) ? Profile.UserName :
+                null;
+
+            if (string.IsNullOrWhiteSpace(candidate))
+                return null;
+
+            return MakeValidMcName(candidate);
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -456,7 +525,6 @@ public sealed partial class MainViewModel : ObservableObject
 
     public bool CanStop => _runningProcess is { HasExited: false };
 
-    // ⚠️ Логику "CanPlay" не ослабляем без явного решения: нужно подтверждение профиля с сайта.
     public bool CanPlay =>
         !_isClosing &&
         !IsBusy &&
@@ -527,6 +595,7 @@ public sealed partial class MainViewModel : ObservableObject
             _serverIp = string.IsNullOrWhiteSpace(ip) ? DefaultServerIp : ip;
             Raise(nameof(ServerIp));
 
+            // ✅ RAM: берём из конфига, но жёстко держим 4..16
             var ramFromCfg = _config.Current.RamMb;
             var initialRam = ramFromCfg > 0 ? ramFromCfg : _recommendedRamMb;
             _ramMb = NormalizeRamMb(initialRam);
@@ -534,7 +603,7 @@ public sealed partial class MainViewModel : ObservableObject
             Raise(nameof(RamMb));
             Raise(nameof(RamMbText));
 
-            // ✅ Ник берём из конфига. Сайт его больше НЕ будет перетирать, если он уже есть.
+            // ✅ Ник берём из конфига. Сайт больше НЕ должен перетирать, если пользователь менял.
             var u = (_config.Current.LastUsername ?? "Player").Trim();
             _username = string.IsNullOrWhiteSpace(u) ? "Player" : MakeValidMcName(u);
             Raise(nameof(Username));
@@ -562,8 +631,10 @@ public sealed partial class MainViewModel : ObservableObject
     private void InitializeRamModel()
     {
         _totalSystemRamMb = GetTotalPhysicalMemoryMb();
-        _maxAllowedRamMb = ComputeMaxAllowedRamMb(_totalSystemRamMb);
-        _recommendedRamMb = ComputeRecommendedRamMb(_totalSystemRamMb, _maxAllowedRamMb);
+
+        // методы вычисления живут в другом partial, но мы жёстко ограничим результат 4..16
+        _maxAllowedRamMb = Math.Clamp(ComputeMaxAllowedRamMb(_totalSystemRamMb), RamMinMb, RamMaxHardCapMb);
+        _recommendedRamMb = Math.Clamp(ComputeRecommendedRamMb(_totalSystemRamMb, _maxAllowedRamMb), RamMinMb, _maxAllowedRamMb);
 
         BuildRamOptions(_maxAllowedRamMb, _recommendedRamMb);
     }
@@ -574,7 +645,7 @@ public sealed partial class MainViewModel : ObservableObject
 
         var hardMax = Math.Clamp(maxAllowedMb, RamMinMb, RamMaxHardCapMb);
 
-        // ✅ только диапазон 4..16 (с разумными шагами)
+        // ✅ только диапазон 4..16 (удобные ступени)
         var steps = new[] { 4096, 6144, 8192, 10240, 12288, 16384 };
 
         foreach (var s in steps)
@@ -603,7 +674,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     private int NormalizeRamMb(int requestedMb)
     {
-        var max = _maxAllowedRamMb > 0 ? _maxAllowedRamMb : ComputeMaxAllowedRamMb(GetTotalPhysicalMemoryMb());
+        var max = _maxAllowedRamMb > 0 ? _maxAllowedRamMb : Math.Clamp(ComputeMaxAllowedRamMb(GetTotalPhysicalMemoryMb()), RamMinMb, RamMaxHardCapMb);
         max = Math.Clamp(max, RamMinMb, RamMaxHardCapMb);
 
         if (requestedMb <= 0)
