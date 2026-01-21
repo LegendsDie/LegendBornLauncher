@@ -13,7 +13,7 @@ using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace LegendBorn.Services;
+namespace LegendBorn.Launching;
 
 /// <summary>
 /// Установщик NeoForge (installer.jar) в кастомный gameDir.

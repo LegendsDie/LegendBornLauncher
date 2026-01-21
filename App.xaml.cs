@@ -1,10 +1,9 @@
-﻿// App.xaml.cs
-using System;
+﻿using System;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
-using Velopack;
 using LegendBorn.Services;
+using Velopack;
 
 namespace LegendBorn;
 
@@ -24,31 +23,33 @@ public partial class App : Application
         }
         catch
         {
-            // ignore (release-safe)
         }
 
-        try
-        {
-            SettingsBootstrapper.Bootstrap();
-        }
-        catch
-        {
-            // ignore (release-safe)
-        }
+        string logPath = "";
+        string configPath = "";
+        string tokenPath = "";
 
         try
         {
             LauncherPaths.EnsureAppDirs();
+            logPath = LauncherPaths.LauncherLogFile;
+            configPath = LauncherPaths.ConfigFile;
+            tokenPath = LauncherPaths.TokenFile;
         }
         catch
         {
-            // ignore (release-safe)
+            var baseDir = Path.Combine(Path.GetTempPath(), "LegendBornLauncher");
+            try { Directory.CreateDirectory(baseDir); } catch { }
+
+            logPath = Path.Combine(baseDir, "launcher.log");
+            configPath = Path.Combine(baseDir, "launcher.config.json");
+            tokenPath = Path.Combine(baseDir, "tokens.dat");
         }
 
         try
         {
-            Log = new LogService(LauncherPaths.LauncherLogFile);
-            Log.Info("LogService initialized.");
+            Log = new LogService(logPath);
+            try { Log.Info("LogService initialized."); } catch { }
         }
         catch
         {
@@ -58,7 +59,7 @@ public partial class App : Application
         try
         {
             Crash = new CrashReporter(Log);
-            Log.Info("CrashReporter created.");
+            try { Log.Info("CrashReporter created."); } catch { }
         }
         catch (Exception ex)
         {
@@ -68,25 +69,36 @@ public partial class App : Application
 
         try
         {
-            Config = new ConfigService(LauncherPaths.ConfigFile);
+            SettingsBootstrapper.Bootstrap();
+            try { Log.Info("SettingsBootstrapper done."); } catch { }
+        }
+        catch (Exception ex)
+        {
+            try { Log.Error("SettingsBootstrapper failed", ex); } catch { }
+        }
+
+        try
+        {
+            Config = new ConfigService(configPath);
             Config.LoadOrCreate();
-            Log.Info("ConfigService initialized.");
+            try { Log.Info("ConfigService initialized."); } catch { }
         }
         catch (Exception ex)
         {
             try { Log.Error("Config init failed", ex); } catch { }
-            Config = new ConfigService(LauncherPaths.ConfigFile);
+            Config = new ConfigService(configPath);
             try { Config.LoadOrCreate(); } catch { }
         }
 
         try
         {
-            Tokens = new TokenStore(LauncherPaths.TokenFile);
-            Log.Info("TokenStore initialized.");
+            Tokens = new TokenStore(tokenPath);
+            try { Log.Info("TokenStore initialized."); } catch { }
         }
         catch (Exception ex)
         {
             try { Log.Error("TokenStore init failed", ex); } catch { }
+
             var tmp = Path.Combine(Path.GetTempPath(), "LegendBornLauncher.tokens.dat");
             Tokens = new TokenStore(tmp);
         }

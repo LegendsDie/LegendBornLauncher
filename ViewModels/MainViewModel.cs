@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using LegendBorn.Mvvm;
 using LegendBorn.Models;
 using LegendBorn.Services;
+using LegendBorn.Launching;
 
 namespace LegendBorn.ViewModels;
 

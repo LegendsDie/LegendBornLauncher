@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,13 +19,6 @@ public enum LogLevel
     Fatal = 5
 }
 
-/// <summary>
-/// Централизованный логгер лаунчера:
-/// - Пишет в файл (один writer task)
-/// - Потокобезопасен
-/// - Ротация по размеру
-/// - Есть Noop (реально ничего не делает, без IO и без фоновых задач)
-/// </summary>
 public sealed class LogService : IDisposable
 {
     private readonly string _logFilePath;
@@ -39,14 +33,16 @@ public sealed class LogService : IDisposable
     private volatile bool _disposed;
     private volatile bool _enabled;
 
-    /// <summary>Минимальный уровень логирования.</summary>
+    private int _queueCount;
+    private int _droppedLines;
+
     public LogLevel MinimumLevel { get; set; } = LogLevel.Info;
 
-    /// <summary>Заглушка: не пишет ничего, безопасно принимает вызовы.</summary>
     public static LogService Noop { get; } = new LogService(isNoop: true);
 
-    /// <param name="logFilePath">Полный путь к launcher.log</param>
-    /// <param name="maxBytes">Максимальный размер файла до ротации</param>
+    private const int MaxQueueLines = 8000;
+    private const int FlushChunkMaxChars = 128_000;
+
     public LogService(string logFilePath, long maxBytes = 2_000_000)
     {
         _logFilePath = logFilePath ?? throw new ArgumentNullException(nameof(logFilePath));
@@ -69,7 +65,6 @@ public sealed class LogService : IDisposable
             StartWriter();
     }
 
-    // приватный Noop ctor: не создаёт задач/CTS/IO
     private LogService(bool isNoop)
     {
         _logFilePath = "";
@@ -95,7 +90,6 @@ public sealed class LogService : IDisposable
         }
     }
 
-    // ===== Public API =====
     public void Trace(string message) => Write(LogLevel.Trace, message, null);
     public void Debug(string message) => Write(LogLevel.Debug, message, null);
     public void Info (string message) => Write(LogLevel.Info,  message, null);
@@ -111,11 +105,27 @@ public sealed class LogService : IDisposable
         if (level < MinimumLevel) return;
 
         var line = FormatLine(level, message, ex);
+
         _queue.Enqueue(line);
-        _signal.Set();
+        var cnt = Interlocked.Increment(ref _queueCount);
+
+        if (cnt > MaxQueueLines)
+        {
+            var drop = 0;
+            while (Interlocked.CompareExchange(ref _queueCount, 0, 0) > MaxQueueLines && _queue.TryDequeue(out _))
+            {
+                drop++;
+                Interlocked.Decrement(ref _queueCount);
+                if (drop > 256) break;
+            }
+
+            if (drop > 0)
+                Interlocked.Add(ref _droppedLines, drop);
+        }
+
+        try { _signal.Set(); } catch { }
     }
 
-    /// <summary>Принудительно сбросить очередь в файл (best-effort).</summary>
     public void Flush()
     {
         if (_disposed) return;
@@ -132,7 +142,6 @@ public sealed class LogService : IDisposable
         return TryFlushOnce();
     }
 
-    // ===== Internals =====
     private static string FormatLine(LogLevel level, string message, Exception? ex)
     {
         var ts = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture);
@@ -143,7 +152,7 @@ public sealed class LogService : IDisposable
         if (ex is null)
             return $"[{ts}] [{lvl}] {msg}";
 
-        var sb = new StringBuilder();
+        var sb = new StringBuilder(1024);
         sb.Append($"[{ts}] [{lvl}] ").Append(msg);
         sb.Append(" | ex=").Append(ex.GetType().Name).Append(": ").Append(ex.Message);
 
@@ -183,16 +192,15 @@ public sealed class LogService : IDisposable
                 _signal.WaitOne(250);
                 if (ct.IsCancellationRequested) break;
 
-                await FlushOnceAsync(ct).ConfigureAwait(false);
+                await FlushOnceAsync(CancellationToken.None).ConfigureAwait(false);
             }
         }
         catch
         {
-            // never crash app because of logger
         }
         finally
         {
-            try { await FlushOnceAsync(ct).ConfigureAwait(false); } catch { }
+            try { await FlushOnceAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
         }
     }
 
@@ -200,8 +208,7 @@ public sealed class LogService : IDisposable
     {
         try
         {
-            if (_cts is null) return false;
-            FlushOnceAsync(_cts.Token).GetAwaiter().GetResult();
+            FlushOnceAsync(CancellationToken.None).GetAwaiter().GetResult();
             return true;
         }
         catch
@@ -214,30 +221,63 @@ public sealed class LogService : IDisposable
     {
         if (_disposed) return;
         if (!_enabled) return;
-        if (_queue.IsEmpty) return;
+
+        if (_queue.IsEmpty)
+        {
+            var dropped0 = Interlocked.Exchange(ref _droppedLines, 0);
+            if (dropped0 > 0)
+            {
+                _queue.Enqueue(FormatLine(LogLevel.Warn, $"Log queue overflow: dropped {dropped0} lines.", null));
+                Interlocked.Increment(ref _queueCount);
+            }
+            else
+            {
+                return;
+            }
+        }
 
         try
         {
+            EnsureLogDir();
             RotateIfNeeded();
+            CleanupOldLogsSafe(maxKeep: 10);
 
-            var sb = new StringBuilder();
+            var sb = new StringBuilder(FlushChunkMaxChars);
+
+            var dropped = Interlocked.Exchange(ref _droppedLines, 0);
+            if (dropped > 0)
+            {
+                sb.AppendLine(FormatLine(LogLevel.Warn, $"Log queue overflow: dropped {dropped} lines.", null));
+            }
 
             while (_queue.TryDequeue(out var line))
             {
+                Interlocked.Decrement(ref _queueCount);
                 sb.AppendLine(line);
-                if (sb.Length > 64_000) break;
+
+                if (sb.Length >= FlushChunkMaxChars)
+                    break;
             }
 
             var text = sb.ToString();
             if (string.IsNullOrEmpty(text)) return;
 
-            await File.AppendAllTextAsync(_logFilePath, text, Encoding.UTF8, ct)
-                      .ConfigureAwait(false);
+            await File.AppendAllTextAsync(_logFilePath, text, Encoding.UTF8, ct).ConfigureAwait(false);
         }
         catch
         {
-            // ignore
         }
+    }
+
+    private void EnsureLogDir()
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(_logFilePath);
+            if (!string.IsNullOrWhiteSpace(dir))
+                Directory.CreateDirectory(dir);
+        }
+        catch { }
     }
 
     private void RotateIfNeeded()
@@ -256,8 +296,32 @@ public sealed class LogService : IDisposable
         }
         catch
         {
-            // ignore
         }
+    }
+
+    private void CleanupOldLogsSafe(int maxKeep)
+    {
+        try
+        {
+            maxKeep = Math.Clamp(maxKeep, 3, 50);
+
+            var dir = Path.GetDirectoryName(_logFilePath);
+            if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir)) return;
+
+            var files = Directory.EnumerateFiles(dir, "launcher_*.log", SearchOption.TopDirectoryOnly)
+                .Select(p => new FileInfo(p))
+                .Where(f => f.Exists)
+                .OrderByDescending(f => f.CreationTimeUtc)
+                .ToList();
+
+            if (files.Count <= maxKeep) return;
+
+            foreach (var f in files.Skip(maxKeep))
+            {
+                try { f.Delete(); } catch { }
+            }
+        }
+        catch { }
     }
 
     public void Dispose()
@@ -280,7 +344,7 @@ public sealed class LogService : IDisposable
         try
         {
             if (_writerTask is not null)
-                _writerTask.Wait(600);
+                _writerTask.Wait(800);
         }
         catch { }
 

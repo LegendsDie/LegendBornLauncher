@@ -10,8 +10,6 @@ namespace LegendBorn.Services;
 public static class UpdateService
 {
     private const string RepoUrlOrSlug = "https://github.com/LegendsDie/LegendBornLauncher";
-
-    // Должен совпадать с --channel в vpk pack (и в твоём workflow)
     private const string Channel = "win";
 
     private static readonly SemaphoreSlim _gate = new(1, 1);
@@ -55,6 +53,7 @@ public static class UpdateService
         }
 
         var slug = input.Trim().TrimEnd('/');
+
         if (slug.StartsWith("github.com/", StringComparison.OrdinalIgnoreCase))
             slug = slug.Substring("github.com/".Length);
 
@@ -65,25 +64,21 @@ public static class UpdateService
         return "https://github.com/LegendsDie/LegendBornLauncher";
     }
 
-    /// <summary>
-    /// Проверка и установка обновлений.
-    /// silent=true  -> без диалогов; ошибки не показываем.
-    /// showNoUpdates=true -> показывать "обновлений нет" (только если silent=false).
-    /// </summary>
     public static async Task CheckAndUpdateAsync(
         bool silent,
         bool showNoUpdates = false,
         CancellationToken ct = default)
     {
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
-
+        var entered = false;
         UpdateManager? mgr = null;
 
         try
         {
+            await _gate.WaitAsync(ct).ConfigureAwait(false);
+            entered = true;
+
             ct.ThrowIfCancellationRequested();
 
-            // ВАЖНО: без using — UpdateManager у тебя не IDisposable
             mgr = CreateManager();
 
             if (!mgr.IsInstalled)
@@ -95,7 +90,6 @@ public static class UpdateService
 
             if (mgr.UpdatePendingRestart is { } pending)
             {
-                // применяем уже скачанное обновление
                 mgr.ApplyUpdatesAndRestart(pending);
                 return;
             }
@@ -120,14 +114,11 @@ public static class UpdateService
                     return;
             }
 
-            // Держим совместимость с твоей версией Velopack:
             await mgr.DownloadUpdatesAsync(updates!).ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
 
-            // Запускаем apply-процесс, который ждёт закрытия приложения
             mgr.WaitExitThenApplyUpdates(target, restart: true);
 
-            // Корректно закрываем WPF, чтобы apply мог отработать
             try
             {
                 Application.Current?.Dispatcher.Invoke(() =>
@@ -139,7 +130,6 @@ public static class UpdateService
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // отмена — штатно
         }
         catch (Exception ex)
         {
@@ -148,7 +138,10 @@ public static class UpdateService
         }
         finally
         {
-            try { _gate.Release(); } catch { }
+            if (entered)
+            {
+                try { _gate.Release(); } catch { }
+            }
         }
     }
 
@@ -156,7 +149,16 @@ public static class UpdateService
     {
         try
         {
-            Application.Current?.Dispatcher.Invoke(() =>
+            var app = Application.Current;
+            if (app?.Dispatcher is null) return;
+
+            if (app.Dispatcher.CheckAccess())
+            {
+                MessageBox.Show(text, "Обновление лаунчера", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            app.Dispatcher.Invoke(() =>
             {
                 MessageBox.Show(text, "Обновление лаунчера", MessageBoxButton.OK, MessageBoxImage.Information);
             });
@@ -168,7 +170,16 @@ public static class UpdateService
     {
         try
         {
-            Application.Current?.Dispatcher.Invoke(() =>
+            var app = Application.Current;
+            if (app?.Dispatcher is null) return;
+
+            if (app.Dispatcher.CheckAccess())
+            {
+                MessageBox.Show(text, "Обновление лаунчера", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            app.Dispatcher.Invoke(() =>
             {
                 MessageBox.Show(text, "Обновление лаунчера", MessageBoxButton.OK, MessageBoxImage.Error);
             });
@@ -180,9 +191,14 @@ public static class UpdateService
     {
         try
         {
-            return Application.Current?.Dispatcher.Invoke(() =>
-                MessageBox.Show(text, "Обновление лаунчера", MessageBoxButton.YesNo, MessageBoxImage.Information)
-            ) ?? MessageBoxResult.No;
+            var app = Application.Current;
+            if (app?.Dispatcher is null) return MessageBoxResult.No;
+
+            if (app.Dispatcher.CheckAccess())
+                return MessageBox.Show(text, "Обновление лаунчера", MessageBoxButton.YesNo, MessageBoxImage.Information);
+
+            return app.Dispatcher.Invoke(() =>
+                MessageBox.Show(text, "Обновление лаунчера", MessageBoxButton.YesNo, MessageBoxImage.Information));
         }
         catch
         {

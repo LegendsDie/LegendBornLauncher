@@ -46,36 +46,31 @@ public sealed class TokenStore
                 var json = JsonSerializer.Serialize(tokens, JsonOpts);
                 var data = Encoding.UTF8.GetBytes(json);
 
-                var protectedBytes = ProtectedData.Protect(data, Entropy, DataProtectionScope.CurrentUser);
+                // DPAPI (как основной путь)
+                byte[] payload;
+                try
+                {
+                    payload = ProtectedData.Protect(data, Entropy, DataProtectionScope.CurrentUser);
+                }
+                catch
+                {
+                    // fallback: сохраняем как plaintext (лучше чем потерять токен полностью),
+                    // но в норме это почти не случается на Windows.
+                    payload = data;
+                }
 
-                var dir = Path.GetDirectoryName(_filePath);
-                if (!string.IsNullOrWhiteSpace(dir))
-                    Directory.CreateDirectory(dir);
+                EnsureParentDir(_filePath);
 
                 var tmp = _filePath + ".tmp";
-                File.WriteAllBytes(tmp, protectedBytes);
+                File.WriteAllBytes(tmp, payload);
 
-                if (File.Exists(_filePath))
-                {
-                    var bak = _filePath + ".bak";
-                    try
-                    {
-                        File.Replace(tmp, _filePath, bak, ignoreMetadataErrors: true);
-                    }
-                    catch
-                    {
-                        File.Delete(_filePath);
-                        File.Move(tmp, _filePath);
-                    }
-                }
-                else
-                {
-                    File.Move(tmp, _filePath);
-                }
+                ReplaceOrMoveAtomic(tmp, _filePath);
+
+                TryDeleteQuiet(tmp);
             }
             catch
             {
-                TryDelete(_filePath + ".tmp");
+                TryDeleteQuiet(_filePath + ".tmp");
             }
         }
     }
@@ -89,14 +84,28 @@ public sealed class TokenStore
 
             try
             {
-                var protectedBytes = File.ReadAllBytes(_filePath);
-                var data = ProtectedData.Unprotect(protectedBytes, Entropy, DataProtectionScope.CurrentUser);
+                var payload = File.ReadAllBytes(_filePath);
+
+                // 1) пробуем DPAPI unprotect
+                byte[] data;
+                try
+                {
+                    data = ProtectedData.Unprotect(payload, Entropy, DataProtectionScope.CurrentUser);
+                }
+                catch
+                {
+                    // 2) fallback: возможно это plaintext
+                    data = payload;
+                }
+
                 var raw = Encoding.UTF8.GetString(data);
 
+                // json?
                 var tokens = TryDeserializeTokens(raw);
                 if (tokens is not null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
                     return tokens;
 
+                // legacy: одиночная строка токена
                 var maybeToken = raw?.Trim();
                 if (!string.IsNullOrWhiteSpace(maybeToken) && !maybeToken.StartsWith("{"))
                     return new AuthTokens { AccessToken = maybeToken };
@@ -105,8 +114,9 @@ public sealed class TokenStore
             }
             catch
             {
-                TryDelete(_filePath);
-                TryDelete(_filePath + ".tmp");
+                // файл явно сломан -> делаем backup и удаляем
+                TryBackupBroken();
+                ClearInternal();
                 return null;
             }
         }
@@ -122,8 +132,9 @@ public sealed class TokenStore
 
     private void ClearInternal()
     {
-        TryDelete(_filePath);
-        TryDelete(_filePath + ".tmp");
+        TryDeleteQuiet(_filePath);
+        TryDeleteQuiet(_filePath + ".tmp");
+        TryDeleteQuiet(_filePath + ".bak");
     }
 
     private static AuthTokens? TryDeserializeTokens(string? raw)
@@ -141,7 +152,71 @@ public sealed class TokenStore
         return null;
     }
 
-    private static void TryDelete(string path)
+    private void TryBackupBroken()
+    {
+        try
+        {
+            if (!File.Exists(_filePath)) return;
+
+            var ts = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
+            var bak = _filePath + ".broken." + ts + ".bak";
+
+            EnsureParentDir(_filePath);
+            File.Copy(_filePath, bak, overwrite: true);
+        }
+        catch { }
+    }
+
+    private static void EnsureParentDir(string filePath)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrWhiteSpace(dir))
+                Directory.CreateDirectory(dir);
+        }
+        catch { }
+    }
+
+    private static void ReplaceOrMoveAtomic(string sourceTmp, string destPath)
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows() && File.Exists(destPath))
+            {
+                var backup = destPath + ".bak";
+                try
+                {
+                    TryDeleteQuiet(backup);
+                    File.Replace(sourceTmp, destPath, backup, ignoreMetadataErrors: true);
+                }
+                finally
+                {
+                    TryDeleteQuiet(backup);
+                }
+                return;
+            }
+
+            File.Move(sourceTmp, destPath, overwrite: true);
+        }
+        catch
+        {
+            // fallback
+            try
+            {
+                if (File.Exists(destPath))
+                    File.Delete(destPath);
+
+                File.Move(sourceTmp, destPath);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+    }
+
+    private static void TryDeleteQuiet(string path)
     {
         try
         {

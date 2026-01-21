@@ -1,89 +1,45 @@
 using System;
+using System.Runtime.InteropServices;
 
 namespace LegendBorn.Models;
 
-/// <summary>
-/// Конфигурация лаунчера (launcher.config.json).
-/// ВАЖНО: версия схемы = ConfigSchemaVersion (не версия приложения).
-/// </summary>
 public sealed class LauncherConfig
 {
-    // ===== Schema =====
-
-    /// <summary>
-    /// Версия схемы launcher.config.json (НЕ версия лаунчера).
-    /// Меняется только при реальном изменении структуры/миграциях.
-    /// </summary>
     public string ConfigSchemaVersion { get; set; } = CurrentSchemaVersion;
 
     public const string CurrentSchemaVersion = "0.2.6";
 
-    // ===== UI/UX =====
-
-    /// <summary>Последний выбранный сервер (Id из servers.json).</summary>
     public string? LastServerId { get; set; }
 
-    /// <summary>Запускать автологин при старте (если есть сохранённые токены).</summary>
     public bool AutoLogin { get; set; } = true;
 
-    /// <summary>Последний введённый ник игрока (опционально).</summary>
     public string? LastUsername { get; set; }
 
-    /// <summary>Последняя выбранная вкладка/страница меню (0..N).</summary>
     public int LastMenuIndex { get; set; } = 0;
 
-    // ===== Minecraft =====
-
-    /// <summary>
-    /// Папка игры. Если пусто/не задано — используем LauncherPaths.DefaultGameDir.
-    /// (Рекомендуется LocalAppData)
-    /// </summary>
     public string? GameRootPath { get; set; }
 
-    /// <summary>Память в МБ.</summary>
-    public int RamMb { get; set; } = 4096;
+    // RamMb <= 0 => AUTO
+    public int RamMb { get; set; } = 0;
 
-    /// <summary>
-    /// Явный путь к javaw/java (опционально). Если пусто — авто-поиск/логика MinecraftService.
-    /// </summary>
     public string? JavaPath { get; set; }
 
-    // ===== Connection =====
-
-    /// <summary>Последний IP/адрес сервера (может быть ручным override).</summary>
     public string? LastServerIp { get; set; }
 
-    /// <summary>
-    /// Автоподключение к серверу при запуске игры.
-    /// Если false — игра запускается без auto-connect.
-    /// </summary>
     public bool AutoConnect { get; set; } = true;
 
-    // ===== Misc / Diagnostics =====
-
-    /// <summary>Последний успешный вход (UTC).</summary>
     public DateTimeOffset? LastSuccessfulLoginUtc { get; set; }
 
-    /// <summary>Время последнего запуска лаунчера (UTC) — полезно для диагностики.</summary>
     public DateTimeOffset? LastLauncherStartUtc { get; set; }
 
-    /// <summary>Время последней успешной проверки обновлений лаунчера (UTC).</summary>
     public DateTimeOffset? LastUpdateCheckUtc { get; set; }
 
-    /// <summary>Последняя версия лаунчера, которую видели/запускали (информативно).</summary>
     public string? LastLauncherVersion { get; set; }
 
-    // ===== Helpers =====
-
-    /// <summary>
-    /// Валидация/нормализация значений (вызывать после Load).
-    /// </summary>
     public void Normalize()
     {
-        // schema
         ConfigSchemaVersion = NormalizeRequired(ConfigSchemaVersion, "0.0.0");
 
-        // strings
         LastServerId = NormalizeOptional(LastServerId);
         LastServerIp = NormalizeOptional(LastServerIp);
         GameRootPath = NormalizeOptional(GameRootPath);
@@ -91,26 +47,67 @@ public sealed class LauncherConfig
         LastUsername = NormalizeOptional(LastUsername);
         LastLauncherVersion = NormalizeOptional(LastLauncherVersion);
 
-        // ints / bounds
-        RamMb = Clamp(RamMb, min: 1024, max: 65536);
         LastMenuIndex = Clamp(LastMenuIndex, min: 0, max: 50);
 
-        // date sanity (защита от битых дат)
+        RamMb = NormalizeRamMb(RamMb);
+
         LastSuccessfulLoginUtc = NormalizeUtc(LastSuccessfulLoginUtc);
         LastLauncherStartUtc = NormalizeUtc(LastLauncherStartUtc);
         LastUpdateCheckUtc = NormalizeUtc(LastUpdateCheckUtc);
     }
 
-    /// <summary>
-    /// Удобный признак: есть ли ручной override IP.
-    /// (Если LastServerIp пустой — считаем, что override нет.)
-    /// </summary>
     public bool HasServerIpOverride => !string.IsNullOrWhiteSpace(LastServerIp);
 
-    /// <summary>
-    /// Быстро сбросить “пользовательский override” IP (чтобы опять брался адрес из сервера).
-    /// </summary>
     public void ClearServerIpOverride() => LastServerIp = null;
+
+    public bool IsRamAuto => RamMb <= 0;
+
+    public int GetEffectiveRamMb()
+    {
+        if (!IsRamAuto)
+            return NormalizeRamMb(RamMb);
+
+        var total = TryGetTotalPhysicalMemoryMb();
+        if (total <= 0)
+            return 4096;
+
+        // Цель: не душить ОС и оставить запас, но дать адекватно для модпака.
+        //  - минимум 2048
+        //  - максимум 24576 (24GB) по умолчанию
+        //  - не больше (total - 3072) чтобы ОС/драйверам хватало
+        var cap = Math.Max(2048, total - 3072);
+        var rec = (int)Math.Round(total * 0.50);
+        rec = Clamp(rec, 2048, 24576);
+        rec = Math.Min(rec, cap);
+
+        if (rec < 2048) rec = 2048;
+        return rec;
+    }
+
+    public void SetAutoRam() => RamMb = 0;
+
+    public void SetManualRamMb(int mb) => RamMb = NormalizeRamMb(mb);
+
+    private static int NormalizeRamMb(int mb)
+    {
+        // AUTO
+        if (mb <= 0)
+            return 0;
+
+        mb = Clamp(mb, min: 1024, max: 65536);
+
+        var total = TryGetTotalPhysicalMemoryMb();
+        if (total > 0)
+        {
+            // Не даём поставить больше физической памяти с запасом на ОС
+            var maxAllowed = Math.Max(1024, total - 1536);
+            if (mb > maxAllowed)
+                mb = maxAllowed;
+        }
+
+        if (mb < 1024) mb = 1024;
+        return mb;
+    }
 
     private static string NormalizeRequired(string? value, string fallback)
     {
@@ -137,7 +134,6 @@ public sealed class LauncherConfig
 
         try
         {
-            // приводим к UTC и фильтруем “совсем бред”
             var utc = v.Value.ToUniversalTime();
             if (utc.Year < 2000) return null;
             if (utc > DateTimeOffset.UtcNow.AddDays(2)) return null;
@@ -148,4 +144,49 @@ public sealed class LauncherConfig
             return null;
         }
     }
+
+    private static int TryGetTotalPhysicalMemoryMb()
+    {
+        try
+        {
+            if (!OperatingSystem.IsWindows())
+                return 0;
+
+            var ms = new MEMORYSTATUSEX();
+            ms.dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>();
+
+            if (!GlobalMemoryStatusEx(ref ms))
+                return 0;
+
+            var totalBytes = ms.ullTotalPhys;
+            if (totalBytes <= 0)
+                return 0;
+
+            var mb = (long)(totalBytes / (1024UL * 1024UL));
+            if (mb <= 0) return 0;
+            if (mb > int.MaxValue) return int.MaxValue;
+            return (int)mb;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    private struct MEMORYSTATUSEX
+    {
+        public uint dwLength;
+        public uint dwMemoryLoad;
+        public ulong ullTotalPhys;
+        public ulong ullAvailPhys;
+        public ulong ullTotalPageFile;
+        public ulong ullAvailPageFile;
+        public ulong ullTotalVirtual;
+        public ulong ullAvailVirtual;
+        public ulong ullAvailExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
 }

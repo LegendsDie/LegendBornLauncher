@@ -1,5 +1,6 @@
 using System;
 using System.Reflection;
+using System.Runtime.InteropServices;
 
 namespace LegendBorn.Services;
 
@@ -7,6 +8,19 @@ public static class LauncherIdentity
 {
     private static readonly Lazy<Assembly> _asm = new(() =>
         Assembly.GetEntryAssembly() ?? Assembly.GetExecutingAssembly());
+
+    private static readonly Lazy<string> _productName = new(() =>
+    {
+        try
+        {
+            var asm = _asm.Value;
+            return asm.GetName().Name?.Trim() is { Length: > 0 } n ? n : "LegendBornLauncher";
+        }
+        catch
+        {
+            return "LegendBornLauncher";
+        }
+    });
 
     private static readonly Lazy<string> _fullInformational = new(() =>
     {
@@ -34,7 +48,6 @@ public static class LauncherIdentity
         {
             var iv = _fullInformational.Value;
 
-            // "0.2.6+sha" -> "0.2.6"
             var plus = iv.IndexOf('+');
             if (plus >= 0)
                 iv = iv.Substring(0, plus).Trim();
@@ -47,19 +60,49 @@ public static class LauncherIdentity
         }
     });
 
-    /// <summary>Полная informational версия (может содержать +build-metadata).</summary>
+    private static readonly Lazy<string> _buildMeta = new(() =>
+    {
+        try
+        {
+            var iv = _fullInformational.Value;
+            var plus = iv.IndexOf('+');
+            if (plus < 0) return "";
+            var meta = iv.Substring(plus + 1).Trim();
+            return meta;
+        }
+        catch
+        {
+            return "";
+        }
+    });
+
+    public static string ProductName => _productName.Value;
+
     public static string FullInformationalVersion => _fullInformational.Value;
 
-    /// <summary>Версия для UI/логов без +metadata.</summary>
     public static string InformationalVersion => _infoNoMeta.Value;
 
-    /// <summary>Красивый формат для UI: "v0.2.6".</summary>
+    public static string BuildMetadata => _buildMeta.Value;
+
     public static string DisplayVersion => "v" + InformationalVersion;
 
-    /// <summary>User-Agent для сетевых запросов.</summary>
-    public static string UserAgent => $"LegendBornLauncher/{InformationalVersion}";
+    public static string UserAgent
+    {
+        get
+        {
+            try
+            {
+                var os = RuntimeInformation.OSDescription?.Trim();
+                if (string.IsNullOrWhiteSpace(os)) os = "Windows";
+                return $"{ProductName}/{InformationalVersion} ({os}; {RuntimeInformation.FrameworkDescription})";
+            }
+            catch
+            {
+                return $"{ProductName}/{InformationalVersion}";
+            }
+        }
+    }
 
-    /// <summary>Assembly Version (если нужно для диагностики).</summary>
     public static string AssemblyVersion
     {
         get

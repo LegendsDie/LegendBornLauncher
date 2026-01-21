@@ -21,7 +21,12 @@ public sealed class ConfigService
 
     private readonly object _sync = new();
 
+    // анти-дребезг записи на диск (Save может вызываться часто)
+    private long _lastSaveTick;
+    private const int MinSaveIntervalMs = 250;
+
     public string ConfigPath { get; }
+
     public LauncherConfig Current { get; private set; } = new();
 
     public ConfigService(string configPath)
@@ -38,21 +43,19 @@ public sealed class ConfigService
         {
             try
             {
-                var dir = Path.GetDirectoryName(ConfigPath);
-                if (!string.IsNullOrWhiteSpace(dir))
-                    Directory.CreateDirectory(dir);
+                EnsureParentDir(ConfigPath);
 
                 if (!File.Exists(ConfigPath))
                 {
                     Current = new LauncherConfig();
                     TryNormalize(Current);
-                    Save();
+                    SaveInternal(force: true);
                     return Current;
                 }
 
                 var json = File.ReadAllText(ConfigPath, Utf8NoBom);
-                var cfg = JsonSerializer.Deserialize<LauncherConfig>(json, JsonOptions) ?? new LauncherConfig();
 
+                var cfg = TryDeserialize(json) ?? new LauncherConfig();
                 TryNormalize(cfg);
 
                 Current = cfg;
@@ -65,7 +68,7 @@ public sealed class ConfigService
                 Current = new LauncherConfig();
                 TryNormalize(Current);
 
-                try { Save(); } catch { }
+                try { SaveInternal(force: true); } catch { }
 
                 return Current;
             }
@@ -76,45 +79,63 @@ public sealed class ConfigService
     {
         lock (_sync)
         {
+            SaveInternal(force: false);
+        }
+    }
+
+    private void SaveInternal(bool force)
+    {
+        if (Current is null)
+            Current = new LauncherConfig();
+
+        if (!force)
+        {
+            var now = Environment.TickCount64;
+            var last = _lastSaveTick;
+            if (now - last < MinSaveIntervalMs)
+                return;
+
+            _lastSaveTick = now;
+        }
+
+        try
+        {
+            TryNormalize(Current);
+
+            EnsureParentDir(ConfigPath);
+
+            var tmp = ConfigPath + ".tmp";
+            var json = JsonSerializer.Serialize(Current, JsonOptions);
+
+            File.WriteAllText(tmp, json, Utf8NoBom);
+
+            ReplaceOrMoveAtomic(tmp, ConfigPath);
+
+            TryDeleteQuiet(tmp);
+        }
+        catch
+        {
             try
             {
-                TryNormalize(Current);
-
-                var dir = Path.GetDirectoryName(ConfigPath);
-                if (!string.IsNullOrWhiteSpace(dir))
-                    Directory.CreateDirectory(dir);
-
                 var tmp = ConfigPath + ".tmp";
-                var json = JsonSerializer.Serialize(Current, JsonOptions);
-
-                File.WriteAllText(tmp, json, Utf8NoBom);
-
-                if (File.Exists(ConfigPath))
-                {
-                    try
-                    {
-                        File.Replace(tmp, ConfigPath, destinationBackupFileName: null, ignoreMetadataErrors: true);
-                    }
-                    catch
-                    {
-                        File.Delete(ConfigPath);
-                        File.Move(tmp, ConfigPath);
-                    }
-                }
-                else
-                {
-                    File.Move(tmp, ConfigPath);
-                }
+                TryDeleteQuiet(tmp);
             }
-            catch
-            {
-                try
-                {
-                    var tmp = ConfigPath + ".tmp";
-                    if (File.Exists(tmp)) File.Delete(tmp);
-                }
-                catch { }
-            }
+            catch { }
+        }
+    }
+
+    private static LauncherConfig? TryDeserialize(string json)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(json))
+                return null;
+
+            return JsonSerializer.Deserialize<LauncherConfig>(json, JsonOptions);
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -124,8 +145,11 @@ public sealed class ConfigService
         {
             if (!File.Exists(ConfigPath)) return;
 
+            EnsureParentDir(ConfigPath);
+
             var ts = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
             var bak = ConfigPath + ".broken." + ts + ".bak";
+
             File.Copy(ConfigPath, bak, overwrite: true);
         }
         catch { }
@@ -135,5 +159,59 @@ public sealed class ConfigService
     {
         try { cfg.Normalize(); }
         catch { }
+    }
+
+    private static void EnsureParentDir(string filePath)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrWhiteSpace(dir))
+                Directory.CreateDirectory(dir);
+        }
+        catch { }
+    }
+
+    private static void ReplaceOrMoveAtomic(string sourceTmp, string destPath)
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows() && File.Exists(destPath))
+            {
+                var backup = destPath + ".bak";
+                try
+                {
+                    TryDeleteQuiet(backup);
+                    File.Replace(sourceTmp, destPath, backup, ignoreMetadataErrors: true);
+                }
+                finally
+                {
+                    TryDeleteQuiet(backup);
+                }
+                return;
+            }
+
+            File.Move(sourceTmp, destPath, overwrite: true);
+        }
+        catch
+        {
+            // fallback: старый способ
+            try
+            {
+                if (File.Exists(destPath))
+                    File.Delete(destPath);
+
+                File.Move(sourceTmp, destPath);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+    }
+
+    private static void TryDeleteQuiet(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch { }
     }
 }
