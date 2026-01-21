@@ -82,6 +82,25 @@ public sealed partial class MainViewModel
         return DateTimeOffset.UtcNow.AddMinutes(10);
     }
 
+    private bool HasConfigUsername(out string normalized)
+    {
+        normalized = "";
+        try
+        {
+            var raw = (_config.Current.LastUsername ?? "").Trim();
+
+            if (string.IsNullOrWhiteSpace(raw)) return false;
+            if (raw.Equals("Player", StringComparison.OrdinalIgnoreCase)) return false;
+
+            normalized = IsValidMcName(raw) ? raw : MakeValidMcName(raw);
+            return !string.IsNullOrWhiteSpace(normalized);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private async Task TrySendDailyLauncherLoginEventAsync(CancellationToken ct)
     {
         try
@@ -120,8 +139,18 @@ public sealed partial class MainViewModel
         SiteUserName = string.IsNullOrWhiteSpace(me.UserName) ? "Пользователь" : me.UserName;
         IsLoggedIn = true;
 
-        var mcName = string.IsNullOrWhiteSpace(me.MinecraftName) ? SiteUserName : me.MinecraftName!;
-        Username = MakeValidMcName(mcName);
+        // ✅ Ключевая логика: ник с сайта только при ПЕРВОЙ авторизации (когда в конфиге нет ника).
+        if (HasConfigUsername(out var local))
+        {
+            // если в конфиге уже есть ник — оставляем его (только чистим формат, если битый)
+            if (!string.Equals(Username, local, StringComparison.Ordinal))
+                Username = local;
+        }
+        else
+        {
+            var mcName = string.IsNullOrWhiteSpace(me.MinecraftName) ? SiteUserName : me.MinecraftName!;
+            Username = MakeValidMcName(mcName);
+        }
 
         try
         {
@@ -160,6 +189,21 @@ public sealed partial class MainViewModel
         StatusText = statusText;
     }
 
+    private void ApplyOfflineAuthenticatedUiState(AuthTokens tokens, string statusText)
+    {
+        // ✅ “не переподключаться каждый раз”: токены держим, UI не сбрасываем.
+        _tokens = tokens;
+
+        // профиль не трогаем: если был — останется, если не был — будет null.
+        if (!IsLoggedIn)
+            IsLoggedIn = true;
+
+        if (string.IsNullOrWhiteSpace(SiteUserName) || SiteUserName == "Не вошли")
+            SiteUserName = "Пользователь";
+
+        StatusText = statusText;
+    }
+
     private async Task TryAutoLoginAsync(CancellationToken ct)
     {
         if (_isClosing) return;
@@ -188,13 +232,15 @@ public sealed partial class MainViewModel
         {
             if (LooksLikeUnauthorized(ex))
             {
+                // токен реально невалиден -> сбрасываем
                 _tokenStore.Clear();
                 ApplyLoggedOutUiState("Требуется вход.");
             }
             else
             {
-                ApplyLoggedOutUiState("Не удалось проверить вход (сеть/сайт).");
-                AppendLog("Автовход: не удалось проверить токен. Проверь интернет/доступность сайта.");
+                // ✅ сеть/сайт легли -> не разлогиниваем, токен НЕ удаляем
+                ApplyOfflineAuthenticatedUiState(saved, "Вход сохранён (нет связи с сайтом).");
+                AppendLog("Автовход: сайт/сеть недоступны — использую сохранённую авторизацию.");
             }
         }
         finally
@@ -381,6 +427,18 @@ public sealed partial class MainViewModel
 
             _tokens = null;
             _tokenStore.Clear();
+
+            // ✅ ТЗ: при полном выходе — ник удаляем из конфига
+            try
+            {
+                _config.Current.LastUsername = null;
+                ScheduleConfigSave();
+            }
+            catch { }
+
+            // ✅ сбрасываем UI-ник, НЕ через сеттер (иначе он снова сохранит в конфиг)
+            _username = "Player";
+            Raise(nameof(Username));
 
             Profile = null;
             Rezonite = 0;

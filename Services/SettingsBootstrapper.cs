@@ -11,10 +11,14 @@ namespace LegendBorn.Services;
 /// 1) Гарантировать наличие валидного конфига.
 /// 2) Держать версию схемы (ConfigSchemaVersion) отдельно от версии лаунчера.
 /// 3) Самовосстановление при битом JSON (backup + reset).
+///
+/// Важно: bootstrapper НЕ должен ломать пользовательские значения
+/// (например, RamMb/AUTO), а только обеспечивать существование и валидность.
 /// </summary>
 internal static class SettingsBootstrapper
 {
-    private const string ConfigSchemaVersion = "0.2.6";
+    // ✅ единый источник правды
+    private const string ConfigSchemaVersion = LauncherConfig.CurrentSchemaVersion;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -34,7 +38,7 @@ internal static class SettingsBootstrapper
             Directory.CreateDirectory(ConfigDir);
 
             var cfg = ReadOrCreateDefault();
-            EnsureSchemaVersion(cfg);
+            EnsureSchemaVersionAndNormalize(cfg);
             SaveSafe(cfg);
         }
         catch
@@ -46,7 +50,7 @@ internal static class SettingsBootstrapper
                 Directory.CreateDirectory(ConfigDir);
 
                 var cfg = CreateDefaultConfig();
-                EnsureSchemaVersion(cfg);
+                EnsureSchemaVersionAndNormalize(cfg);
                 SaveSafe(cfg);
             }
             catch
@@ -69,6 +73,8 @@ internal static class SettingsBootstrapper
         {
             var json = File.ReadAllText(ConfigPath);
             var cfg = JsonSerializer.Deserialize<LauncherConfig>(json, JsonOpts);
+
+            // если cfg null -> дефолт
             return cfg ?? CreateDefaultConfig();
         }
         catch
@@ -80,36 +86,41 @@ internal static class SettingsBootstrapper
         }
     }
 
-    private static void EnsureSchemaVersion(LauncherConfig cfg)
+    private static void EnsureSchemaVersionAndNormalize(LauncherConfig cfg)
     {
+        // ✅ версия схемы
         var current = (cfg.ConfigSchemaVersion ?? "").Trim();
         if (string.IsNullOrWhiteSpace(current))
             current = "0.0.0";
 
         // Миграции добавляются сюда:
-        // if (current == "0.2.5") { ... }
+        // if (current == "0.2.6") { ... }
 
         if (!string.Equals(current, ConfigSchemaVersion, StringComparison.OrdinalIgnoreCase))
             cfg.ConfigSchemaVersion = ConfigSchemaVersion;
 
-        // лёгкая нормализация (чтобы релиз был стабильнее)
-        if (cfg.RamMb < 1024) cfg.RamMb = 4096;
-        cfg.LastServerIp ??= "";
-        cfg.GameRootPath ??= "";
+        // ✅ главное: нормализация через единый метод
+        // (он уже содержит правила RAM 4..16 и т.п.)
+        try { cfg.Normalize(); } catch { }
     }
 
     private static LauncherConfig CreateDefaultConfig()
     {
+        // ✅ дефолт: AUTO RAM (0), а не принудительно 4096
+        // так пользователь потом сам выставит, но мы не «ломаем» конфиг
         return new LauncherConfig
         {
             ConfigSchemaVersion = ConfigSchemaVersion,
             LastServerId = null,
             AutoLogin = true,
-            GameRootPath = "",
-            RamMb = 4096,
+            GameRootPath = null,
+            RamMb = 0,          // AUTO
             JavaPath = null,
-            LastServerIp = "",
-            LastSuccessfulLoginUtc = null
+            LastServerIp = null,
+            LastSuccessfulLoginUtc = null,
+            LastLauncherStartUtc = null,
+            LastUpdateCheckUtc = null,
+            LastLauncherVersion = null
         };
     }
 
@@ -120,7 +131,14 @@ internal static class SettingsBootstrapper
             var tmp = ConfigPath + ".tmp";
             var json = JsonSerializer.Serialize(cfg, JsonOpts);
 
-            File.WriteAllText(tmp, json);
+            // ✅ надёжная запись tmp
+            using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (var sw = new StreamWriter(fs))
+            {
+                sw.Write(json);
+                sw.Flush();
+                fs.Flush(flushToDisk: true);
+            }
 
             if (File.Exists(ConfigPath))
             {

@@ -28,7 +28,10 @@ public sealed partial class MainViewModel
         {
             try
             {
-                if (IsLoggedIn) return "Вход выполнен.";
+                if (IsLoggedIn) return Profile is null
+                    ? "Вход сохранён (ожидаю сайт)..."
+                    : "Вход выполнен.";
+
                 if (IsWaitingSiteConfirm) return "Ожидаю подтверждение входа на сайте...";
                 return "Требуется вход.";
             }
@@ -338,33 +341,40 @@ public sealed partial class MainViewModel
 
     private static int ComputeMaxAllowedRamMb(long totalMb)
     {
+        // ✅ верхний предел всегда 16GB
+        const int hardCap = 16384;
+
         if (totalMb <= 0)
-            return 16384;
+            return hardCap;
 
-        // оставляем системе минимум 2GB, но не меньше 25% RAM (на слабых ПК)
+        // оставляем системе минимум 2GB, но не меньше 25% RAM
         var reserve = Math.Max(2048, (int)(totalMb * 0.25));
-        var max = (int)Math.Max(1024, totalMb - reserve);
+        var max = (int)Math.Max(0, totalMb - reserve);
 
-        // не даём улетать слишком высоко
-        max = Math.Min(max, RamMaxHardCapMb);
-        return Math.Max(max, RamMinMb);
+        // не выше хардкапа
+        max = Math.Min(max, hardCap);
+
+        // если система очень слабая — всё равно UI держим 4GB минимум (по ТЗ),
+        // но реальная "адекватность" будет зависеть от железа
+        return Math.Max(max, 4096);
     }
 
     private static int ComputeRecommendedRamMb(long totalMb, int maxAllowedMb)
     {
-        // простая, но рабочая шкала по типичным конфигам ПК
+        // ✅ рекомендация только в пределах 4..16
         int rec;
+
         if (totalMb <= 0) rec = 4096;
-        else if (totalMb <= 6144) rec = 2048;
-        else if (totalMb <= 10240) rec = 4096;
-        else if (totalMb <= 14336) rec = 6144;
-        else if (totalMb <= 20480) rec = 8192;
-        else if (totalMb <= 28672) rec = 12288;
+        else if (totalMb <= 8192) rec = 4096;
+        else if (totalMb <= 12288) rec = 6144;
+        else if (totalMb <= 16384) rec = 8192;
+        else if (totalMb <= 24576) rec = 12288;
         else rec = 16384;
 
-        rec = Math.Clamp(rec, RamMinMb, Math.Max(RamMinMb, maxAllowedMb));
+        rec = Math.Clamp(rec, 4096, Math.Max(4096, maxAllowedMb));
         rec = (rec / 256) * 256;
-        if (rec < RamMinMb) rec = RamMinMb;
+        if (rec < 4096) rec = 4096;
+        if (rec > 16384) rec = 16384;
         return rec;
     }
 }

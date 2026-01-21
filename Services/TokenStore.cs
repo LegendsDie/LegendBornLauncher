@@ -1,4 +1,3 @@
-// TokenStore.cs
 using System;
 using System.IO;
 using System.Security.Cryptography;
@@ -54,15 +53,20 @@ public sealed class TokenStore
                 }
                 catch
                 {
-                    // fallback: сохраняем как plaintext (лучше чем потерять токен полностью),
-                    // но в норме это почти не случается на Windows.
+                    // fallback plaintext (редко, но лучше чем потерять токен)
                     payload = data;
                 }
 
                 EnsureParentDir(_filePath);
 
                 var tmp = _filePath + ".tmp";
-                File.WriteAllBytes(tmp, payload);
+
+                // ✅ надёжнее записываем на диск (flush)
+                using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                {
+                    fs.Write(payload, 0, payload.Length);
+                    fs.Flush(flushToDisk: true);
+                }
 
                 ReplaceOrMoveAtomic(tmp, _filePath);
 
@@ -114,7 +118,6 @@ public sealed class TokenStore
             }
             catch
             {
-                // файл явно сломан -> делаем backup и удаляем
                 TryBackupBroken();
                 ClearInternal();
                 return null;

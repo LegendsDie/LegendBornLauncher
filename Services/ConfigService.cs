@@ -107,7 +107,14 @@ public sealed class ConfigService
             var tmp = ConfigPath + ".tmp";
             var json = JsonSerializer.Serialize(Current, JsonOptions);
 
-            File.WriteAllText(tmp, json, Utf8NoBom);
+            // ✅ надёжная запись + flush на диск
+            using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (var sw = new StreamWriter(fs, Utf8NoBom))
+            {
+                sw.Write(json);
+                sw.Flush();
+                fs.Flush(flushToDisk: true);
+            }
 
             ReplaceOrMoveAtomic(tmp, ConfigPath);
 

@@ -1,6 +1,5 @@
 ﻿using System;
 using System.IO;
-using System.Threading.Tasks;
 using System.Windows;
 using LegendBorn.Services;
 using Velopack;
@@ -67,6 +66,7 @@ public partial class App : Application
             Crash = new CrashReporter(LogService.Noop);
         }
 
+        // ✅ bootstrap before ConfigService, but WITHOUT forced overrides
         try
         {
             SettingsBootstrapper.Bootstrap();
@@ -81,7 +81,11 @@ public partial class App : Application
         {
             Config = new ConfigService(configPath);
             Config.LoadOrCreate();
-            try { Log.Info("ConfigService initialized."); } catch { }
+            try
+            {
+                Log.Info($"ConfigService initialized. Schema={Config.Current.ConfigSchemaVersion}, RamMb={Config.Current.RamMb}");
+            }
+            catch { }
         }
         catch (Exception ex)
         {
@@ -125,6 +129,17 @@ public partial class App : Application
         {
             var ver = LauncherIdentity.InformationalVersion;
             Log.Info($"Launcher started. Version: {ver}");
+        }
+        catch { }
+
+        // ✅ фиксируем старт
+        try
+        {
+            if (Config?.Current is not null)
+            {
+                Config.Current.LastLauncherStartUtc = DateTimeOffset.UtcNow;
+                Config.Save();
+            }
         }
         catch { }
     }

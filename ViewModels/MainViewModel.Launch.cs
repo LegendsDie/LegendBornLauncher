@@ -126,9 +126,10 @@ public sealed partial class MainViewModel
         {
             var username = (Username ?? "Player").Trim();
             if (string.IsNullOrWhiteSpace(username)) username = "Player";
+            username = MakeValidMcName(username);
 
             var ram = NormalizeRamMb(RamMb);
-            if (ram < 1024) ram = 1024;
+            if (ram < 4096) ram = 4096; // ✅ ТЗ: минимум 4GB
 
             IsBusy = true;
             StatusText = $"Подготовка {BuildDisplayName}...";

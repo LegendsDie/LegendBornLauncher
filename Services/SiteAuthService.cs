@@ -61,7 +61,6 @@ public sealed class SiteAuthService
     {
         await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
 
-        // читаем лимитированно, чтобы не принять огромный ответ
         var buffer = new byte[16 * 1024];
         var total = 0;
 
@@ -97,14 +96,13 @@ public sealed class SiteAuthService
         value = false;
         if (!root.TryGetProperty(name, out var p)) return false;
 
-        if (p.ValueKind == JsonValueKind.True)  { value = true;  return true; }
+        if (p.ValueKind == JsonValueKind.True) { value = true; return true; }
         if (p.ValueKind == JsonValueKind.False) { value = false; return true; }
         return false;
     }
 
     private static TimeSpan GetRetryDelay(HttpResponseMessage resp, int attemptIndex)
     {
-        // 1) Retry-After
         try
         {
             var ra = resp.Headers.RetryAfter;
@@ -122,7 +120,6 @@ public sealed class SiteAuthService
         }
         catch { }
 
-        // 2) fallback backoff
         var ms = 250 * Math.Max(1, attemptIndex);
         return TimeSpan.FromMilliseconds(Math.Min(ms, 1500));
     }
@@ -158,7 +155,7 @@ public sealed class SiteAuthService
 
                 if (IsRetryableStatus(resp.StatusCode))
                 {
-                    last = new HttpRequestException("Retryable status: " + (int)resp.StatusCode);
+                    last = new HttpRequestException("Retryable status: " + (int)resp.StatusCode, null, resp.StatusCode);
 
                     var delay = GetRetryDelay(resp, i);
                     resp.Dispose();
@@ -259,8 +256,9 @@ public sealed class SiteAuthService
             attempts: 3,
             perTryTimeout: TimeSpan.FromSeconds(25));
 
-        if (resp.StatusCode == HttpStatusCode.Unauthorized)
-            throw new UnauthorizedAccessException("Unauthorized (launcher token invalid/expired).");
+        // ✅ Важно: даём наверх HttpRequestException со StatusCode — так легче правильно ловить unauthorized
+        if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            throw new HttpRequestException("Unauthorized (launcher token invalid/expired).", null, resp.StatusCode);
 
         resp.EnsureSuccessStatusCode();
 
@@ -287,8 +285,8 @@ public sealed class SiteAuthService
             attempts: 3,
             perTryTimeout: TimeSpan.FromSeconds(25));
 
-        if (resp.StatusCode == HttpStatusCode.Unauthorized)
-            throw new UnauthorizedAccessException("Unauthorized (launcher token invalid/expired).");
+        if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            throw new HttpRequestException("Unauthorized (launcher token invalid/expired).", null, resp.StatusCode);
 
         resp.EnsureSuccessStatusCode();
 
@@ -332,8 +330,8 @@ public sealed class SiteAuthService
             attempts: 3,
             perTryTimeout: TimeSpan.FromSeconds(30));
 
-        if (resp.StatusCode == HttpStatusCode.Unauthorized)
-            throw new UnauthorizedAccessException("Unauthorized (launcher token invalid/expired).");
+        if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            throw new HttpRequestException("Unauthorized (launcher token invalid/expired).", null, resp.StatusCode);
 
         if (!resp.IsSuccessStatusCode)
             return null;

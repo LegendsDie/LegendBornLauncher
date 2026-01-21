@@ -20,8 +20,9 @@ public sealed partial class MainViewModel : ObservableObject
     private const int MenuMinIndex = 0;
     private const int MenuMaxIndex = 4; // 0..4 (включая News)
 
-    private const int RamMinMb = 1024;
-    private const int RamMaxHardCapMb = 65536;
+    // ✅ ТЗ: RAM 4..16 GB
+    private const int RamMinMb = 4096;
+    private const int RamMaxHardCapMb = 16384;
 
     private readonly ConfigService _config;
     private readonly LogService _log;
@@ -321,11 +322,14 @@ public sealed partial class MainViewModel : ObservableObject
         set
         {
             var v = string.IsNullOrWhiteSpace(value) ? "Player" : value.Trim();
+            v = MakeValidMcName(v);
+
             if (!Set(ref _username, v))
                 return;
 
             try
             {
+                // ✅ всегда считаем, что ввод/изменение Username = пользовательский выбор (сохраняем)
                 _config.Current.LastUsername = _username;
                 ScheduleConfigSave();
             }
@@ -452,6 +456,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     public bool CanStop => _runningProcess is { HasExited: false };
 
+    // ⚠️ Логику "CanPlay" не ослабляем без явного решения: нужно подтверждение профиля с сайта.
     public bool CanPlay =>
         !_isClosing &&
         !IsBusy &&
@@ -529,8 +534,9 @@ public sealed partial class MainViewModel : ObservableObject
             Raise(nameof(RamMb));
             Raise(nameof(RamMbText));
 
+            // ✅ Ник берём из конфига. Сайт его больше НЕ будет перетирать, если он уже есть.
             var u = (_config.Current.LastUsername ?? "Player").Trim();
-            _username = string.IsNullOrWhiteSpace(u) ? "Player" : u;
+            _username = string.IsNullOrWhiteSpace(u) ? "Player" : MakeValidMcName(u);
             Raise(nameof(Username));
 
             var menu = _config.Current.LastMenuIndex;
@@ -567,7 +573,9 @@ public sealed partial class MainViewModel : ObservableObject
         RamOptions.Clear();
 
         var hardMax = Math.Clamp(maxAllowedMb, RamMinMb, RamMaxHardCapMb);
-        var steps = new[] { 1024, 2048, 3072, 4096, 6144, 8192, 10240, 12288, 16384, 20480, 24576, 32768, 49152, 65536 };
+
+        // ✅ только диапазон 4..16 (с разумными шагами)
+        var steps = new[] { 4096, 6144, 8192, 10240, 12288, 16384 };
 
         foreach (var s in steps)
         {
@@ -599,11 +607,11 @@ public sealed partial class MainViewModel : ObservableObject
         max = Math.Clamp(max, RamMinMb, RamMaxHardCapMb);
 
         if (requestedMb <= 0)
-            requestedMb = _recommendedRamMb > 0 ? _recommendedRamMb : 4096;
+            requestedMb = _recommendedRamMb > 0 ? _recommendedRamMb : RamMinMb;
 
         requestedMb = Math.Clamp(requestedMb, RamMinMb, max);
 
-        // округление до 256МБ, чтобы были аккуратные значения
+        // округление до 256МБ
         requestedMb = (requestedMb / 256) * 256;
         if (requestedMb < RamMinMb) requestedMb = RamMinMb;
 
