@@ -1,10 +1,12 @@
 // LoaderInstaller.cs
 using CmlLib.Core;
+using LegendBorn.Services;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -15,24 +17,30 @@ using System.Threading.Tasks;
 
 namespace LegendBorn.Launching;
 
-/// <summary>
-/// Установщик NeoForge (installer.jar) в кастомный gameDir.
-/// MinecraftService ставит базовую ваниль через CmlLib, а здесь — только запуск "java -jar neoforge-installer.jar ...".
-/// ВАЖНО: в РФ maven.neoforged.net часто недоступен, поэтому:
-/// 1) скачиваем installer через зеркало (legendborn.ru/maven) и/или SourceForge fallback;
-/// 2) после установки патчим versions/<id>/<id>.json, заменяя ссылки Maven на наше зеркало (legendborn.ru/maven/).
-/// </summary>
 public sealed class LoaderInstaller
 {
     // =========================
     // Maven / Mirrors
     // =========================
 
+    // держим с /
     public const string OfficialNeoForgedMavenBase = "https://maven.neoforged.net/";
+
+    // ✅ Primary: CloudBucket (если поднят maven-прокси/зеркало на pack.legendborn.ru)
+    // ⚠️ Если пока не развёрнуто — оставь пустым, и оно не попадёт в список.
+    public const string CloudBucketNeoForgeMavenBaseUrl = "https://pack.legendborn.ru/maven/";
+
+    // ✅ Selectel (если будет) — укажи базу с /
+    public const string SelectelNeoForgeMavenBaseUrl = ""; // TODO: set when ready
+
+    // ⚠️ Legacy/временное (если нужно как запасной вариант)
+    public const string LegacyNeoForgeMavenBaseUrl = "https://legendborn.ru/maven/";
 
     public static readonly string[] DefaultNeoForgeMavenMirrors =
     {
-        "https://legendborn.ru/maven/",
+        CloudBucketNeoForgeMavenBaseUrl,
+        SelectelNeoForgeMavenBaseUrl,
+        LegacyNeoForgeMavenBaseUrl
     };
 
     // =========================
@@ -41,12 +49,12 @@ public sealed class LoaderInstaller
 
     public const string SourceForgeProjectSlug = "legendborn-neoforge";
 
-    // Рабочий вариант (у тебя): latest/download
+    // Рабочий вариант: latest/download
     private static string SourceForgeLatestDownloadUrl =>
         $"https://sourceforge.net/projects/{SourceForgeProjectSlug}/files/latest/download";
 
     // Direct CDN (часто стабильнее редиректов SourceForge)
-    // ВАЖНО: у тебя файл лежит в /neoforge/ (без подпапки версии)
+    // ВАЖНО: файл лежит в /neoforge/ (без подпапки версии)
     private static string SourceForgeDirectCdnUrl(string loaderVersion) =>
         $"https://downloads.sourceforge.net/project/{SourceForgeProjectSlug}/neoforge/neoforge-{loaderVersion}-installer.jar";
 
@@ -65,13 +73,16 @@ public sealed class LoaderInstaller
     // общий таймаут на установку (installer может тянуть зависимости долго)
     private static readonly TimeSpan InstallOverallTimeout = TimeSpan.FromMinutes(25);
 
-    // если installer не пишет в stdout/stderr слишком долго — считаем зависанием
-    private static readonly TimeSpan InstallStallTimeout = TimeSpan.FromMinutes(2);
+    // stall: NeoForge installer может долго молчать при скачивании libs, поэтому делаем больше
+    private static readonly TimeSpan InstallStallTimeout = TimeSpan.FromMinutes(6);
 
     // как часто писать "installer всё ещё работает..."
     private static readonly TimeSpan InstallerHeartbeatEvery = TimeSpan.FromSeconds(20);
 
     private static readonly TimeSpan MirrorProbeTimeout = TimeSpan.FromSeconds(2);
+
+    // ретраи загрузки jar на transient-ошибках
+    private const int DownloadRetryCount = 2;
 
     // =========================
     // Fields
@@ -83,6 +94,11 @@ public sealed class LoaderInstaller
 
     private readonly string[] _neoForgeMavenMirrors;
     private readonly bool _rewriteNeoForgeUrlsToMirror;
+
+    private static string LauncherUa =>
+        !string.IsNullOrWhiteSpace(LauncherIdentity.UserAgent)
+            ? LauncherIdentity.UserAgent
+            : $"LegendBornLauncher/{LauncherIdentity.InformationalVersion}";
 
     public LoaderInstaller(MinecraftPath path, HttpClient http, Action<string>? log = null)
         : this(path, http, neoForgeMavenMirrors: null, rewriteNeoForgeUrlsToMirror: true, log: log)
@@ -132,7 +148,7 @@ public sealed class LoaderInstaller
             return minecraftVersion;
 
         if (loaderType != "neoforge")
-            throw new NotSupportedException($"Loader '{loaderType}' не поддерживается. В 0.2.2 поддерживается только NeoForge.");
+            throw new NotSupportedException($"Loader '{loaderType}' не поддерживается. Поддерживается только NeoForge.");
 
         if (string.IsNullOrWhiteSpace(loaderVersion))
             throw new InvalidOperationException("NeoForge требует версию (loader.version).");
@@ -223,7 +239,8 @@ public sealed class LoaderInstaller
         if (!string.IsNullOrWhiteSpace(primaryInstallerUrl))
             tries.Add(primaryInstallerUrl.Trim());
 
-        // 2) legendborn mirror: если ссылка указывает на официальный домен — подменяем на mirror base
+        // 2) зеркала Maven: если ссылка указывает на официальный домен — подменяем на зеркала
+        //    (порядок зеркал важен: CloudBucket -> Selectel -> Legacy)
         foreach (var mirrorBase in _neoForgeMavenMirrors)
         {
             var mirrorUrl1 = RewriteUrlPrefix(primaryInstallerUrl, OfficialNeoForgedMavenBase, mirrorBase);
@@ -233,10 +250,26 @@ public sealed class LoaderInstaller
             var mirrorUrl2 = RewriteUrlPrefix(officialInstallerUrl, OfficialNeoForgedMavenBase, mirrorBase);
             if (!string.IsNullOrWhiteSpace(mirrorUrl2))
                 tries.Add(mirrorUrl2);
+
+            // на всякий: если кто-то без / в базе
+            var mirrorUrl3 = RewriteUrlPrefix(primaryInstallerUrl, "https://maven.neoforged.net", mirrorBase.TrimEnd('/'));
+            if (!string.IsNullOrWhiteSpace(mirrorUrl3))
+                tries.Add(mirrorUrl3);
+
+            var mirrorUrl4 = RewriteUrlPrefix(officialInstallerUrl, "https://maven.neoforged.net", mirrorBase.TrimEnd('/'));
+            if (!string.IsNullOrWhiteSpace(mirrorUrl4))
+                tries.Add(mirrorUrl4);
+
+            var mirrorUrl5 = RewriteUrlPrefix(primaryInstallerUrl, "http://maven.neoforged.net/", mirrorBase);
+            if (!string.IsNullOrWhiteSpace(mirrorUrl5))
+                tries.Add(mirrorUrl5);
+
+            var mirrorUrl6 = RewriteUrlPrefix(officialInstallerUrl, "http://maven.neoforged.net/", mirrorBase);
+            if (!string.IsNullOrWhiteSpace(mirrorUrl6))
+                tries.Add(mirrorUrl6);
         }
 
         // 3) SourceForge fallback (installer.jar only)
-        // ВАЖНО: у тебя работает latest/download — добавляем его обязательно
         tries.Add(SourceForgeDirectCdnUrl(loaderVersion));
         tries.Add(SourceForgeWebFileDownloadUrl(loaderVersion));
         tries.Add(SourceForgeLatestDownloadUrl);
@@ -272,52 +305,27 @@ public sealed class LoaderInstaller
                 var cacheDir = Path.Combine(baseDir, "launcher", "installers", "neoforge", minecraftVersion, loaderVersion);
                 Directory.CreateDirectory(cacheDir);
 
-                // SourceForge latest/download даёт "download" в конце — имя файла надо нормализовать
-                var fileName = Path.GetFileName(uri.AbsolutePath);
-                if (string.IsNullOrWhiteSpace(fileName) ||
-                    fileName.Equals("download", StringComparison.OrdinalIgnoreCase) ||
-                    fileName.Equals("latest", StringComparison.OrdinalIgnoreCase))
-                {
-                    fileName = $"neoforge-{loaderVersion}-installer.jar";
-                }
-
+                var fileName = MakeInstallerFileName(uri, loaderVersion);
                 var local = Path.Combine(cacheDir, fileName);
 
-                if (File.Exists(local) && new FileInfo(local).Length > 0 && LooksLikeJar(local))
-                    return local;
+                if (File.Exists(local))
+                {
+                    try
+                    {
+                        var fi = new FileInfo(local);
+                        if (fi.Length > 0 && fi.Length <= MaxInstallerBytes && LooksLikeJar(local))
+                            return local;
+                    }
+                    catch { }
+                }
 
+                // скачиваем в tmp и атомарно меняем
                 var tmp = local + ".tmp";
                 TryDeleteQuiet(tmp);
 
                 _log?.Invoke($"NeoForge: скачиваю installer: {urlTry}");
 
-                using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                reqCts.CancelAfter(DownloadTimeout);
-
-                using var req = new HttpRequestMessage(HttpMethod.Get, uri);
-                req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/java-archive"));
-                req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/octet-stream"));
-                req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
-                req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
-
-                // SourceForge часто стабильнее с User-Agent
-                req.Headers.UserAgent.ParseAdd("LegendBornLauncher/0.2.2 (+https://legendborn.ru)");
-
-                using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token)
-                    .ConfigureAwait(false);
-
-                resp.EnsureSuccessStatusCode();
-
-                var len = resp.Content.Headers.ContentLength;
-                if (len.HasValue && len.Value > MaxInstallerBytes)
-                    throw new InvalidOperationException($"Installer слишком большой ({len.Value} bytes).");
-
-                await using (var input = await resp.Content.ReadAsStreamAsync(reqCts.Token).ConfigureAwait(false))
-                await using (var output = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 81920, FileOptions.SequentialScan))
-                {
-                    await CopyWithLimitAsync(input, output, MaxInstallerBytes, reqCts.Token).ConfigureAwait(false);
-                    await output.FlushAsync(reqCts.Token).ConfigureAwait(false);
-                }
+                await DownloadJarWithRetriesAsync(uri, tmp, ct).ConfigureAwait(false);
 
                 if (!LooksLikeJar(tmp))
                     throw new InvalidOperationException("Скачанный файл не похож на JAR (нет сигнатуры ZIP 'PK').");
@@ -342,9 +350,127 @@ public sealed class LoaderInstaller
         throw new InvalidOperationException("Не удалось скачать NeoForge installer ни по одному URL.", last);
     }
 
+    private string MakeInstallerFileName(Uri uri, string loaderVersion)
+    {
+        // SourceForge latest/download даёт "download" в конце — имя файла надо нормализовать
+        var fileName = Path.GetFileName(uri.AbsolutePath);
+
+        if (string.IsNullOrWhiteSpace(fileName) ||
+            fileName.Equals("download", StringComparison.OrdinalIgnoreCase) ||
+            fileName.Equals("latest", StringComparison.OrdinalIgnoreCase))
+        {
+            fileName = $"neoforge-{loaderVersion}-installer.jar";
+        }
+
+        // безопасность на Windows
+        foreach (var c in Path.GetInvalidFileNameChars())
+            fileName = fileName.Replace(c, '_');
+
+        if (!fileName.EndsWith(".jar", StringComparison.OrdinalIgnoreCase))
+            fileName += ".jar";
+
+        return fileName;
+    }
+
+    private async Task DownloadJarWithRetriesAsync(Uri uri, string tmpPath, CancellationToken ct)
+    {
+        Exception? last = null;
+
+        for (int attempt = 0; attempt <= DownloadRetryCount; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                reqCts.CancelAfter(DownloadTimeout);
+
+                using var req = new HttpRequestMessage(HttpMethod.Get, uri);
+                req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/java-archive"));
+                req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/octet-stream"));
+                req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
+                req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
+
+                // SourceForge/некоторые CDN стабильнее с явным UA
+                TrySetUa(req);
+
+                using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token)
+                    .ConfigureAwait(false);
+
+                if (!resp.IsSuccessStatusCode)
+                {
+                    var code = (int)resp.StatusCode;
+                    var msg = $"HTTP {code} {resp.ReasonPhrase}";
+                    if (IsTransient(resp.StatusCode) && attempt < DownloadRetryCount)
+                        throw new HttpRequestException(msg, null, resp.StatusCode);
+
+                    resp.EnsureSuccessStatusCode();
+                }
+
+                var media = resp.Content.Headers.ContentType?.MediaType ?? "";
+                if (media.Contains("text/html", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Сервер вернул HTML вместо JAR (возможна блокировка/страница ошибки).");
+
+                var len = resp.Content.Headers.ContentLength;
+                if (len.HasValue && len.Value > MaxInstallerBytes)
+                    throw new InvalidOperationException($"Installer слишком большой ({len.Value} bytes).");
+
+                await using (var input = await resp.Content.ReadAsStreamAsync(reqCts.Token).ConfigureAwait(false))
+                await using (var output = new FileStream(
+                    tmpPath,
+                    FileMode.Create,
+                    FileAccess.Write,
+                    FileShare.None,
+                    bufferSize: 128 * 1024,
+                    options: FileOptions.Asynchronous | FileOptions.SequentialScan))
+                {
+                    await CopyWithLimitAsync(input, output, MaxInstallerBytes, reqCts.Token).ConfigureAwait(false);
+                    await output.FlushAsync(reqCts.Token).ConfigureAwait(false);
+                }
+
+                // дополнительный детект HTML “по содержимому”, если content-type не выставили
+                if (LooksLikeHtml(tmpPath))
+                    throw new InvalidOperationException("Скачанный файл похож на HTML (страница ошибки/капча), а не на JAR.");
+
+                return;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                last = new TimeoutException("Таймаут скачивания installer.jar.");
+            }
+            catch (HttpRequestException ex) when (attempt < DownloadRetryCount)
+            {
+                last = ex;
+                var delay = TimeSpan.FromMilliseconds(400 + attempt * 700);
+                _log?.Invoke($"NeoForge: transient-ошибка загрузки, повтор через {delay.TotalMilliseconds:0}ms...");
+                await Task.Delay(delay, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (attempt < DownloadRetryCount)
+            {
+                last = ex;
+                var delay = TimeSpan.FromMilliseconds(400 + attempt * 700);
+                _log?.Invoke($"NeoForge: ошибка загрузки, повтор через {delay.TotalMilliseconds:0}ms...");
+                await Task.Delay(delay, ct).ConfigureAwait(false);
+            }
+        }
+
+        throw new InvalidOperationException("Не удалось скачать installer.jar после повторных попыток.", last);
+    }
+
+    private static bool IsTransient(HttpStatusCode code)
+    {
+        var c = (int)code;
+        return code == (HttpStatusCode)429 ||
+               code == HttpStatusCode.RequestTimeout ||
+               code == HttpStatusCode.BadGateway ||
+               code == HttpStatusCode.ServiceUnavailable ||
+               code == HttpStatusCode.GatewayTimeout ||
+               (c >= 500 && c <= 599);
+    }
+
     private static async Task CopyWithLimitAsync(Stream input, Stream output, long maxBytes, CancellationToken ct)
     {
-        var buffer = new byte[81920];
+        var buffer = new byte[128 * 1024];
         long total = 0;
 
         while (true)
@@ -380,6 +506,31 @@ public sealed class LoaderInstaller
         }
     }
 
+    private static bool LooksLikeHtml(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return false;
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            var len = (int)Math.Min(4096, fs.Length);
+            if (len <= 0) return false;
+
+            var buf = new byte[len];
+            _ = fs.Read(buf, 0, len);
+
+            var head = Encoding.UTF8.GetString(buf);
+            head = head.TrimStart();
+
+            return head.StartsWith("<!doctype html", StringComparison.OrdinalIgnoreCase) ||
+                   head.StartsWith("<html", StringComparison.OrdinalIgnoreCase) ||
+                   head.Contains("<title>", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     // =========================
     // Install NeoForge
     // =========================
@@ -400,16 +551,18 @@ public sealed class LoaderInstaller
         var javaExe = FindJavaExecutable();
         var before = SnapshotVersionIds(baseDir);
 
-        // installDir может не поддерживаться (ты это видишь в логах). Пробуем, затем fallback.
+        // installDir может не поддерживаться. Пробуем разные варианты аргументов.
         var argTries = new List<string[]>
         {
             new[] { "-jar", installerPath, "--installClient", "--installDir", baseDir },
             new[] { "-jar", installerPath, "--installClient", "--install-dir", baseDir },
+            new[] { "-jar", installerPath, "--install-client", "--installDir", baseDir },
+            new[] { "-jar", installerPath, "--install-client", "--install-dir", baseDir },
         };
 
         foreach (var args in argTries)
         {
-            _log?.Invoke($"NeoForge: запускаю installer (installDir): java {string.Join(" ", args)}");
+            _log?.Invoke($"NeoForge: запускаю installer (installDir): {javaExe} {string.Join(" ", args)}");
 
             var res = await RunJavaStreamingAsync(
                 javaExe: javaExe,
@@ -432,7 +585,6 @@ public sealed class LoaderInstaller
                 if (!string.IsNullOrWhiteSpace(picked))
                     return picked;
 
-                // даже если не нашли — попробуем поиск по папкам
                 return FindNeoForgeVersionIdInBase(baseDir, loaderVersion);
             }
 
@@ -499,12 +651,7 @@ public sealed class LoaderInstaller
         }
         finally
         {
-            try
-            {
-                if (Directory.Exists(tempAppData))
-                    Directory.Delete(tempAppData, recursive: true);
-            }
-            catch { }
+            TryDeleteDirQuiet(tempAppData);
         }
     }
 
@@ -563,7 +710,8 @@ public sealed class LoaderInstaller
 
         return s.Contains("UnrecognizedOptionException", StringComparison.OrdinalIgnoreCase) ||
                s.Contains("is not a recognized option", StringComparison.OrdinalIgnoreCase) ||
-               s.Contains("Unknown option", StringComparison.OrdinalIgnoreCase);
+               s.Contains("Unknown option", StringComparison.OrdinalIgnoreCase) ||
+               s.Contains("Unknown argument", StringComparison.OrdinalIgnoreCase);
     }
 
     private string FindJavaExecutable()
@@ -574,12 +722,14 @@ public sealed class LoaderInstaller
         var runtimeDir = Path.Combine(baseDir, "runtime");
         if (Directory.Exists(runtimeDir))
         {
+            // Windows
             var javaExe = Directory.EnumerateFiles(runtimeDir, "java.exe", SearchOption.AllDirectories).FirstOrDefault();
             if (!string.IsNullOrWhiteSpace(javaExe)) return javaExe!;
 
             var javaw = Directory.EnumerateFiles(runtimeDir, "javaw.exe", SearchOption.AllDirectories).FirstOrDefault();
             if (!string.IsNullOrWhiteSpace(javaw)) return javaw!;
 
+            // Linux/macOS
             var java = Directory.EnumerateFiles(runtimeDir, "java", SearchOption.AllDirectories).FirstOrDefault();
             if (!string.IsNullOrWhiteSpace(java)) return java!;
         }
@@ -743,6 +893,7 @@ public sealed class LoaderInstaller
         p.BeginErrorReadLine();
 
         using var heartbeatCts = new CancellationTokenSource();
+
         var heartbeatTask = Task.Run(async () =>
         {
             try
@@ -757,12 +908,6 @@ public sealed class LoaderInstaller
                     // Heartbeat (чтобы UI не выглядел "замершим")
                     if (silentFor >= InstallerHeartbeatEvery)
                         _log?.Invoke("NeoForge: installer всё ещё работает...");
-
-                    // Stall timeout (реально завис/упёрся в блокировки/антивирус/сеть)
-                    if (silentFor >= stallTimeout)
-                    {
-                        try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
-                    }
                 }
             }
             catch { /* ignore */ }
@@ -775,12 +920,17 @@ public sealed class LoaderInstaller
                 overallCts.Token.ThrowIfCancellationRequested();
 
                 var silentFor = DateTime.UtcNow - lastOutputUtc;
+
+                // stall-timeout: мягко считаем зависанием только при очень долгом молчании
                 if (silentFor >= stallTimeout)
                 {
+                    try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
+
+                    var mirrorHint = _neoForgeMavenMirrors.FirstOrDefault() ?? "(зеркало не задано)";
                     throw new TimeoutException(
                         "NeoForge installer: нет вывода слишком долго (stall-timeout). " +
-                        "Частая причина: блокируется загрузка зависимостей. " +
-                        "Проверь доступ к legendborn.ru/maven/ у пользователя.");
+                        "Частая причина: блокируется загрузка зависимостей/антивирус/сеть. " +
+                        $"Проверь доступ к Maven-зеркалу: {mirrorHint}");
                 }
 
                 await Task.Delay(250, overallCts.Token).ConfigureAwait(false);
@@ -826,12 +976,24 @@ public sealed class LoaderInstaller
         if (!File.Exists(jsonPath))
             return;
 
-        var mirror = await PickFirstReachableMirrorAsync(_neoForgeMavenMirrors, ct).ConfigureAwait(false);
+        // Переписываем на первое зеркало (приоритет зеркал задаётся выше).
+        var mirror = _neoForgeMavenMirrors.FirstOrDefault();
+        mirror = NormalizeAbsoluteBaseUrl(mirror);
+
         if (string.IsNullOrWhiteSpace(mirror))
         {
-            _log?.Invoke("NeoForge: зеркало Maven не доступно/не задано — оставляю ссылки как есть.");
+            _log?.Invoke("NeoForge: зеркало Maven не задано — оставляю ссылки как есть.");
             return;
         }
+
+        // быстрый probe — чисто для лога (не блокируем патч)
+        try
+        {
+            var ok = await IsUrlReachableAsync(mirror, ct).ConfigureAwait(false);
+            if (!ok)
+                _log?.Invoke($"NeoForge: зеркало Maven сейчас не отвечает ({mirror}), но всё равно переписываю URLs (важно для стабильности).");
+        }
+        catch { }
 
         try
         {
@@ -839,8 +1001,8 @@ public sealed class LoaderInstaller
             if (string.IsNullOrWhiteSpace(text))
                 return;
 
-            if (!text.Contains(OfficialNeoForgedMavenBase, StringComparison.OrdinalIgnoreCase) &&
-                !text.Contains("maven.neoforged.net", StringComparison.OrdinalIgnoreCase))
+            // если нет упоминаний домена — не трогаем
+            if (!text.Contains("maven.neoforged.net", StringComparison.OrdinalIgnoreCase))
                 return;
 
             var node = JsonNode.Parse(text);
@@ -849,17 +1011,17 @@ public sealed class LoaderInstaller
 
             var replaced = ReplaceStringsRecursive(node, s =>
             {
-                var r = RewriteUrlPrefix(s, OfficialNeoForgedMavenBase, mirror);
-                if (!string.IsNullOrWhiteSpace(r))
-                    return r;
+                var r = RewriteUrlPrefix(s, "https://maven.neoforged.net/releases/", mirror);
+                if (!string.IsNullOrWhiteSpace(r)) return r;
+
+                r = RewriteUrlPrefix(s, OfficialNeoForgedMavenBase, mirror);
+                if (!string.IsNullOrWhiteSpace(r)) return r;
 
                 r = RewriteUrlPrefix(s, "https://maven.neoforged.net", mirror.TrimEnd('/'));
-                if (!string.IsNullOrWhiteSpace(r))
-                    return r;
+                if (!string.IsNullOrWhiteSpace(r)) return r;
 
                 r = RewriteUrlPrefix(s, "http://maven.neoforged.net/", mirror);
-                if (!string.IsNullOrWhiteSpace(r))
-                    return r;
+                if (!string.IsNullOrWhiteSpace(r)) return r;
 
                 return s;
             });
@@ -892,26 +1054,6 @@ public sealed class LoaderInstaller
         }
     }
 
-    private async Task<string?> PickFirstReachableMirrorAsync(string[] mirrors, CancellationToken ct)
-    {
-        if (mirrors is null || mirrors.Length == 0)
-            return null;
-
-        foreach (var m in mirrors)
-        {
-            ct.ThrowIfCancellationRequested();
-
-            var url = NormalizeAbsoluteBaseUrl(m);
-            if (string.IsNullOrWhiteSpace(url))
-                continue;
-
-            if (await IsUrlReachableAsync(url, ct).ConfigureAwait(false))
-                return url;
-        }
-
-        return null;
-    }
-
     private async Task<bool> IsUrlReachableAsync(string url, CancellationToken ct)
     {
         if (await ProbeAsync(HttpMethod.Head, url, ct).ConfigureAwait(false))
@@ -930,7 +1072,7 @@ public sealed class LoaderInstaller
             using var req = new HttpRequestMessage(method, url);
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
             req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
-            req.Headers.UserAgent.ParseAdd("LegendBornLauncher/0.2.2 (+https://legendborn.ru)");
+            TrySetUa(req);
 
             using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token)
                 .ConfigureAwait(false);
@@ -1011,6 +1153,19 @@ public sealed class LoaderInstaller
     // Utilities
     // =========================
 
+    private static void TrySetUa(HttpRequestMessage req)
+    {
+        try
+        {
+            req.Headers.UserAgent.Clear();
+            req.Headers.UserAgent.ParseAdd(LauncherUa);
+        }
+        catch
+        {
+            // ignore
+        }
+    }
+
     private static string? RewriteUrlPrefix(string input, string fromPrefix, string toPrefix)
     {
         input = (input ?? "").Trim();
@@ -1046,13 +1201,16 @@ public sealed class LoaderInstaller
             !uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
             return "";
 
-        return uri.ToString();
+        // вычищаем query/fragment чтобы не было дублей кеша
+        var b = new UriBuilder(uri) { Query = "", Fragment = "" };
+        return b.Uri.ToString();
     }
 
     private static string NormalizeAbsoluteBaseUrl(string? url)
     {
         url = NormalizeAbsoluteUrl(url);
         if (string.IsNullOrWhiteSpace(url)) return "";
+
         if (!url.EndsWith("/")) url += "/";
         return url;
     }
@@ -1105,5 +1263,28 @@ public sealed class LoaderInstaller
     private static void TryDeleteQuiet(string path)
     {
         try { if (File.Exists(path)) File.Delete(path); } catch { }
+    }
+
+    private static void TryDeleteDirQuiet(string dir)
+    {
+        try
+        {
+            if (!Directory.Exists(dir)) return;
+
+            // иногда под виндой файлы “держатся”, попробуем пару раз
+            for (int i = 0; i < 3; i++)
+            {
+                try
+                {
+                    Directory.Delete(dir, recursive: true);
+                    return;
+                }
+                catch
+                {
+                    Thread.Sleep(150);
+                }
+            }
+        }
+        catch { }
     }
 }

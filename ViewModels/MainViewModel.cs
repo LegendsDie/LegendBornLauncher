@@ -1,3 +1,4 @@
+// File: ViewModels/MainViewModel.cs
 using System;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -5,16 +6,22 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using LegendBorn.Mvvm;
-using LegendBorn.Models;
-using LegendBorn.Services;
 using LegendBorn.Launching;
+using LegendBorn.Models;
+using LegendBorn.Mvvm;
+using LegendBorn.Services;
 
 namespace LegendBorn.ViewModels;
 
 public sealed partial class MainViewModel : ObservableObject
 {
-    internal const string SiteBaseUrl = "https://legendborn.ru";
+    // API-база (логин/профиль/ивенты). Оставляем ru, чтобы не сломать существующие эндпоинты.
+    internal const string SiteBaseUrl = "https://ru.legendborn.ru";
+
+    // Публичный сайт (для ссылок/картинок).
+    internal const string SitePublicUrlPrimary = "https://legendborn.ru";
+    internal const string SitePublicUrlFallback = "https://ru.legendborn.ru";
+
     private const string DefaultServerIp = "legendcraft.minerent.io";
 
     private const int MenuMinIndex = 0;
@@ -52,9 +59,15 @@ public sealed partial class MainViewModel : ObservableObject
         if (_isClosing) return;
 
         var v = Interlocked.Increment(ref _configSaveVersion);
+
         _ = Task.Run(async () =>
         {
-            try { await Task.Delay(300).ConfigureAwait(false); } catch { }
+            try
+            {
+                await Task.Delay(300, _lifetimeCts.Token).ConfigureAwait(false);
+            }
+            catch { /* ignore */ }
+
             if (_isClosing) return;
             if (v != _configSaveVersion) return;
 
@@ -68,22 +81,31 @@ public sealed partial class MainViewModel : ObservableObject
 
         try
         {
-            await _configSaveLock.WaitAsync().ConfigureAwait(false);
+            await _configSaveLock.WaitAsync(_lifetimeCts.Token).ConfigureAwait(false);
+        }
+        catch
+        {
+            return;
+        }
+
+        try
+        {
             if (_isClosing) return;
+
+            try { _config.Current.Normalize(); } catch { /* ignore */ }
 
             try
             {
-                try { _config.Current.Normalize(); } catch { }
                 _config.Save();
             }
             catch (Exception ex)
             {
-                try { _log.Error("Config save failed", ex); } catch { }
+                try { _log.Error("Config save failed", ex); } catch { /* ignore */ }
             }
         }
         finally
         {
-            try { _configSaveLock.Release(); } catch { }
+            try { _configSaveLock.Release(); } catch { /* ignore */ }
         }
     }
 
@@ -108,7 +130,7 @@ public sealed partial class MainViewModel : ObservableObject
                 _config.Current.LastMenuIndex = _selectedMenuIndex;
                 ScheduleConfigSave();
             }
-            catch { }
+            catch { /* ignore */ }
 
             Raise(nameof(IsAuthPage));
             Raise(nameof(IsStartPage));
@@ -227,7 +249,7 @@ public sealed partial class MainViewModel : ObservableObject
                 _config.Current.RamMb = _ramMb;
                 ScheduleConfigSave();
             }
-            catch { }
+            catch { /* ignore */ }
 
             RefreshCanStates();
         }
@@ -287,10 +309,12 @@ public sealed partial class MainViewModel : ObservableObject
             if (url.StartsWith("//", StringComparison.Ordinal))
                 return "https:" + url;
 
-            if (url.StartsWith("/", StringComparison.Ordinal))
-                return SiteBaseUrl + url;
+            var primary = string.IsNullOrWhiteSpace(SitePublicUrlPrimary) ? SitePublicUrlFallback : SitePublicUrlPrimary;
 
-            return SiteBaseUrl + "/" + url;
+            if (url.StartsWith("/", StringComparison.Ordinal))
+                return primary + url;
+
+            return primary + "/" + url;
         }
     }
 
@@ -321,9 +345,6 @@ public sealed partial class MainViewModel : ObservableObject
     /// ✅ Важно: защита от перетирания ника сайтом.
     /// Если конфиг уже содержит нормальный ник (не "Player"),
     /// то попытки выставить ник, совпадающий с профилем сайта, игнорируются.
-    /// Это позволяет:
-    /// - с сайта взять ник только при первой авторизации (когда в конфиге пусто/Player)
-    /// - потом ник остаётся пользовательским (из конфига), пока пользователь сам не поменяет
     /// </summary>
     public string Username
     {
@@ -333,12 +354,10 @@ public sealed partial class MainViewModel : ObservableObject
             var raw = string.IsNullOrWhiteSpace(value) ? "Player" : value.Trim();
             var v = MakeValidMcName(raw);
 
-            // вычисляем "предложение сайта" (если мы залогинены и профиль загружен)
             var siteSuggested = GetSiteSuggestedMcName();
 
-            // сохранённое значение из конфига (то, что мы считаем источником истины)
             string savedCfg = "";
-            try { savedCfg = (_config.Current.LastUsername ?? "").Trim(); } catch { }
+            try { savedCfg = (_config.Current.LastUsername ?? "").Trim(); } catch { /* ignore */ }
 
             var savedCfgValid = string.IsNullOrWhiteSpace(savedCfg) ? "" : MakeValidMcName(savedCfg);
 
@@ -350,15 +369,11 @@ public sealed partial class MainViewModel : ObservableObject
                 !string.IsNullOrWhiteSpace(siteSuggested) &&
                 v.Equals(siteSuggested, StringComparison.OrdinalIgnoreCase);
 
-            // ✅ Если сайт пытается установить ник, но в конфиге уже есть пользовательский ник —
-            // не перетираем. Оставляем конфиг как главный источник.
             if (isSitePush && hasUserNickInConfig && !savedCfgValid.Equals(siteSuggested, StringComparison.OrdinalIgnoreCase))
             {
-                // если текущий уже равен конфигу — ничего не делаем
                 if (_username.Equals(savedCfgValid, StringComparison.OrdinalIgnoreCase))
                     return;
 
-                // иначе мягко возвращаем ник из конфига
                 if (!Set(ref _username, savedCfgValid))
                     return;
 
@@ -372,11 +387,10 @@ public sealed partial class MainViewModel : ObservableObject
 
             try
             {
-                // ✅ любые изменения в UI считаем пользовательскими и сохраняем
                 _config.Current.LastUsername = _username;
                 ScheduleConfigSave();
             }
-            catch { }
+            catch { /* ignore */ }
 
             Raise(nameof(UserInitial));
             RefreshCanStates();
@@ -390,7 +404,6 @@ public sealed partial class MainViewModel : ObservableObject
             if (!IsLoggedIn || Profile is null)
                 return null;
 
-            // логика как на сайте: если MinecraftName пустой — берём display name
             var candidate =
                 !string.IsNullOrWhiteSpace(Profile.MinecraftName) ? Profile.MinecraftName :
                 !string.IsNullOrWhiteSpace(SiteUserName) && SiteUserName != "Не вошли" ? SiteUserName :
@@ -423,7 +436,7 @@ public sealed partial class MainViewModel : ObservableObject
                 _config.Current.LastServerIp = _serverIp;
                 ScheduleConfigSave();
             }
-            catch { }
+            catch { /* ignore */ }
 
             RefreshCanStates();
         }
@@ -441,11 +454,17 @@ public sealed partial class MainViewModel : ObservableObject
             if (_isLoggedIn)
             {
                 if (SelectedMenuIndex == 0) SelectedMenuIndex = 1;
+
+                // ✅ после успешного входа — подтягиваем друзей/заявки (реализация в partial Social)
+                ScheduleSocialRefresh();
             }
             else
             {
                 if (SelectedMenuIndex != 3 && SelectedMenuIndex != 4)
                     SelectedMenuIndex = 0;
+
+                // реализация в partial Social
+                ClearSocialUi();
             }
 
             Raise(nameof(UserInitial));
@@ -556,6 +575,9 @@ public sealed partial class MainViewModel : ObservableObject
 
     public AsyncRelayCommand CheckLauncherUpdatesCommand { get; private set; } = null!;
 
+    // Social команды/свойства определены в partial Social:
+    // RefreshFriendsCommand, SendFriendRequestCommand, AcceptFriendRequestCommand, DeclineFriendRequestCommand, RemoveFriendCommand
+
     private static ConfigService? _fallbackConfig;
     private static TokenStore? _fallbackTokens;
 
@@ -570,7 +592,7 @@ public sealed partial class MainViewModel : ObservableObject
         InitializeRamModel();
 
         _gameDir = ResolveGameDir(_config.Current.GameRootPath ?? "");
-        try { Directory.CreateDirectory(_gameDir); } catch { }
+        try { Directory.CreateDirectory(_gameDir); } catch { /* ignore */ }
 
         _mc = new MinecraftService(_gameDir);
 
@@ -595,7 +617,6 @@ public sealed partial class MainViewModel : ObservableObject
             _serverIp = string.IsNullOrWhiteSpace(ip) ? DefaultServerIp : ip;
             Raise(nameof(ServerIp));
 
-            // ✅ RAM: берём из конфига, но жёстко держим 4..16
             var ramFromCfg = _config.Current.RamMb;
             var initialRam = ramFromCfg > 0 ? ramFromCfg : _recommendedRamMb;
             _ramMb = NormalizeRamMb(initialRam);
@@ -603,7 +624,6 @@ public sealed partial class MainViewModel : ObservableObject
             Raise(nameof(RamMb));
             Raise(nameof(RamMbText));
 
-            // ✅ Ник берём из конфига. Сайт больше НЕ должен перетирать, если пользователь менял.
             var u = (_config.Current.LastUsername ?? "Player").Trim();
             _username = string.IsNullOrWhiteSpace(u) ? "Player" : MakeValidMcName(u);
             Raise(nameof(Username));
@@ -620,7 +640,7 @@ public sealed partial class MainViewModel : ObservableObject
 
             _config.Current.LastLauncherStartUtc = DateTimeOffset.UtcNow;
         }
-        catch { }
+        catch { /* ignore */ }
 
         ScheduleConfigSave();
 
@@ -632,7 +652,6 @@ public sealed partial class MainViewModel : ObservableObject
     {
         _totalSystemRamMb = GetTotalPhysicalMemoryMb();
 
-        // методы вычисления живут в другом partial, но мы жёстко ограничим результат 4..16
         _maxAllowedRamMb = Math.Clamp(ComputeMaxAllowedRamMb(_totalSystemRamMb), RamMinMb, RamMaxHardCapMb);
         _recommendedRamMb = Math.Clamp(ComputeRecommendedRamMb(_totalSystemRamMb, _maxAllowedRamMb), RamMinMb, _maxAllowedRamMb);
 
@@ -643,17 +662,14 @@ public sealed partial class MainViewModel : ObservableObject
     {
         RamOptions.Clear();
 
-        var hardMax = Math.Clamp(maxAllowedMb, RamMinMb, RamMaxHardCapMb);
-
-        // ✅ только диапазон 4..16 (удобные ступени)
+        // UI: показываем стандартные ступени 4..16 GB
         var steps = new[] { 4096, 6144, 8192, 10240, 12288, 16384 };
-
         foreach (var s in steps)
-        {
-            if (s < RamMinMb) continue;
-            if (s > hardMax) continue;
             RamOptions.Add(s);
-        }
+
+        // рекомендация — безопасная под текущий ПК
+        var safeMax = Math.Clamp(maxAllowedMb, RamMinMb, RamMaxHardCapMb);
+        recommendedMb = Math.Clamp(recommendedMb, RamMinMb, safeMax);
 
         EnsureRamOptionExists(recommendedMb);
     }
@@ -674,7 +690,10 @@ public sealed partial class MainViewModel : ObservableObject
 
     private int NormalizeRamMb(int requestedMb)
     {
-        var max = _maxAllowedRamMb > 0 ? _maxAllowedRamMb : Math.Clamp(ComputeMaxAllowedRamMb(GetTotalPhysicalMemoryMb()), RamMinMb, RamMaxHardCapMb);
+        var max = _maxAllowedRamMb > 0
+            ? _maxAllowedRamMb
+            : Math.Clamp(ComputeMaxAllowedRamMb(GetTotalPhysicalMemoryMb()), RamMinMb, RamMaxHardCapMb);
+
         max = Math.Clamp(max, RamMinMb, RamMaxHardCapMb);
 
         if (requestedMb <= 0)
@@ -707,7 +726,7 @@ public sealed partial class MainViewModel : ObservableObject
             () => !_isClosing && !IsBusy && !IsWaitingSiteConfirm && SelectedServer is not null);
 
         PlayCommand = new AsyncRelayCommand(PlayAsync, () => CanPlay);
-        OpenGameDirCommand = new RelayCommand(OpenGameDir);
+        OpenGameDirCommand = new RelayCommand(OpenGameDir, () => !_isClosing);
         StopGameCommand = new RelayCommand(StopGame, () => !_isClosing && CanStop);
 
         LoginViaSiteCommand = new AsyncRelayCommand(
@@ -718,10 +737,10 @@ public sealed partial class MainViewModel : ObservableObject
             SiteLogout,
             () => !_isClosing && (IsLoggedIn || IsWaitingSiteConfirm));
 
-        ClearLogCommand = new RelayCommand(() => PostToUi(() => LogLines.Clear()));
+        ClearLogCommand = new RelayCommand(() => PostToUi(() => LogLines.Clear()), () => !_isClosing);
 
-        OpenSettingsCommand = new RelayCommand(() => SelectedMenuIndex = 3);
-        OpenStartCommand = new RelayCommand(() => SelectedMenuIndex = IsLoggedIn ? 1 : 0);
+        OpenSettingsCommand = new RelayCommand(() => SelectedMenuIndex = 3, () => !_isClosing);
+        OpenStartCommand = new RelayCommand(() => SelectedMenuIndex = IsLoggedIn ? 1 : 0, () => !_isClosing);
 
         OpenProfileCommand = new RelayCommand(
             () => { if (IsLoggedIn) SelectedMenuIndex = 2; },
@@ -737,6 +756,9 @@ public sealed partial class MainViewModel : ObservableObject
                 await UpdateService.CheckAndUpdateAsync(silent: false, showNoUpdates: true);
             },
             () => !_isClosing && !IsBusy);
+
+        // Social/Friends команды — в partial Social
+        InitSocialCommands();
     }
 
     private static LogService SafeGetAppLog()
@@ -751,10 +773,10 @@ public sealed partial class MainViewModel : ObservableObject
         {
             if (App.Config is not null) return App.Config;
         }
-        catch { }
+        catch { /* ignore */ }
 
         _fallbackConfig ??= new ConfigService(LauncherPaths.ConfigFile);
-        try { _fallbackConfig.LoadOrCreate(); } catch { }
+        try { _fallbackConfig.LoadOrCreate(); } catch { /* ignore */ }
         return _fallbackConfig;
     }
 
@@ -764,7 +786,7 @@ public sealed partial class MainViewModel : ObservableObject
         {
             if (App.Tokens is not null) return App.Tokens;
         }
-        catch { }
+        catch { /* ignore */ }
 
         _fallbackTokens ??= new TokenStore(LauncherPaths.TokenFile);
         return _fallbackTokens;

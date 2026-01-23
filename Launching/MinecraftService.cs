@@ -28,10 +28,19 @@ public sealed class MinecraftService
 
     private static readonly HttpClient _http = CreateHttp();
 
+    // =========================
+    // Pack mirrors (DEFAULT)
+    // =========================
+    // ВАЖНО: legendborn.ru больше НЕ используем.
+    // Primary: CloudBucket (pack.legendborn.ru)
+    // Fallbacks: Selectel (selstorage) + SourceForge (master/downloads)
+
     private static readonly string[] DefaultPackMirrors =
     {
-        "https://legendborn.ru/launcher/pack/",
-        "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/"
+        "https://pack.legendborn.ru/launcher/pack/",
+        "https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/pack/",
+        "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/",
+        "https://downloads.sourceforge.net/project/legendborn-pack/launcher/pack/"
     };
 
     private const string ManifestFileName = "manifest.json";
@@ -47,6 +56,14 @@ public sealed class MinecraftService
 
     private const int MirrorStatsSaveMinIntervalMs = 1500;
     private long _mirrorStatsLastSaveUnixMs;
+
+    // RAM clamp: 4..16 GB (в MB)
+    public const int MinRamMb = 4096;
+    public const int MaxRamMb = 16384;
+
+    // SHA256(empty)
+    private const string Sha256Empty =
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
     private static readonly string[] AllowedDestPrefixes =
     {
@@ -78,6 +95,9 @@ public sealed class MinecraftService
 
     private string? _primaryBaseUrlThisRun;
     private bool _primaryOkThisRun;
+
+    // ✅ “быстрый CDN-фоллбек” этой сессии (между SourceForge и Selectel)
+    private string? _fastCdnFallbackThisRun;
 
     private string MirrorStatsPath => Path.Combine(_path.BasePath, "launcher", "mirror_stats.json");
 
@@ -178,6 +198,8 @@ public sealed class MinecraftService
         if (string.IsNullOrWhiteSpace(username))
             throw new ArgumentException("username is empty", nameof(username));
 
+        ramMb = Math.Clamp(ramMb <= 0 ? MinRamMb : ramMb, MinRamMb, MaxRamMb);
+
         var opt = new MLaunchOption
         {
             Session = MSession.CreateOfflineSession(username.Trim()),
@@ -196,32 +218,83 @@ public sealed class MinecraftService
         return process;
     }
 
-    private static bool LooksLikeSourceForge(string? url)
+    // =========================
+    // Mirrors: normalize + default ordering
+    // =========================
+
+    private static bool LooksLikeCloudBucket(string url)
     {
-        if (string.IsNullOrWhiteSpace(url)) return false;
-        url = url.ToLowerInvariant();
-        return url.Contains("sourceforge.net") || url.Contains("master.dl.sourceforge.net");
+        url = (url ?? "").ToLowerInvariant();
+        return url.Contains("pack.legendborn.ru");
     }
+
+    private static bool LooksLikeSourceForge(string url)
+    {
+        url = (url ?? "").ToLowerInvariant();
+        return url.Contains("master.dl.sourceforge.net") ||
+               url.Contains("downloads.sourceforge.net") ||
+               url.Contains("sourceforge.net");
+    }
+
+    private static bool LooksLikeSelectel(string url)
+    {
+        url = (url ?? "").ToLowerInvariant();
+
+        // Selectel Object Storage / CDN варианты
+        return url.Contains(".selstorage.ru") ||
+               url.Contains("selstorage.ru") ||
+               url.Contains("storage.selcloud.ru") ||
+               url.Contains("s3.storage.selcloud.ru") ||
+               url.Contains("selcdn") ||
+               url.Contains("selectel");
+    }
+
+    private static bool IsSfOrSelectel(string url)
+        => LooksLikeSourceForge(url) || LooksLikeSelectel(url);
 
     private static string[] ExpandAndOrderPackMirrors(string[]? packMirrors)
     {
-        var raw = (packMirrors is { Length: > 0 } ? packMirrors : DefaultPackMirrors)
+        // Если пользователь передал список — сохраняем порядок (это важно для primary)
+        if (packMirrors is { Length: > 0 })
+        {
+            var ordered = new List<string>(packMirrors.Length);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var raw in packMirrors)
+            {
+                var u = NormalizeAbsoluteBaseUrl(raw);
+                if (string.IsNullOrWhiteSpace(u)) continue;
+                if (seen.Add(u)) ordered.Add(u);
+            }
+
+            return ordered.ToArray();
+        }
+
+        // Иначе — дефолтный список + эвристика порядка
+        var defaults = DefaultPackMirrors
             .Select(NormalizeAbsoluteBaseUrl)
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        return raw
+        return defaults
             .OrderBy(u =>
             {
+                // primary: CloudBucket -> Selectel -> SF master -> SF downloads -> остальное
                 var lu = u.ToLowerInvariant();
-                if (lu.Contains("legendborn.ru")) return 0;
-                if (LooksLikeSourceForge(lu)) return 1;
-                return 2;
+                if (LooksLikeCloudBucket(lu)) return 0;
+                if (LooksLikeSelectel(lu)) return 1;
+                if (lu.Contains("master.dl.sourceforge.net")) return 2;
+                if (lu.Contains("downloads.sourceforge.net")) return 3;
+                if (LooksLikeSourceForge(lu)) return 4;
+                return 5;
             })
-            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
+
+    // =========================
+    // Pack sync
+    // =========================
 
     private async Task EnsurePackUpToDateAsync(string[] mirrors, CancellationToken ct)
     {
@@ -229,7 +302,8 @@ public sealed class MinecraftService
 
         var (activeBaseUrl, manifest) = await DownloadManifestFromMirrorsAsync(mirrors, ct).ConfigureAwait(false);
 
-        if (manifest.Files is null || manifest.Files.Count == 0)
+        var filesList = manifest.Files ?? new List<PackFile>();
+        if (filesList.Count == 0)
         {
             Log?.Invoke(this, "Сборка: manifest пустой — пропускаю синхронизацию.");
             SaveMirrorStatsQuiet(force: true);
@@ -237,11 +311,14 @@ public sealed class MinecraftService
         }
 
         var normalizedMap = new Dictionary<string, PackFile>(StringComparer.OrdinalIgnoreCase);
-        foreach (var f in manifest.Files)
+        foreach (var f in filesList)
         {
             var rel = NormalizeRelPath(f.Path);
             if (string.IsNullOrWhiteSpace(rel))
                 continue;
+
+            if (!IsValidFileRelPath(rel))
+                throw new InvalidOperationException($"Manifest содержит путь, который выглядит как директория/невалидный файл: {rel}");
 
             if (normalizedMap.TryGetValue(rel, out var existing))
             {
@@ -273,7 +350,6 @@ public sealed class MinecraftService
 
         long totalBytes = normalizedMap.Values.Sum(f => Math.Max(0, f.Size));
         long doneBytes = 0;
-
         int lastPercent = -1;
 
         void AddBytes(long delta)
@@ -298,22 +374,40 @@ public sealed class MinecraftService
                 ProgressPercent?.Invoke(this, p);
         }
 
-        using var sem = new SemaphoreSlim(PackMaxParallelDownloads, PackMaxParallelDownloads);
-
         var errors = new ConcurrentQueue<Exception>();
-        var tasks = new List<Task>(normalizedMap.Count);
 
-        foreach (var kv in normalizedMap)
-        {
-            ct.ThrowIfCancellationRequested();
-
-            var destRel = kv.Key;
-            var file = kv.Value;
-
-            tasks.Add(ProcessOneFileAsync(destRel, file, sem, errors, state, stateLock, activeBaseUrl, manifest.Mirrors, mirrors, AddBytes, ct));
-        }
-
-        await Task.WhenAll(tasks).ConfigureAwait(false);
+        await Parallel.ForEachAsync(
+            normalizedMap,
+            new ParallelOptions
+            {
+                MaxDegreeOfParallelism = PackMaxParallelDownloads,
+                CancellationToken = ct
+            },
+            async (kv, token) =>
+            {
+                try
+                {
+                    await ProcessOneFileAsync(
+                        destRel: kv.Key,
+                        file: kv.Value,
+                        errors: errors,
+                        state: state,
+                        stateLock: stateLock,
+                        activeBaseUrl: activeBaseUrl,
+                        manifestMirrors: manifest.Mirrors,
+                        rootMirrors: mirrors,
+                        addBytes: AddBytes,
+                        ct: token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    // общий ct обработаем после
+                }
+                catch (Exception ex)
+                {
+                    errors.Enqueue(ex);
+                }
+            }).ConfigureAwait(false);
 
         if (ct.IsCancellationRequested)
             throw new OperationCanceledException(ct);
@@ -329,19 +423,8 @@ public sealed class MinecraftService
             }
         }
 
-        if (manifest.Prune is { Length: > 0 })
-        {
-            var roots = manifest.Prune
-                .Select(NormalizeRoot)
-                .Where(r =>
-                    !string.IsNullOrWhiteSpace(r) &&
-                    IsAllowedDest(r) &&
-                    !IsUserMutableDest(r))
-                .ToArray();
-
-            if (roots.Length > 0)
-                PruneExtras(roots, wanted);
-        }
+        // delete/prune поддержка (delete в твоём manifest)
+        ApplyDeletesAndPrunes(manifest, wanted, state, stateLock);
 
         lock (stateLock)
         {
@@ -352,21 +435,95 @@ public sealed class MinecraftService
             }
 
             state.PackId = manifest.PackId;
-            state.ManifestVersion = manifest.Version;
+            state.ManifestVersion = GetManifestIdentity(manifest);
         }
 
         SavePackState(state);
 
-        Log?.Invoke(this, $"Сборка: актуальна (версия {manifest.Version}).");
+        Log?.Invoke(this, $"Сборка: актуальна ({GetManifestDisplayVersion(manifest)}).");
         ProgressPercent?.Invoke(this, 100);
 
         SaveMirrorStatsQuiet(force: true);
     }
 
+    private void ApplyDeletesAndPrunes(PackManifest manifest, HashSet<string> wanted, PackState state, object stateLock)
+    {
+        // 1) delete: может быть как список путей, так и список корней
+        var deletes = (manifest.Delete is { Length: > 0 } ? manifest.Delete : null);
+        var prunes = (manifest.Prune is { Length: > 0 } ? manifest.Prune : null);
+
+        // delete: удаляем точечно
+        if (deletes is { Length: > 0 })
+        {
+            foreach (var raw in deletes)
+            {
+                var rel = NormalizeRelPath(raw);
+                if (string.IsNullOrWhiteSpace(rel)) continue;
+
+                // если указали "root/" — считаем это prune-root
+                if (raw.Trim().EndsWith("/") || raw.Trim().EndsWith("\\"))
+                    continue;
+
+                if (!IsAllowedDest(rel)) continue;
+                if (IsUserMutableDest(rel)) continue;
+
+                var local = ToLocalPath(rel);
+                try
+                {
+                    if (File.Exists(local))
+                    {
+                        File.Delete(local);
+                        Log?.Invoke(this, $"Сборка: delete удалён файл {rel}");
+                    }
+                    else if (Directory.Exists(local))
+                    {
+                        Directory.Delete(local, recursive: true);
+                        Log?.Invoke(this, $"Сборка: delete удалена директория {rel}");
+                    }
+
+                    lock (stateLock)
+                    {
+                        state.Files.Remove(rel);
+                    }
+                }
+                catch { }
+            }
+        }
+
+        // 2) prune: удаляем лишнее внутри корней
+        var rootsRaw = new List<string>();
+
+        if (prunes is { Length: > 0 })
+            rootsRaw.AddRange(prunes);
+
+        if (deletes is { Length: > 0 })
+        {
+            // если в delete кто-то указал корни с "/" — тоже обработаем как prune
+            foreach (var r in deletes)
+            {
+                if (r is null) continue;
+                var t = r.Trim();
+                if (t.EndsWith("/") || t.EndsWith("\\"))
+                    rootsRaw.Add(t);
+            }
+        }
+
+        var roots = rootsRaw
+            .Select(NormalizeRoot)
+            .Where(r =>
+                !string.IsNullOrWhiteSpace(r) &&
+                IsAllowedDest(r) &&
+                !IsUserMutableDest(r))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (roots.Length > 0)
+            PruneExtras(roots, wanted);
+    }
+
     private async Task ProcessOneFileAsync(
         string destRel,
         PackFile file,
-        SemaphoreSlim sem,
         ConcurrentQueue<Exception> errors,
         PackState state,
         object stateLock,
@@ -376,16 +533,21 @@ public sealed class MinecraftService
         Action<long> addBytes,
         CancellationToken ct)
     {
-        await sem.WaitAsync(ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+
         try
         {
-            ct.ThrowIfCancellationRequested();
-
             if (!IsAllowedDest(destRel))
                 throw new InvalidOperationException($"Manifest пытается записать запрещённый путь: {destRel}");
 
+            if (!IsValidFileRelPath(destRel))
+                throw new InvalidOperationException($"Manifest содержит путь, который выглядит как директория/невалидный файл: {destRel}");
+
             if (!IsValidSha256(file.Sha256))
                 throw new InvalidOperationException($"Invalid sha256 in manifest for {destRel}");
+
+            if (file.Size == 0 && !IsEmptySha(file.Sha256))
+                throw new InvalidOperationException($"Manifest содержит size=0, но sha256 не пустого файла: {destRel}");
 
             var localPath = ToLocalPath(destRel);
 
@@ -394,6 +556,7 @@ public sealed class MinecraftService
 
             await TryApplyPendingAsync(destRel, localPath, file.Sha256, ct).ConfigureAwait(false);
 
+            // Проверка существующего файла
             var check = await CheckFileAsync(destRel, localPath, file, state, stateLock, ct).ConfigureAwait(false);
             if (check == FileCheckResult.Match)
             {
@@ -401,6 +564,7 @@ public sealed class MinecraftService
                 return;
             }
 
+            // Пользовательские конфиги не перезаписываем
             if (IsUserMutableDest(destRel) && File.Exists(localPath))
             {
                 Log?.Invoke(this, $"Сборка: {destRel} изменён локально — оставляю как есть.");
@@ -408,17 +572,31 @@ public sealed class MinecraftService
                 return;
             }
 
+            // Фикс: пустые файлы не скачиваем вообще
+            if (file.Size == 0 && IsEmptySha(file.Sha256))
+            {
+                await EnsureEmptyFileAsync(localPath, destRel, ct).ConfigureAwait(false);
+
+                lock (stateLock)
+                {
+                    UpdatePackStateEntry(state, destRel, localPath, file.Sha256);
+                }
+
+                Log?.Invoke(this, $"Сборка: OK (empty) {destRel}");
+                return;
+            }
+
             var blobRel = GetBlobRelPath(file);
 
             await DownloadFileFromMirrorsAsync(
-                activeBaseUrl,
-                blobRel,
-                file,
-                localPath,
-                destRel,
-                manifestMirrors,
-                rootMirrors,
-                ct,
+                activeBaseUrl: activeBaseUrl,
+                blobRel: blobRel,
+                file: file,
+                localPath: localPath,
+                destRel: destRel,
+                manifestMirrors: manifestMirrors,
+                rootMirrors: rootMirrors,
+                ct: ct,
                 onBytes: bytes => addBytes(bytes)).ConfigureAwait(false);
 
             lock (stateLock)
@@ -430,14 +608,11 @@ public sealed class MinecraftService
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+            throw;
         }
         catch (Exception ex)
         {
             errors.Enqueue(ex);
-        }
-        finally
-        {
-            try { sem.Release(); } catch { }
         }
     }
 
@@ -470,6 +645,21 @@ public sealed class MinecraftService
                 {
                     return FileCheckResult.Match;
                 }
+            }
+
+            // для size=0 sha(empty) — считаем матчом если длина 0
+            if (file.Size == 0 && IsEmptySha(file.Sha256))
+            {
+                if (info.Length == 0)
+                {
+                    lock (stateLock)
+                    {
+                        UpdatePackStateEntry(state, rel, localPath, file.Sha256);
+                    }
+                    return FileCheckResult.Match;
+                }
+
+                return FileCheckResult.MissingOrDifferent;
             }
 
             var sha = await ComputeSha256Async(localPath, ct).ConfigureAwait(false);
@@ -573,16 +763,21 @@ public sealed class MinecraftService
         {
             var uri = resp.RequestMessage?.RequestUri;
             if (uri is null)
-                return NormalizeBaseUrl(fallbackBaseUrl);
+                return NormalizeAbsoluteBaseUrl(fallbackBaseUrl);
 
             var baseUri = new Uri(uri, "./");
-            return NormalizeBaseUrl(baseUri.ToString());
+            return NormalizeAbsoluteBaseUrl(baseUri.ToString());
         }
         catch
         {
-            return NormalizeBaseUrl(fallbackBaseUrl);
+            return NormalizeAbsoluteBaseUrl(fallbackBaseUrl);
         }
     }
+
+    // =========================
+    // Manifest download w/ priority:
+    // Primary (first) -> if fail: race SF/Selectel first -> then race others
+    // =========================
 
     private async Task<(string activeBaseUrl, PackManifest manifest)> DownloadManifestFromMirrorsAsync(string[] mirrors, CancellationToken ct)
     {
@@ -598,11 +793,12 @@ public sealed class MinecraftService
         if (list.Length == 0)
             throw new InvalidOperationException("Mirrors list is empty after normalize");
 
-        var primary = list.FirstOrDefault(u => u.Contains("legendborn.ru", StringComparison.OrdinalIgnoreCase))
-                      ?? list[0];
+        // primary = первый в списке (важно для приоритета Cloud bucket)
+        var primary = list[0];
 
         _primaryBaseUrlThisRun = primary;
         _primaryOkThisRun = false;
+        _fastCdnFallbackThisRun = null;
 
         var primaryRes =
             await TryFetchManifestFromBaseAsync(primary, ct, MirrorPrimaryTimeoutSec1, countFail: false).ConfigureAwait(false)
@@ -611,25 +807,67 @@ public sealed class MinecraftService
         if (primaryRes is not null)
         {
             _primaryOkThisRun = true;
+
+            if (IsSfOrSelectel(primaryRes.Value.activeBaseUrl))
+                _fastCdnFallbackThisRun = primaryRes.Value.activeBaseUrl;
+
             SaveMirrorStatsQuiet(force: true);
             return primaryRes.Value;
         }
 
         TouchMirrorFailManifest(primary);
 
-        var fallbacks = list
+        var fallbacksAll = list
             .Where(u => !u.Equals(primary, StringComparison.OrdinalIgnoreCase))
             .ToArray();
 
-        if (fallbacks.Length == 0)
+        if (fallbacksAll.Length == 0)
             throw new InvalidOperationException("Primary mirror failed and no fallbacks are available.");
 
-        fallbacks = OrderMirrorsByStats(fallbacks, MirrorScoreKind.Manifest);
+        // 1) сначала отдельная гонка только между SF/Selectel
+        var cdnFallbacks = fallbacksAll.Where(IsSfOrSelectel).ToArray();
+        if (cdnFallbacks.Length > 0)
+        {
+            cdnFallbacks = OrderMirrorsByStats(cdnFallbacks, MirrorScoreKind.Manifest);
+
+            var cdnRes = await RaceManifestAsync(cdnFallbacks, ct, MirrorFallbackTimeoutSec).ConfigureAwait(false);
+            if (cdnRes is not null)
+            {
+                _fastCdnFallbackThisRun = cdnRes.Value.activeBaseUrl;
+                SaveMirrorStatsQuiet(force: true);
+                return cdnRes.Value;
+            }
+        }
+
+        // 2) затем — все остальные fallbacks (в гонку)
+        var otherFallbacks = fallbacksAll.Where(u => !IsSfOrSelectel(u)).ToArray();
+        if (otherFallbacks.Length == 0)
+            throw new InvalidOperationException("Не удалось скачать manifest: CDN зеркала (SF/Selectel) недоступны, других fallback'ов нет.");
+
+        otherFallbacks = OrderMirrorsByStats(otherFallbacks, MirrorScoreKind.Manifest);
+
+        var otherRes = await RaceManifestAsync(otherFallbacks, ct, MirrorFallbackTimeoutSec).ConfigureAwait(false);
+        if (otherRes is not null)
+        {
+            if (IsSfOrSelectel(otherRes.Value.activeBaseUrl))
+                _fastCdnFallbackThisRun = otherRes.Value.activeBaseUrl;
+
+            SaveMirrorStatsQuiet(force: true);
+            return otherRes.Value;
+        }
+
+        throw new InvalidOperationException("Не удалось скачать manifest ни с одного зеркала (primary + fallbacks).");
+    }
+
+    private async Task<(string activeBaseUrl, PackManifest manifest)?> RaceManifestAsync(string[] fallbacks, CancellationToken ct, int timeoutSec)
+    {
+        if (fallbacks is null || fallbacks.Length == 0)
+            return null;
 
         using var raceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
         var tasks = fallbacks
-            .Select(b => TryFetchManifestFromBaseAsync(b, raceCts.Token, MirrorFallbackTimeoutSec))
+            .Select(b => TryFetchManifestFromBaseAsync(b, raceCts.Token, timeoutSec))
             .ToList();
 
         while (tasks.Count > 0)
@@ -644,8 +882,6 @@ public sealed class MinecraftService
                 {
                     raceCts.Cancel();
                     try { await Task.WhenAll(tasks).ConfigureAwait(false); } catch { }
-
-                    SaveMirrorStatsQuiet(force: true);
                     return res.Value;
                 }
             }
@@ -654,7 +890,7 @@ public sealed class MinecraftService
             }
         }
 
-        throw new InvalidOperationException("Не удалось скачать manifest ни с одного зеркала (site + fallbacks).");
+        return null;
     }
 
     private async Task<(string activeBaseUrl, PackManifest manifest)?> TryFetchManifestFromBaseAsync(
@@ -687,6 +923,7 @@ public sealed class MinecraftService
             if (!resp.IsSuccessStatusCode)
             {
                 if (countFail) TouchMirrorFailManifest(baseUrl);
+                Log?.Invoke(this, $"Сборка: manifest HTTP {(int)resp.StatusCode} ({baseUrl})");
                 return null;
             }
 
@@ -727,14 +964,11 @@ public sealed class MinecraftService
 
             if (manifest.Mirrors is { Length: > 0 })
             {
-                manifest = manifest with
-                {
-                    Mirrors = manifest.Mirrors
-                        .Select(NormalizeAbsoluteBaseUrl)
-                        .Where(m => !string.IsNullOrWhiteSpace(m))
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .ToArray()
-                };
+                manifest.Mirrors = manifest.Mirrors
+                    .Select(NormalizeAbsoluteBaseUrl)
+                    .Where(m => !string.IsNullOrWhiteSpace(m))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
             }
 
             sw.Stop();
@@ -765,6 +999,34 @@ public sealed class MinecraftService
         }
     }
 
+    private sealed class DownloadHttpException : Exception
+    {
+        public HttpStatusCode StatusCode { get; }
+        public string Url { get; }
+
+        public DownloadHttpException(HttpStatusCode code, string url, string message)
+            : base(message)
+        {
+            StatusCode = code;
+            Url = url;
+        }
+
+        public bool IsClientNotFound =>
+            StatusCode == HttpStatusCode.NotFound ||
+            StatusCode == HttpStatusCode.Gone;
+
+        public bool IsClientError =>
+            ((int)StatusCode >= 400 && (int)StatusCode < 500);
+
+        public bool IsTransient =>
+            StatusCode == (HttpStatusCode)429 ||
+            StatusCode == HttpStatusCode.RequestTimeout ||
+            StatusCode == HttpStatusCode.BadGateway ||
+            StatusCode == HttpStatusCode.ServiceUnavailable ||
+            StatusCode == HttpStatusCode.GatewayTimeout ||
+            ((int)StatusCode >= 500 && (int)StatusCode <= 599);
+    }
+
     private async Task DownloadFileFromMirrorsAsync(
         string activeBaseUrl,
         string blobRel,
@@ -786,21 +1048,37 @@ public sealed class MinecraftService
 
         var primary = NormalizeAbsoluteBaseUrl(_primaryBaseUrlThisRun);
         var active = NormalizeAbsoluteBaseUrl(activeBaseUrl);
+        var fastCdn = NormalizeAbsoluteBaseUrl(_fastCdnFallbackThisRun);
 
+        // 1) primary (только если он реально отработал в этой сессии)
         if (_primaryOkThisRun && !string.IsNullOrWhiteSpace(primary))
             ordered.Add(primary);
 
+        // 2) active (откуда был скачан manifest)
         if (!string.IsNullOrWhiteSpace(active))
             ordered.Add(active);
 
+        // 3) ✅ быстрый CDN-фоллбек (SF/Selectel), если определился
+        if (!string.IsNullOrWhiteSpace(fastCdn))
+            ordered.Add(fastCdn);
+
+        // остальное
         var rest = mirrors
             .Where(m =>
                 !m.Equals(primary, StringComparison.OrdinalIgnoreCase) &&
-                !m.Equals(active, StringComparison.OrdinalIgnoreCase))
+                !m.Equals(active, StringComparison.OrdinalIgnoreCase) &&
+                !m.Equals(fastCdn, StringComparison.OrdinalIgnoreCase))
             .ToArray();
 
-        rest = OrderMirrorsByStats(rest, MirrorScoreKind.Blob);
-        ordered.AddRange(rest);
+        // ВАЖНО: сначала прочие SF/Selectel, затем остальное — по статистике.
+        var restCdn = rest.Where(IsSfOrSelectel).ToArray();
+        var restOther = rest.Where(m => !IsSfOrSelectel(m)).ToArray();
+
+        restCdn = OrderMirrorsByStats(restCdn, MirrorScoreKind.Blob);
+        restOther = OrderMirrorsByStats(restOther, MirrorScoreKind.Blob);
+
+        ordered.AddRange(restCdn);
+        ordered.AddRange(restOther);
 
         ordered = ordered
             .Select(NormalizeAbsoluteBaseUrl)
@@ -821,17 +1099,42 @@ public sealed class MinecraftService
                 onBytes(b);
             }
 
+            // Для config/ сначала пробуем прямой путь, потом blob (часто именно конфиги не залиты как blobs)
+            var candidates = BuildDownloadCandidates(destRel, blobRel);
+
             try
             {
-                var url = CombineUrl(baseUrl, blobRel);
-                Log?.Invoke(this, $"Сборка: download {destRel} <- {baseUrl} ({FormatBytes(file.Size)})");
+                foreach (var rel in candidates)
+                {
+                    ct.ThrowIfCancellationRequested();
 
-                var sw = Stopwatch.StartNew();
-                await DownloadToFileAsync(url, localPath, file.Size, file.Sha256, destRel, ct, Counted).ConfigureAwait(false);
-                sw.Stop();
+                    var url = CombineUrl(baseUrl, rel);
+                    Log?.Invoke(this, $"Сборка: download {destRel} <- {baseUrl} ({FormatBytes(file.Size)}) [{rel}]");
 
-                TouchMirrorOkBlob(baseUrl, NormalizeLatencyForSize(sw.Elapsed.TotalMilliseconds, file.Size));
-                return;
+                    var sw = Stopwatch.StartNew();
+                    try
+                    {
+                        await DownloadToFileAsync(url, localPath, file.Size, file.Sha256, destRel, ct, Counted).ConfigureAwait(false);
+                        sw.Stop();
+
+                        TouchMirrorOkBlob(baseUrl, NormalizeLatencyForSize(sw.Elapsed.TotalMilliseconds, file.Size));
+                        return;
+                    }
+                    catch (DownloadHttpException hex)
+                    {
+                        last = hex;
+
+                        // если blob не найден/400/404 — пробуем следующий кандидат (например прямой путь)
+                        if (hex.IsClientError && !hex.IsTransient)
+                            continue;
+
+                        // transient — переходим к следующему зеркалу
+                        throw;
+                    }
+                }
+
+                // если кандидаты закончились — считаем как ошибка зеркала
+                throw last ?? new InvalidOperationException("Не удалось скачать файл ни одним способом на данном зеркале.");
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -849,7 +1152,39 @@ public sealed class MinecraftService
             }
         }
 
-        throw new InvalidOperationException($"Не удалось скачать blob: {blobRel}", last);
+        throw new InvalidOperationException($"Не удалось скачать файл: {destRel}", last);
+    }
+
+    private static List<string> BuildDownloadCandidates(string destRel, string blobRel)
+    {
+        var list = new List<string>(2);
+
+        destRel = destRel.Replace('\\', '/');
+        blobRel = blobRel.Replace('\\', '/');
+
+        var isConfig = destRel.StartsWith("config/", StringComparison.OrdinalIgnoreCase);
+
+        if (isConfig)
+        {
+            // config: сначала прямой путь, потом blob
+            list.Add(destRel);
+            if (!string.Equals(blobRel, destRel, StringComparison.OrdinalIgnoreCase))
+                list.Add(blobRel);
+        }
+        else
+        {
+            // остальное: сначала blob, потом прямой путь
+            list.Add(blobRel);
+            if (!string.Equals(destRel, blobRel, StringComparison.OrdinalIgnoreCase))
+                list.Add(destRel);
+        }
+
+        // убираем дубли
+        return list
+            .Select(NormalizeRelPath)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private async Task DownloadToFileAsync(
@@ -875,7 +1210,9 @@ public sealed class MinecraftService
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
 
         using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
+
+        if (!resp.IsSuccessStatusCode)
+            throw new DownloadHttpException(resp.StatusCode, url, $"HTTP {(int)resp.StatusCode} {resp.ReasonPhrase} ({url})");
 
         var media = resp.Content.Headers.ContentType?.MediaType ?? "";
         if (media.Contains("text/html", StringComparison.OrdinalIgnoreCase))
@@ -950,6 +1287,51 @@ public sealed class MinecraftService
         }
 
         await output.FlushAsync(token).ConfigureAwait(false);
+    }
+
+    private async Task EnsureEmptyFileAsync(string localPath, string destRel, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var dir = Path.GetDirectoryName(localPath);
+        if (!string.IsNullOrWhiteSpace(dir))
+            Directory.CreateDirectory(dir);
+
+        // Если уже пустой — ок
+        if (File.Exists(localPath))
+        {
+            try
+            {
+                var info = new FileInfo(localPath);
+                if (info.Length == 0) return;
+            }
+            catch { }
+        }
+
+        // пишем атомарно через tmp (как для скачивания)
+        var tmp = localPath + ".tmp";
+        TryDeleteQuiet(tmp);
+
+        await using (var fs = new FileStream(
+            tmp,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 4 * 1024,
+            options: FileOptions.Asynchronous))
+        {
+            await fs.FlushAsync(ct).ConfigureAwait(false);
+        }
+
+        var ok = await TryMoveOrReplaceWithRetryAsync(tmp, localPath, ct, attempts: 10, delayMs: 200).ConfigureAwait(false);
+        if (ok)
+        {
+            TryDeleteQuiet(tmp);
+            return;
+        }
+
+        TryDeleteQuiet(tmp);
+        throw new IOException($"Не удалось создать пустой файл: {destRel}");
     }
 
     private async Task TryApplyPendingAsync(string destRel, string localPath, string expectedSha256, CancellationToken ct)
@@ -1066,6 +1448,28 @@ public sealed class MinecraftService
         return destRel.StartsWith("config/", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsValidFileRelPath(string destRel)
+    {
+        // Должен быть файл внутри одного из префиксов, не директория
+        destRel = destRel.Replace('\\', '/');
+
+        if (string.IsNullOrWhiteSpace(destRel)) return false;
+        if (destRel.EndsWith("/")) return false;
+
+        // Должен быть хотя бы один '/' (чтобы "mods" как файл не прошёл)
+        if (!destRel.Contains('/')) return false;
+
+        // Минимально: должен содержать имя после последнего '/'
+        var name = destRel.Split('/').LastOrDefault();
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        if (name == "." || name == "..") return false;
+
+        return true;
+    }
+
+    private static bool IsEmptySha(string sha256)
+        => string.Equals((sha256 ?? "").Trim(), Sha256Empty, StringComparison.OrdinalIgnoreCase);
+
     private static string GetBlobRelPath(PackFile file)
     {
         if (!string.IsNullOrWhiteSpace(file.Blob))
@@ -1119,14 +1523,6 @@ public sealed class MinecraftService
         return string.Join("/", parts);
     }
 
-    private static string NormalizeBaseUrl(string url)
-    {
-        url = (url ?? "").Trim();
-        if (string.IsNullOrWhiteSpace(url)) return "";
-        if (!url.EndsWith("/")) url += "/";
-        return url;
-    }
-
     private static string NormalizeAbsoluteBaseUrl(string? url)
     {
         url = (url ?? "").Trim();
@@ -1139,9 +1535,18 @@ public sealed class MinecraftService
             !uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
             return "";
 
-        var s = uri.ToString();
-        if (!s.EndsWith("/")) s += "/";
-        return s;
+        // убираем query/fragment, нормализуем path с /
+        var b = new UriBuilder(uri)
+        {
+            Query = "",
+            Fragment = ""
+        };
+
+        var path = b.Path ?? "/";
+        if (!path.EndsWith("/")) path += "/";
+        b.Path = path;
+
+        return b.Uri.ToString();
     }
 
     private static string NormalizeRoot(string root)
@@ -1154,7 +1559,7 @@ public sealed class MinecraftService
 
     private static string CombineUrl(string baseUrl, string rel)
     {
-        baseUrl = NormalizeBaseUrl(baseUrl);
+        baseUrl = NormalizeAbsoluteBaseUrl(baseUrl);
         rel = NormalizeRelPath(rel);
         return new Uri(new Uri(baseUrl), rel).ToString();
     }
@@ -1288,6 +1693,7 @@ public sealed class MinecraftService
         public int BlobFail { get; set; } = 0;
         public long BlobLastOkUnix { get; set; } = 0;
 
+        // legacy
         public double EwmaScore { get; set; } = 0;
         public int Ok { get; set; } = 0;
         public int Fail { get; set; } = 0;
@@ -1523,20 +1929,83 @@ public sealed class MinecraftService
         return ms / mib;
     }
 
-    public sealed record PackManifest(
-        [property: JsonPropertyName("packId")] string PackId,
-        [property: JsonPropertyName("version")] string Version,
-        [property: JsonPropertyName("files")] List<PackFile> Files,
-        [property: JsonPropertyName("mirrors")] string[]? Mirrors = null,
-        [property: JsonPropertyName("prune")] string[]? Prune = null
-    );
+    private static string GetManifestIdentity(PackManifest m)
+    {
+        var pv = (m.PackVersion ?? m.Version ?? "").Trim();
+        var build = m.Build.HasValue ? m.Build.Value.ToString() : "";
+        if (!string.IsNullOrWhiteSpace(pv) && !string.IsNullOrWhiteSpace(build))
+            return $"{pv}+{build}";
+        return !string.IsNullOrWhiteSpace(pv) ? pv : (m.Version ?? "unknown");
+    }
 
-    public sealed record PackFile(
-        [property: JsonPropertyName("path")] string Path,
-        [property: JsonPropertyName("sha256")] string Sha256,
-        [property: JsonPropertyName("size")] long Size,
-        [property: JsonPropertyName("blob")] string? Blob = null
-    );
+    private static string GetManifestDisplayVersion(PackManifest m)
+    {
+        var id = GetManifestIdentity(m);
+        var ch = (m.Channel ?? "").Trim();
+        if (!string.IsNullOrWhiteSpace(ch))
+            return $"{id} ({ch})";
+        return id;
+    }
+
+    // ===== Manifest models (совместимость: packVersion/build + legacy version/prune) =====
+
+    public sealed class PackManifest
+    {
+        [JsonPropertyName("packId")]
+        public string? PackId { get; set; }
+
+        [JsonPropertyName("channel")]
+        public string? Channel { get; set; }
+
+        // основной вариант у тебя
+        [JsonPropertyName("packVersion")]
+        public string? PackVersion { get; set; }
+
+        // legacy вариант (если где-то был)
+        [JsonPropertyName("version")]
+        public string? Version { get; set; }
+
+        [JsonPropertyName("build")]
+        public int? Build { get; set; }
+
+        [JsonPropertyName("minecraft")]
+        public string? Minecraft { get; set; }
+
+        [JsonPropertyName("loader")]
+        public string? Loader { get; set; }
+
+        [JsonPropertyName("loaderVersion")]
+        public string? LoaderVersion { get; set; }
+
+        [JsonPropertyName("files")]
+        public List<PackFile>? Files { get; set; }
+
+        [JsonPropertyName("mirrors")]
+        public string[]? Mirrors { get; set; }
+
+        // у тебя сейчас delete вместо prune
+        [JsonPropertyName("delete")]
+        public string[]? Delete { get; set; }
+
+        // legacy
+        [JsonPropertyName("prune")]
+        public string[]? Prune { get; set; }
+    }
+
+    public sealed class PackFile
+    {
+        [JsonPropertyName("path")]
+        public string Path { get; set; } = "";
+
+        [JsonPropertyName("sha256")]
+        public string Sha256 { get; set; } = "";
+
+        [JsonPropertyName("size")]
+        public long Size { get; set; }
+
+        [JsonPropertyName("blob")]
+        public string? Blob { get; set; }
+    }
 }
 
 [JsonSourceGenerationOptions(

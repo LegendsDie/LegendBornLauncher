@@ -1,3 +1,4 @@
+// File: Services/SiteAuthService.cs
 using System;
 using System.IO;
 using System.Net;
@@ -7,16 +8,20 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using LegendBorn.Launching;
 using LegendBorn.Models;
 
 namespace LegendBorn.Services;
 
 public sealed class SiteAuthService
 {
-    private const string SiteBaseUrl = "https://legendborn.ru/";
+    // Важно: API у тебя завязан на ru-домен (как в MainViewModel).
+    private const string SiteBaseUrl = "https://ru.legendborn.ru/";
 
-    // safety: ответы API не должны быть большими
+    // Safety: ответы API не должны быть большими
     private const int MaxResponseBytes = 512 * 1024; // 512 KB
+
+    private const int DefaultAttempts = 3;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -25,13 +30,36 @@ public sealed class SiteAuthService
         ReadCommentHandling = JsonCommentHandling.Skip
     };
 
+    private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
     private static readonly HttpClient Http = CreateHttp();
+
+    // ===== DTO for Friends API (nested to avoid conflicts) =====
+    public class OkResponse
+    {
+        public bool Ok { get; set; }
+        public string? Error { get; set; }
+        public string? Message { get; set; }
+    }
+
+    public sealed class FriendsListResponse : OkResponse
+    {
+        public FriendDto[] Friends { get; set; } = Array.Empty<FriendDto>();
+    }
+
+    public sealed class FriendRequestsResponse : OkResponse
+    {
+        public FriendDto[] Incoming { get; set; } = Array.Empty<FriendDto>();
+        public FriendDto[] Outgoing { get; set; } = Array.Empty<FriendDto>();
+    }
 
     private static HttpClient CreateHttp()
     {
         var handler = new SocketsHttpHandler
         {
             AutomaticDecompression = DecompressionMethods.All,
+            Proxy = WebRequest.DefaultWebProxy,
+            UseProxy = true,
             ConnectTimeout = TimeSpan.FromSeconds(15),
             PooledConnectionLifetime = TimeSpan.FromMinutes(2),
             AllowAutoRedirect = true,
@@ -40,12 +68,29 @@ public sealed class SiteAuthService
 
         var http = new HttpClient(handler)
         {
-            BaseAddress = new Uri(SiteBaseUrl),
+            BaseAddress = new Uri(SiteBaseUrl, UriKind.Absolute),
             Timeout = Timeout.InfiniteTimeSpan // таймауты per-request
         };
 
-        http.DefaultRequestHeaders.UserAgent.ParseAdd(LauncherIdentity.UserAgent);
+        try
+        {
+            var ua = LauncherIdentity.UserAgent;
+            if (!string.IsNullOrWhiteSpace(ua))
+                http.DefaultRequestHeaders.UserAgent.ParseAdd(ua);
+        }
+        catch
+        {
+            try
+            {
+                http.DefaultRequestHeaders.UserAgent.Clear();
+                http.DefaultRequestHeaders.UserAgent.ParseAdd($"LegendBornLauncher/{LauncherIdentity.InformationalVersion}");
+            }
+            catch { }
+        }
+
+        http.DefaultRequestHeaders.Accept.Clear();
         http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
         return http;
     }
 
@@ -57,14 +102,17 @@ public sealed class SiteAuthService
            || code == HttpStatusCode.RequestTimeout
            || code == HttpStatusCode.TooManyRequests;
 
-    private static async Task<string> ReadBodyAsync(HttpResponseMessage resp, CancellationToken ct)
+    private static bool IsAuthError(HttpStatusCode code)
+        => code is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden;
+
+    private static async Task<string> ReadBodyUtf8LimitedAsync(HttpResponseMessage resp, CancellationToken ct)
     {
         await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
 
         var buffer = new byte[16 * 1024];
         var total = 0;
 
-        using var ms = new MemoryStream();
+        using var ms = new MemoryStream(capacity: Math.Min(64 * 1024, MaxResponseBytes));
 
         while (true)
         {
@@ -139,7 +187,7 @@ public sealed class SiteAuthService
     {
         Exception? last = null;
 
-        for (int i = 1; i <= attempts; i++)
+        for (int i = 1; i <= Math.Max(1, attempts); i++)
         {
             ct.ThrowIfCancellationRequested();
 
@@ -181,18 +229,79 @@ public sealed class SiteAuthService
         throw new InvalidOperationException("Сетевой запрос не удался после ретраев.", last);
     }
 
+    private static void EnsureBearer(HttpRequestMessage req, string accessToken)
+    {
+        accessToken = NormalizeToken(accessToken);
+        if (string.IsNullOrWhiteSpace(accessToken))
+            throw new ArgumentException("accessToken is empty", nameof(accessToken));
+
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+    }
+
+    private static T? TryDeserialize<T>(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return default;
+        try { return JsonSerializer.Deserialize<T>(json, JsonOptions); }
+        catch { return default; }
+    }
+
+    private static string ExtractErrorFallback(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
+            var root = doc.RootElement;
+
+            var err = TryGetString(root, "error");
+            if (!string.IsNullOrWhiteSpace(err)) return err;
+
+            var msg = TryGetString(root, "message");
+            if (!string.IsNullOrWhiteSpace(msg)) return msg;
+
+            return "Ошибка запроса.";
+        }
+        catch
+        {
+            return "Ошибка запроса.";
+        }
+    }
+
+    private static void NormalizeOkFromHttp<T>(T dto, HttpResponseMessage resp, string body)
+        where T : OkResponse
+    {
+        if (!resp.IsSuccessStatusCode)
+        {
+            dto.Ok = false;
+            if (string.IsNullOrWhiteSpace(dto.Error))
+                dto.Error = ExtractErrorFallback(body);
+            return;
+        }
+
+        // Если сервер не прислал ok, но HTTP 2xx — считаем ok=true (при отсутствии явной ошибки)
+        if (!dto.Ok && string.IsNullOrWhiteSpace(dto.Error))
+            dto.Ok = true;
+    }
+
+    // =========================
+    // Auth / Profile / Economy
+    // =========================
+
     // POST /api/launcher/login -> { deviceId, connectUrl, expiresAtUnix }
     public async Task<(string DeviceId, string ConnectUrl, long ExpiresAtUnix)> StartLauncherLoginAsync(CancellationToken ct)
     {
         using var resp = await SendAsyncWithRetry(
-            factory: () => new HttpRequestMessage(HttpMethod.Post, "api/launcher/login"),
+            factory: () =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/login");
+                return req;
+            },
             ct: ct,
-            attempts: 3,
-            perTryTimeout: TimeSpan.FromSeconds(25));
+            attempts: DefaultAttempts,
+            perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
 
         resp.EnsureSuccessStatusCode();
 
-        var json = await ReadBodyAsync(resp, ct).ConfigureAwait(false);
+        var json = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
         using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
 
         var root = doc.RootElement;
@@ -209,19 +318,24 @@ public sealed class SiteAuthService
     // GET /api/launcher/login?deviceId=... -> { status:"PENDING" } OR { status:"OK", accessToken, expiresAtUnix }
     public async Task<AuthTokens?> PollLauncherLoginAsync(string deviceId, CancellationToken ct)
     {
+        deviceId = (deviceId ?? "").Trim();
         if (string.IsNullOrWhiteSpace(deviceId))
             return null;
 
         using var resp = await SendAsyncWithRetry(
-            factory: () => new HttpRequestMessage(HttpMethod.Get, $"api/launcher/login?deviceId={Uri.EscapeDataString(deviceId)}"),
+            factory: () =>
+            {
+                var url = $"api/launcher/login?deviceId={Uri.EscapeDataString(deviceId)}";
+                return new HttpRequestMessage(HttpMethod.Get, url);
+            },
             ct: ct,
-            attempts: 3,
-            perTryTimeout: TimeSpan.FromSeconds(20));
+            attempts: DefaultAttempts,
+            perTryTimeout: TimeSpan.FromSeconds(20)).ConfigureAwait(false);
 
         if (!resp.IsSuccessStatusCode)
             return null;
 
-        var json = await ReadBodyAsync(resp, ct).ConfigureAwait(false);
+        var json = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
         using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
 
         var root = doc.RootElement;
@@ -242,27 +356,23 @@ public sealed class SiteAuthService
     // GET /api/launcher/me
     public async Task<UserProfile> GetMeAsync(string accessToken, CancellationToken ct)
     {
-        accessToken = NormalizeToken(accessToken);
-
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Get, "api/launcher/me");
-                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-                req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                EnsureBearer(req, accessToken);
                 return req;
             },
             ct: ct,
-            attempts: 3,
-            perTryTimeout: TimeSpan.FromSeconds(25));
+            attempts: DefaultAttempts,
+            perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
 
-        // ✅ Важно: даём наверх HttpRequestException со StatusCode — так легче правильно ловить unauthorized
-        if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        if (IsAuthError(resp.StatusCode))
             throw new HttpRequestException("Unauthorized (launcher token invalid/expired).", null, resp.StatusCode);
 
         resp.EnsureSuccessStatusCode();
 
-        var json = await ReadBodyAsync(resp, ct).ConfigureAwait(false);
+        var json = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
 
         return JsonSerializer.Deserialize<UserProfile>(json, JsonOptions)
                ?? new UserProfile { UserName = "Unknown", MinecraftName = "Player" };
@@ -271,26 +381,23 @@ public sealed class SiteAuthService
     // GET /api/launcher/economy/balance -> { currency:"RZN", balance:123 }
     public async Task<long> GetRezoniteBalanceAsync(string accessToken, CancellationToken ct)
     {
-        accessToken = NormalizeToken(accessToken);
-
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Get, "api/launcher/economy/balance");
-                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-                req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                EnsureBearer(req, accessToken);
                 return req;
             },
             ct: ct,
-            attempts: 3,
-            perTryTimeout: TimeSpan.FromSeconds(25));
+            attempts: DefaultAttempts,
+            perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
 
-        if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        if (IsAuthError(resp.StatusCode))
             throw new HttpRequestException("Unauthorized (launcher token invalid/expired).", null, resp.StatusCode);
 
         resp.EnsureSuccessStatusCode();
 
-        var json = await ReadBodyAsync(resp, ct).ConfigureAwait(false);
+        var json = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
         var dto = JsonSerializer.Deserialize<RezoniteBalanceResponse>(json, JsonOptions);
         return dto?.Balance ?? 0;
     }
@@ -303,17 +410,18 @@ public sealed class SiteAuthService
         object? payload,
         CancellationToken ct)
     {
-        accessToken = NormalizeToken(accessToken);
+        key = (key ?? "").Trim();
+        idempotencyKey = (idempotencyKey ?? "").Trim();
+
+        if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(idempotencyKey))
+            throw new ArgumentException("key/idempotencyKey are required");
 
         var reqModel = new LauncherEventRequest
         {
-            Key = key ?? "",
-            IdempotencyKey = idempotencyKey ?? "",
+            Key = key,
+            IdempotencyKey = idempotencyKey,
             Payload = payload
         };
-
-        if (!reqModel.IsValid)
-            throw new ArgumentException("key/idempotencyKey are required");
 
         var jsonBody = JsonSerializer.Serialize(reqModel, JsonOptions);
 
@@ -321,22 +429,21 @@ public sealed class SiteAuthService
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/events");
-                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-                req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-                req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+                EnsureBearer(req, accessToken);
+                req.Content = new StringContent(jsonBody, Utf8NoBom, "application/json");
                 return req;
             },
             ct: ct,
-            attempts: 3,
-            perTryTimeout: TimeSpan.FromSeconds(30));
+            attempts: DefaultAttempts,
+            perTryTimeout: TimeSpan.FromSeconds(30)).ConfigureAwait(false);
 
-        if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        if (IsAuthError(resp.StatusCode))
             throw new HttpRequestException("Unauthorized (launcher token invalid/expired).", null, resp.StatusCode);
 
         if (!resp.IsSuccessStatusCode)
             return null;
 
-        var respJson = await ReadBodyAsync(resp, ct).ConfigureAwait(false);
+        var respJson = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
 
         try
         {
@@ -370,7 +477,189 @@ public sealed class SiteAuthService
         }
         catch
         {
-            return JsonSerializer.Deserialize<LauncherEventResponse>(respJson, JsonOptions);
+            try { return JsonSerializer.Deserialize<LauncherEventResponse>(respJson, JsonOptions); }
+            catch { return null; }
         }
+    }
+
+    // =========================
+    // Friends API
+    // =========================
+
+    // GET /api/launcher/friends -> { ok, friends:[...] }
+    public async Task<FriendsListResponse> GetFriendsAsync(string accessToken, CancellationToken ct)
+    {
+        using var resp = await SendAsyncWithRetry(
+            factory: () =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Get, "api/launcher/friends");
+                EnsureBearer(req, accessToken);
+                return req;
+            },
+            ct: ct,
+            attempts: DefaultAttempts,
+            perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
+
+        if (IsAuthError(resp.StatusCode))
+            return new FriendsListResponse { Ok = false, Error = "Требуется авторизация." };
+
+        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
+        var dto = TryDeserialize<FriendsListResponse>(body) ?? new FriendsListResponse();
+
+        dto.Friends ??= Array.Empty<FriendDto>();
+        NormalizeOkFromHttp(dto, resp, body);
+
+        return dto;
+    }
+
+    // GET /api/launcher/friends/requests -> { ok, incoming:[...], outgoing:[...] }
+    public async Task<FriendRequestsResponse> GetFriendRequestsAsync(string accessToken, CancellationToken ct)
+    {
+        using var resp = await SendAsyncWithRetry(
+            factory: () =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Get, "api/launcher/friends/requests");
+                EnsureBearer(req, accessToken);
+                return req;
+            },
+            ct: ct,
+            attempts: DefaultAttempts,
+            perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
+
+        if (IsAuthError(resp.StatusCode))
+            return new FriendRequestsResponse { Ok = false, Error = "Требуется авторизация." };
+
+        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
+        var dto = TryDeserialize<FriendRequestsResponse>(body) ?? new FriendRequestsResponse();
+
+        dto.Incoming ??= Array.Empty<FriendDto>();
+        dto.Outgoing ??= Array.Empty<FriendDto>();
+        NormalizeOkFromHttp(dto, resp, body);
+
+        return dto;
+    }
+
+    // POST /api/launcher/friends/request body { query }
+    public async Task<OkResponse> SendFriendRequestAsync(string accessToken, string query, CancellationToken ct)
+    {
+        query = (query ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(query))
+            return new OkResponse { Ok = false, Error = "Пустой запрос." };
+
+        var bodyJson = JsonSerializer.Serialize(new { query }, JsonOptions);
+
+        using var resp = await SendAsyncWithRetry(
+            factory: () =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/friends/request");
+                EnsureBearer(req, accessToken);
+                req.Content = new StringContent(bodyJson, Utf8NoBom, "application/json");
+                return req;
+            },
+            ct: ct,
+            attempts: DefaultAttempts,
+            perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
+
+        if (IsAuthError(resp.StatusCode))
+            return new OkResponse { Ok = false, Error = "Требуется авторизация." };
+
+        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
+        var dto = TryDeserialize<OkResponse>(body) ?? new OkResponse();
+        NormalizeOkFromHttp(dto, resp, body);
+
+        return dto;
+    }
+
+    // POST /api/launcher/friends/accept body { fromUserId }
+    public async Task<OkResponse> AcceptFriendRequestAsync(string accessToken, string fromUserId, CancellationToken ct)
+    {
+        fromUserId = (fromUserId ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(fromUserId))
+            return new OkResponse { Ok = false, Error = "Не указан отправитель." };
+
+        var bodyJson = JsonSerializer.Serialize(new { fromUserId }, JsonOptions);
+
+        using var resp = await SendAsyncWithRetry(
+            factory: () =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/friends/accept");
+                EnsureBearer(req, accessToken);
+                req.Content = new StringContent(bodyJson, Utf8NoBom, "application/json");
+                return req;
+            },
+            ct: ct,
+            attempts: DefaultAttempts,
+            perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
+
+        if (IsAuthError(resp.StatusCode))
+            return new OkResponse { Ok = false, Error = "Требуется авторизация." };
+
+        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
+        var dto = TryDeserialize<OkResponse>(body) ?? new OkResponse();
+        NormalizeOkFromHttp(dto, resp, body);
+
+        return dto;
+    }
+
+    // POST /api/launcher/friends/decline body { fromUserId }
+    public async Task<OkResponse> DeclineFriendRequestAsync(string accessToken, string fromUserId, CancellationToken ct)
+    {
+        fromUserId = (fromUserId ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(fromUserId))
+            return new OkResponse { Ok = false, Error = "Не указан отправитель." };
+
+        var bodyJson = JsonSerializer.Serialize(new { fromUserId }, JsonOptions);
+
+        using var resp = await SendAsyncWithRetry(
+            factory: () =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/friends/decline");
+                EnsureBearer(req, accessToken);
+                req.Content = new StringContent(bodyJson, Utf8NoBom, "application/json");
+                return req;
+            },
+            ct: ct,
+            attempts: DefaultAttempts,
+            perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
+
+        if (IsAuthError(resp.StatusCode))
+            return new OkResponse { Ok = false, Error = "Требуется авторизация." };
+
+        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
+        var dto = TryDeserialize<OkResponse>(body) ?? new OkResponse();
+        NormalizeOkFromHttp(dto, resp, body);
+
+        return dto;
+    }
+
+    // POST /api/launcher/friends/remove body { userId }
+    public async Task<OkResponse> RemoveFriendAsync(string accessToken, string userId, CancellationToken ct)
+    {
+        userId = (userId ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(userId))
+            return new OkResponse { Ok = false, Error = "Не указан пользователь." };
+
+        var bodyJson = JsonSerializer.Serialize(new { userId }, JsonOptions);
+
+        using var resp = await SendAsyncWithRetry(
+            factory: () =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/friends/remove");
+                EnsureBearer(req, accessToken);
+                req.Content = new StringContent(bodyJson, Utf8NoBom, "application/json");
+                return req;
+            },
+            ct: ct,
+            attempts: DefaultAttempts,
+            perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
+
+        if (IsAuthError(resp.StatusCode))
+            return new OkResponse { Ok = false, Error = "Требуется авторизация." };
+
+        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
+        var dto = TryDeserialize<OkResponse>(body) ?? new OkResponse();
+        NormalizeOkFromHttp(dto, resp, body);
+
+        return dto;
     }
 }

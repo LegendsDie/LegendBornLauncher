@@ -1,17 +1,26 @@
-﻿using System;
+﻿// File: MainWindow.xaml.cs
+using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Xml.Linq;
 using LegendBorn.Services;
 using LegendBorn.ViewModels;
 
@@ -21,7 +30,11 @@ public partial class MainWindow : Window
 {
     private const int NewsTabIndex = 4;
     private const int CopyLogsMaxLines = 120;
-    private const string SiteUrl = "https://ru.legendborn.ru/";
+
+    // В XAML/подписках у тебя встречается ru.legendborn.ru, но он иногда недоступен.
+    // Для открытия сайта и подтягивания новостей используем основной домен, а ru — как резерв.
+    private const string SiteUrlPrimary = "https://legendborn.ru/";
+    private const string SiteUrlFallback = "https://ru.legendborn.ru/";
 
     private bool _updatesChecked;
     private bool _isClosing;
@@ -49,7 +62,14 @@ public partial class MainWindow : Window
     private bool _logAutoScroll = true;
     private ScrollChangedEventHandler? _logScrollHandler;
 
-    // ===== news models (UI-level, no VM dependency) =====
+    // ===== news =====
+    private CancellationTokenSource? _newsCts;
+    private static readonly HttpClient NewsHttp = CreateNewsHttp();
+
+    private static readonly string NewsCacheFilePath =
+        Path.Combine(LauncherPaths.CacheDir, "news_cache.json");
+
+    // UI-level news model (RootWindow fallback)
     public sealed class NewsItem
     {
         public string Title { get; init; } = "";
@@ -58,7 +78,7 @@ public partial class MainWindow : Window
         public string Url { get; init; } = "";
     }
 
-    // XAML binds via ElementName=RootWindow
+    // XAML binds via ElementName=RootWindow (fallback); PriorityBinding сперва пытается VM
     public ObservableCollection<NewsItem> ServerNewsTop2 { get; } = new();
     public ObservableCollection<NewsItem> ProjectNews { get; } = new();
 
@@ -119,7 +139,9 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
-        SeedNews();
+        // Сразу показываем кеш/дефолт (чтобы UI не был пустым),
+        // затем в фоне подтягиваем новости с сайта.
+        TryLoadNewsCacheOrSeed();
 
         // prefs can be loaded before VM (they target Window DP)
         LoadPrefs();
@@ -134,80 +156,28 @@ public partial class MainWindow : Window
         Closing += MainWindow_OnClosing;
         Closed += MainWindow_OnClosed;
 
-        StateChanged += (_, __) =>
-        {
-            try
-            {
-                if (_isClosing) return;
-                if (WindowState == WindowState.Normal)
-                    UpdateRestoreBoundsFromWindow();
-            }
-            catch { }
-        };
-
-        LocationChanged += (_, __) =>
-        {
-            try
-            {
-                if (_isClosing) return;
-                if (WindowState == WindowState.Normal)
-                    UpdateRestoreBoundsFromWindow();
-            }
-            catch { }
-        };
-
-        SizeChanged += (_, __) =>
-        {
-            try
-            {
-                if (_isClosing) return;
-                if (WindowState == WindowState.Normal)
-                    UpdateRestoreBoundsFromWindow();
-            }
-            catch { }
-        };
+        // Запоминаем restore bounds только когда окно в Normal.
+        StateChanged += (_, __) => OnWindowBoundsPossiblyChanged();
+        LocationChanged += (_, __) => OnWindowBoundsPossiblyChanged();
+        SizeChanged += (_, __) => OnWindowBoundsPossiblyChanged();
     }
 
-    private void SeedNews()
+    private void OnWindowBoundsPossiblyChanged()
     {
-        var now = DateTime.Now;
-
-        ServerNewsTop2.Clear();
-        ServerNewsTop2.Add(new NewsItem
+        try
         {
-            Title = "Технические работы",
-            Date = now.ToString("dd.MM"),
-            Summary = "Сегодня возможны краткие перезапуски сервера. Спасибо за понимание.",
-            Url = SiteUrl
-        });
-        ServerNewsTop2.Add(new NewsItem
-        {
-            Title = "Обновление сборки",
-            Date = now.AddDays(-1).ToString("dd.MM"),
-            Summary = "Исправления стабильности и подготовка к новым механикам.",
-            Url = SiteUrl
-        });
-
-        ProjectNews.Clear();
-        ProjectNews.Add(new NewsItem
-        {
-            Title = "LegendBorn: Дорожная карта",
-            Date = now.ToString("dd.MM.yyyy"),
-            Summary = "Публикуем ближайшие цели и приоритеты разработки.",
-            Url = SiteUrl
-        });
-        ProjectNews.Add(new NewsItem
-        {
-            Title = "Launcher: улучшения интерфейса",
-            Date = now.ToString("dd.MM.yyyy"),
-            Summary = "Новый блок новостей, быстрые кнопки и улучшенный top-bar.",
-            Url = SiteUrl
-        });
+            if (_isClosing) return;
+            if (WindowState == WindowState.Normal)
+                UpdateRestoreBoundsFromWindow();
+        }
+        catch { }
     }
 
+    // ===================== Window lifecycle =====================
     private void MainWindow_OnClosed(object? sender, EventArgs e)
     {
         TryUnhookLogsUi();
+        CancelNewsLoading();
     }
 
     private void MainWindow_OnClosing(object? sender, CancelEventArgs e)
@@ -218,6 +188,7 @@ public partial class MainWindow : Window
         try { _vm.PropertyChanged -= VmOnPropertyChanged; } catch { }
 
         TryUnhookLogsUi();
+        CancelNewsLoading();
 
         try { SavePrefs(); } catch { }
         try { _vm.MarkClosing(); } catch { }
@@ -228,10 +199,679 @@ public partial class MainWindow : Window
         ApplyResponsiveWindowSizeOnce();
         HookLogsUi();
 
+        // Подтянуть новости (сайт) после появления окна
+        _ = RefreshNewsFromSiteSafeAsync();
+
         if (_updatesChecked) return;
         _updatesChecked = true;
 
         _ = RunUpdateCheckSafeAsync();
+    }
+
+    // ===================== News =====================
+    private static HttpClient CreateNewsHttp()
+    {
+        var handler = new SocketsHttpHandler
+        {
+            AutomaticDecompression = DecompressionMethods.All,
+            Proxy = WebRequest.DefaultWebProxy,
+            UseProxy = true,
+            ConnectTimeout = TimeSpan.FromSeconds(10),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+            AllowAutoRedirect = true,
+            MaxConnectionsPerServer = 8
+        };
+
+        var http = new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan // таймауты per-request через CTS
+        };
+
+        try
+        {
+            var ua = LauncherIdentity.UserAgent;
+            if (!string.IsNullOrWhiteSpace(ua))
+                http.DefaultRequestHeaders.UserAgent.ParseAdd(ua);
+        }
+        catch
+        {
+            try
+            {
+                http.DefaultRequestHeaders.UserAgent.Clear();
+                http.DefaultRequestHeaders.UserAgent.ParseAdd($"LegendBornLauncher/{LauncherIdentity.InformationalVersion}");
+            }
+            catch { }
+        }
+
+        http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/xml"));
+        http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("text/xml"));
+        http.DefaultRequestHeaders.CacheControl = new CacheControlHeaderValue { NoCache = true };
+
+        return http;
+    }
+
+    private void CancelNewsLoading()
+    {
+        try { _newsCts?.Cancel(); } catch { }
+        try { _newsCts?.Dispose(); } catch { }
+        _newsCts = null;
+    }
+
+    private void TryLoadNewsCacheOrSeed()
+    {
+        if (TryLoadNewsCache(out var cachedServer, out var cachedProject))
+        {
+            ReplaceNewsCollections(cachedServer, cachedProject);
+            return;
+        }
+
+        SeedNewsFallback();
+    }
+
+    private void SeedNewsFallback()
+    {
+        var now = DateTime.Now;
+
+        ServerNewsTop2.Clear();
+        ServerNewsTop2.Add(new NewsItem
+        {
+            Title = "Технические работы",
+            Date = now.ToString("dd.MM", CultureInfo.InvariantCulture),
+            Summary = "Сегодня возможны краткие перезапуски сервера. Спасибо за понимание.",
+            Url = SiteUrlPrimary
+        });
+        ServerNewsTop2.Add(new NewsItem
+        {
+            Title = "Обновление сборки",
+            Date = now.AddDays(-1).ToString("dd.MM", CultureInfo.InvariantCulture),
+            Summary = "Исправления стабильности и подготовка к новым механикам.",
+            Url = SiteUrlPrimary
+        });
+
+        ProjectNews.Clear();
+        ProjectNews.Add(new NewsItem
+        {
+            Title = "LegendBorn: Дорожная карта",
+            Date = now.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture),
+            Summary = "Публикуем ближайшие цели и приоритеты разработки.",
+            Url = SiteUrlPrimary
+        });
+        ProjectNews.Add(new NewsItem
+        {
+            Title = "Launcher: улучшения интерфейса",
+            Date = now.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture),
+            Summary = "Новый профиль, красивее новости, стабильнее загрузка данных.",
+            Url = SiteUrlPrimary
+        });
+    }
+
+    private async Task RefreshNewsFromSiteSafeAsync()
+    {
+        if (_isClosing) return;
+
+        CancelNewsLoading();
+        _newsCts = new CancellationTokenSource();
+        var ct = _newsCts.Token;
+
+        try
+        {
+            // Дадим окну быстро отрисоваться, не занимая UI-поток без нужды
+            await Task.Delay(150, ct).ConfigureAwait(false);
+
+            var (server, project) = await FetchNewsSmartAsync(ct).ConfigureAwait(false);
+            if (ct.IsCancellationRequested || _isClosing) return;
+
+            if (server.Count == 0 && project.Count == 0)
+                return;
+
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (_isClosing) return;
+                ReplaceNewsCollections(server, project);
+            });
+
+            SaveNewsCacheQuiet(server, project);
+        }
+        catch (OperationCanceledException)
+        {
+            // ignored
+        }
+        catch
+        {
+            // если упало — оставляем то, что уже показано (кеш/seed)
+        }
+    }
+
+    private void ReplaceNewsCollections(IReadOnlyList<NewsItem> server, IReadOnlyList<NewsItem> project)
+    {
+        ServerNewsTop2.Clear();
+        foreach (var n in server.Take(2))
+            ServerNewsTop2.Add(n);
+
+        ProjectNews.Clear();
+        foreach (var n in project)
+            ProjectNews.Add(n);
+    }
+
+    private static void SaveNewsCacheQuiet(IReadOnlyList<NewsItem> server, IReadOnlyList<NewsItem> project)
+    {
+        try
+        {
+            LauncherPaths.EnsureDir(LauncherPaths.CacheDir);
+
+            var dto = new NewsCacheDto
+            {
+                FetchedAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                Server = server.ToList(),
+                Project = project.ToList()
+            };
+
+            var json = JsonSerializer.Serialize(dto, new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                PropertyNameCaseInsensitive = true
+            });
+
+            var tmp = NewsCacheFilePath + ".tmp";
+            File.WriteAllText(tmp, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+            ReplaceOrMoveAtomic(tmp, NewsCacheFilePath);
+            TryDeleteQuiet(tmp);
+        }
+        catch { }
+    }
+
+    private static bool TryLoadNewsCache(out List<NewsItem> server, out List<NewsItem> project)
+    {
+        server = new List<NewsItem>();
+        project = new List<NewsItem>();
+
+        try
+        {
+            if (!File.Exists(NewsCacheFilePath))
+                return false;
+
+            var json = File.ReadAllText(NewsCacheFilePath, Encoding.UTF8);
+            if (string.IsNullOrWhiteSpace(json))
+                return false;
+
+            var dto = JsonSerializer.Deserialize<NewsCacheDto>(json, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                AllowTrailingCommas = true,
+                ReadCommentHandling = JsonCommentHandling.Skip
+            });
+
+            if (dto == null)
+                return false;
+
+            if (dto.Project != null) project = dto.Project.Where(IsValidNews).ToList();
+            if (dto.Server != null) server = dto.Server.Where(IsValidNews).ToList();
+
+            if (server.Count == 0 && project.Count > 0)
+                server = project.Take(2).ToList();
+
+            if (project.Count == 0 && server.Count > 0)
+                project = server.ToList();
+
+            return server.Count > 0 || project.Count > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private sealed class NewsCacheDto
+    {
+        public long FetchedAtUnix { get; set; }
+        public List<NewsItem>? Server { get; set; }
+        public List<NewsItem>? Project { get; set; }
+    }
+
+    private static bool IsValidNews(NewsItem n)
+        => n != null
+           && !string.IsNullOrWhiteSpace(n.Title)
+           && !string.IsNullOrWhiteSpace(n.Url);
+
+    private static async Task<(List<NewsItem> Server, List<NewsItem> Project)> FetchNewsSmartAsync(CancellationToken ct)
+    {
+        var bases = new[]
+        {
+            SiteUrlPrimary.TrimEnd('/'),
+            SiteUrlFallback.TrimEnd('/')
+        };
+
+        var paths = new[]
+        {
+            // JSON (желательно)
+            "/api/launcher/news",
+            "/api/launcher/news.json",
+            "/api/news",
+            "/api/news.json",
+            "/launcher/news.json",
+            "/launcher/newsfeed.json",
+            "/launcher/news_feed.json",
+            "/news.json",
+
+            // RSS/Atom (если есть)
+            "/feed",
+            "/rss",
+            "/rss.xml",
+            "/feed.xml",
+            "/news/feed",
+            "/blog/feed",
+            "/blog/rss",
+        };
+
+        foreach (var b in bases.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            foreach (var p in paths)
+            {
+                var url = b + p;
+                var res = await TryFetchAndParseNewsAsync(url, ct, timeout: TimeSpan.FromSeconds(8)).ConfigureAwait(false);
+                if (res.Server.Count > 0 || res.Project.Count > 0)
+                    return res;
+            }
+        }
+
+        return (new List<NewsItem>(), new List<NewsItem>());
+    }
+
+    private static async Task<(List<NewsItem> Server, List<NewsItem> Project)> TryFetchAndParseNewsAsync(
+        string url,
+        CancellationToken ct,
+        TimeSpan timeout)
+    {
+        try
+        {
+            using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            reqCts.CancelAfter(timeout);
+
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Accept.Clear();
+            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/xml"));
+            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/xml"));
+            req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
+
+            using var resp = await NewsHttp.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token)
+                .ConfigureAwait(false);
+
+            if (!resp.IsSuccessStatusCode)
+                return (new List<NewsItem>(), new List<NewsItem>());
+
+            var contentType = resp.Content.Headers.ContentType?.MediaType ?? "";
+            var body = await ReadUtf8LimitedAsync(resp, 512 * 1024, reqCts.Token).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(body))
+                return (new List<NewsItem>(), new List<NewsItem>());
+
+            var trimmed = body.TrimStart();
+
+            var looksJson = contentType.Contains("json", StringComparison.OrdinalIgnoreCase)
+                            || trimmed.StartsWith("{", StringComparison.Ordinal)
+                            || trimmed.StartsWith("[", StringComparison.Ordinal);
+
+            var looksXml = contentType.Contains("xml", StringComparison.OrdinalIgnoreCase)
+                           || trimmed.StartsWith("<", StringComparison.Ordinal);
+
+            if (looksJson)
+                return ParseNewsFromJson(body);
+
+            if (looksXml)
+                return ParseNewsFromXml(body);
+
+            return (new List<NewsItem>(), new List<NewsItem>());
+        }
+        catch
+        {
+            return (new List<NewsItem>(), new List<NewsItem>());
+        }
+    }
+
+    private static async Task<string> ReadUtf8LimitedAsync(HttpResponseMessage resp, int maxBytes, CancellationToken ct)
+    {
+        await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+
+        var buffer = new byte[16 * 1024];
+        var total = 0;
+
+        using var ms = new MemoryStream();
+
+        while (true)
+        {
+            var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
+            if (read <= 0) break;
+
+            total += read;
+            if (total > maxBytes)
+                return "";
+
+            ms.Write(buffer, 0, read);
+        }
+
+        return Encoding.UTF8.GetString(ms.ToArray());
+    }
+
+    private static (List<NewsItem> Server, List<NewsItem> Project) ParseNewsFromJson(string json)
+    {
+        var server = new List<NewsItem>();
+        var project = new List<NewsItem>();
+
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
+            var root = doc.RootElement;
+
+            // Вариант A: { server:[...], project:[...] }
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (TryReadArray(root, "server", out var serverArr))
+                    server.AddRange(ReadItemsArray(serverArr));
+
+                if (TryReadArray(root, "project", out var projectArr))
+                    project.AddRange(ReadItemsArray(projectArr));
+
+                // Вариант B: { items:[...] }
+                if (server.Count == 0 && project.Count == 0 && TryReadArray(root, "items", out var itemsArr))
+                    project.AddRange(ReadItemsArray(itemsArr));
+
+                // Вариант C: { news/posts/data/entries:[...] }
+                if (server.Count == 0 && project.Count == 0)
+                {
+                    foreach (var key in new[] { "news", "posts", "data", "entries" })
+                    {
+                        if (TryReadArray(root, key, out var arr))
+                        {
+                            project.AddRange(ReadItemsArray(arr));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Вариант D: корень массив
+            if (root.ValueKind == JsonValueKind.Array && project.Count == 0)
+                project.AddRange(ReadItemsArray(root));
+
+            project = DedupSort(project);
+            server = DedupSort(server);
+
+            if (server.Count == 0 && project.Count > 0)
+                server = project.Take(2).ToList();
+
+            if (project.Count == 0 && server.Count > 0)
+                project = server.ToList();
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return (server, project);
+
+        static bool TryReadArray(JsonElement obj, string name, out JsonElement arr)
+        {
+            arr = default;
+            if (obj.ValueKind != JsonValueKind.Object) return false;
+            if (!obj.TryGetProperty(name, out var p)) return false;
+            if (p.ValueKind != JsonValueKind.Array) return false;
+            arr = p;
+            return true;
+        }
+
+        static List<NewsItem> ReadItemsArray(JsonElement arr)
+        {
+            var list = new List<NewsItem>();
+
+            foreach (var it in arr.EnumerateArray())
+            {
+                if (it.ValueKind != JsonValueKind.Object)
+                    continue;
+
+                var title = GetString(it, "title");
+                if (string.IsNullOrWhiteSpace(title))
+                    title = GetString(it, "name");
+
+                var url = GetString(it, "url");
+                if (string.IsNullOrWhiteSpace(url))
+                    url = GetString(it, "link");
+
+                var summary = GetString(it, "summary");
+                if (string.IsNullOrWhiteSpace(summary))
+                    summary = GetString(it, "excerpt");
+                if (string.IsNullOrWhiteSpace(summary))
+                    summary = GetString(it, "description");
+
+                var dateStr = GetString(it, "date");
+                if (string.IsNullOrWhiteSpace(dateStr))
+                    dateStr = GetString(it, "publishedAt");
+                if (string.IsNullOrWhiteSpace(dateStr))
+                    dateStr = GetString(it, "pubDate");
+
+                var dateUnix = GetInt64(it, "dateUnix");
+                if (dateUnix <= 0)
+                    dateUnix = GetInt64(it, "publishedAtUnix");
+                if (dateUnix <= 0)
+                    dateUnix = GetInt64(it, "createdAtUnix");
+
+                var date = FormatDateSmart(dateStr, dateUnix);
+
+                title = (title ?? "").Trim();
+                url = (url ?? "").Trim();
+                summary = WebUtility.HtmlDecode((summary ?? "").Trim());
+
+                if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(url))
+                    continue;
+
+                url = NormalizeUrl(url);
+
+                list.Add(new NewsItem
+                {
+                    Title = title,
+                    Date = date,
+                    Summary = string.IsNullOrWhiteSpace(summary) ? "Открыть новость на сайте." : summary,
+                    Url = url
+                });
+            }
+
+            return list;
+
+            static string GetString(JsonElement obj, string name)
+                => obj.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.String
+                    ? (p.GetString() ?? "")
+                    : "";
+
+            static long GetInt64(JsonElement obj, string name)
+                => obj.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.Number && p.TryGetInt64(out var v)
+                    ? v
+                    : 0;
+        }
+
+        static List<NewsItem> DedupSort(List<NewsItem> list)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var cleaned = new List<(NewsItem Item, DateTimeOffset SortKey)>();
+
+            foreach (var n in list)
+            {
+                if (!IsValidNews(n)) continue;
+
+                var key = (n.Url ?? "").Trim();
+                if (!seen.Add(key)) continue;
+
+                cleaned.Add((n, ParseDateForSort(n.Date)));
+            }
+
+            return cleaned
+                .OrderByDescending(x => x.SortKey)
+                .Select(x => x.Item)
+                .ToList();
+
+            static DateTimeOffset ParseDateForSort(string s)
+            {
+                if (DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var dto))
+                    return dto;
+
+                if (DateTime.TryParseExact(s, new[] { "dd.MM.yyyy", "dd.MM" }, CultureInfo.InvariantCulture,
+                        DateTimeStyles.AssumeLocal, out var dt))
+                {
+                    if (dt.Year == 1)
+                        dt = new DateTime(DateTime.Now.Year, dt.Month, dt.Day);
+                    return new DateTimeOffset(dt);
+                }
+
+                return DateTimeOffset.MinValue;
+            }
+        }
+    }
+
+    private static (List<NewsItem> Server, List<NewsItem> Project) ParseNewsFromXml(string xml)
+    {
+        var project = new List<NewsItem>();
+
+        try
+        {
+            var doc = XDocument.Parse(xml);
+
+            // RSS: <rss><channel><item>...
+            var items = doc.Descendants().Where(x => x.Name.LocalName == "item").ToList();
+            if (items.Count == 0)
+            {
+                // Atom: <feed><entry>...
+                items = doc.Descendants().Where(x => x.Name.LocalName == "entry").ToList();
+            }
+
+            foreach (var it in items)
+            {
+                var title = it.Descendants().FirstOrDefault(x => x.Name.LocalName == "title")?.Value?.Trim() ?? "";
+                var link = "";
+
+                // RSS: <link>url</link>
+                var linkEl = it.Descendants().FirstOrDefault(x => x.Name.LocalName == "link");
+                if (linkEl != null)
+                {
+                    // Atom: <link href="..."/>
+                    var href = linkEl.Attribute("href")?.Value;
+                    link = !string.IsNullOrWhiteSpace(href) ? href.Trim() : (linkEl.Value?.Trim() ?? "");
+                }
+
+                var desc = it.Descendants().FirstOrDefault(x => x.Name.LocalName == "description")?.Value?.Trim() ?? "";
+                if (string.IsNullOrWhiteSpace(desc))
+                    desc = it.Descendants().FirstOrDefault(x => x.Name.LocalName == "summary")?.Value?.Trim() ?? "";
+
+                var pub = it.Descendants()
+                              .FirstOrDefault(x => x.Name.LocalName is "pubDate" or "published" or "updated")
+                              ?.Value?.Trim() ?? "";
+
+                var date = FormatDateSmart(pub, 0);
+
+                if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(link))
+                    continue;
+
+                link = NormalizeUrl(link);
+
+                project.Add(new NewsItem
+                {
+                    Title = WebUtility.HtmlDecode(title),
+                    Date = date,
+                    Summary = string.IsNullOrWhiteSpace(desc) ? "Открыть новость на сайте." : StripHtmlLoose(desc),
+                    Url = link
+                });
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        project = project
+            .Where(IsValidNews)
+            .GroupBy(n => n.Url, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .ToList();
+
+        var server = project.Take(2).ToList();
+        return (server, project);
+
+        static string StripHtmlLoose(string s)
+        {
+            try
+            {
+                s = WebUtility.HtmlDecode(s);
+                s = s.Replace("\r", " ").Replace("\n", " ");
+                while (s.Contains("  ", StringComparison.Ordinal)) s = s.Replace("  ", " ");
+
+                var sb = new StringBuilder(s.Length);
+                var inside = false;
+
+                foreach (var ch in s)
+                {
+                    if (ch == '<') { inside = true; continue; }
+                    if (ch == '>') { inside = false; continue; }
+                    if (!inside) sb.Append(ch);
+                }
+
+                var res = sb.ToString().Trim();
+                return string.IsNullOrWhiteSpace(res) ? s.Trim() : res;
+            }
+            catch
+            {
+                return (s ?? "").Trim();
+            }
+        }
+    }
+
+    private static string NormalizeUrl(string url)
+    {
+        url = (url ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(url))
+            return SiteUrlPrimary;
+
+        // относительные ссылки приводим к primary домену
+        if (Uri.TryCreate(url, UriKind.Relative, out var rel))
+            return new Uri(new Uri(SiteUrlPrimary), rel).ToString();
+
+        return url;
+    }
+
+    private static string FormatDateSmart(string dateStr, long unixSeconds)
+    {
+        try
+        {
+            if (unixSeconds > 0)
+            {
+                var dt = DateTimeOffset.FromUnixTimeSeconds(unixSeconds).ToLocalTime();
+                return dt.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture);
+            }
+
+            dateStr = (dateStr ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(dateStr))
+                return DateTime.Now.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture);
+
+            if (DateTimeOffset.TryParse(dateStr, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var dto))
+                return dto.ToLocalTime().ToString("dd.MM.yyyy", CultureInfo.InvariantCulture);
+
+            // RSS pubDate в RFC1123
+            if (DateTimeOffset.TryParseExact(dateStr, "r", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out dto))
+                return dto.ToLocalTime().ToString("dd.MM.yyyy", CultureInfo.InvariantCulture);
+
+            // dd.MM или dd.MM.yyyy
+            if (DateTime.TryParseExact(dateStr, new[] { "dd.MM.yyyy", "dd.MM" }, CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeLocal, out var dt2))
+            {
+                if (dt2.Year == 1)
+                    dt2 = new DateTime(DateTime.Now.Year, dt2.Month, dt2.Day);
+                return dt2.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture);
+            }
+
+            return dateStr.Length > 12 ? dateStr.Substring(0, 12) : dateStr;
+        }
+        catch
+        {
+            return DateTime.Now.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture);
+        }
     }
 
     // ===================== Responsive Window Size =====================
@@ -362,7 +1002,7 @@ public partial class MainWindow : Window
         {
             if (_isClosing) return;
 
-            // new items appended; not user scroll
+            // Если изменился Extent — это добавились строки (не пользовательский скролл)
             if (e.ExtentHeightChange != 0)
                 return;
 
@@ -521,7 +1161,7 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var json = File.ReadAllText(PrefsPath);
+            var json = File.ReadAllText(PrefsPath, Encoding.UTF8);
             var dto = JsonSerializer.Deserialize<PrefsDto>(json);
 
             var s = (dto?.GameUiMode ?? "").Trim();
@@ -546,7 +1186,7 @@ public partial class MainWindow : Window
             var json = JsonSerializer.Serialize(dto, new JsonSerializerOptions { WriteIndented = true });
 
             var tmp = PrefsPath + ".tmp";
-            File.WriteAllText(tmp, json);
+            File.WriteAllText(tmp, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
             if (File.Exists(PrefsPath))
             {
@@ -561,7 +1201,7 @@ public partial class MainWindow : Window
                 File.Move(tmp, PrefsPath);
             }
 
-            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+            TryDeleteQuiet(tmp);
         }
         catch { }
     }
@@ -571,7 +1211,7 @@ public partial class MainWindow : Window
         try
         {
             if (_isClosing) return;
-            await UpdateService.CheckAndUpdateAsync(silent: false, showNoUpdates: false);
+            await UpdateService.CheckAndUpdateAsync(silent: false, showNoUpdates: false).ConfigureAwait(false);
         }
         catch { }
     }
@@ -608,6 +1248,31 @@ public partial class MainWindow : Window
             d = VisualTreeHelper.GetParent(d);
         }
         return false;
+    }
+
+    private static void ReplaceOrMoveAtomic(string sourceTmp, string destPath)
+    {
+        if (OperatingSystem.IsWindows() && File.Exists(destPath))
+        {
+            var backup = destPath + ".bak";
+            try
+            {
+                TryDeleteQuiet(backup);
+                File.Replace(sourceTmp, destPath, backup, ignoreMetadataErrors: true);
+            }
+            finally
+            {
+                TryDeleteQuiet(backup);
+            }
+            return;
+        }
+
+        File.Move(sourceTmp, destPath, overwrite: true);
+    }
+
+    private static void TryDeleteQuiet(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch { }
     }
 
     // ===================== XAML handlers =====================
@@ -666,7 +1331,7 @@ public partial class MainWindow : Window
         catch { }
     }
 
-    // One button: Play OR Stop
+    // One button: Play OR Stop (не трогаю логику)
     private void PlayOrStop_OnClick(object sender, RoutedEventArgs e)
     {
         try
@@ -689,7 +1354,7 @@ public partial class MainWindow : Window
     private void OpenSite_OnClick(object sender, RoutedEventArgs e)
     {
         if (_isClosing) return;
-        TryOpenUrl(SiteUrl);
+        TryOpenUrl(SiteUrlPrimary);
     }
 
     private void OpenNewsTab_OnClick(object sender, RoutedEventArgs e)
@@ -697,8 +1362,6 @@ public partial class MainWindow : Window
         try
         {
             if (_isClosing) return;
-
-            // TwoWay binding на SelectedIndex — достаточно менять VM.
             _vm.SelectedMenuIndex = NewsTabIndex;
         }
         catch { }

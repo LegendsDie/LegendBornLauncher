@@ -1,8 +1,8 @@
+// File: ViewModels/MainViewModel.Servers.cs
 using System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using LegendBorn.Services;
 
 namespace LegendBorn.ViewModels;
 
@@ -61,21 +61,21 @@ public sealed partial class MainViewModel
 
             _previousSelectedServerAddress = addr;
         }
-        catch { }
+        catch { /* ignore */ }
 
         try
         {
             var label = MakeAutoVersionLabel(value);
             SetVersionsUi(label);
         }
-        catch { }
+        catch { /* ignore */ }
 
         try
         {
             _config.Current.LastServerId = value.Id;
             ScheduleConfigSave();
         }
-        catch { }
+        catch { /* ignore */ }
 
         RaisePackPresentation();
         RefreshCanStates();
@@ -90,11 +90,11 @@ public sealed partial class MainViewModel
             AppendLog("Серверы: загрузка списка...");
 
             var list = await _servers.GetServersOrDefaultAsync(
-                mirrors: ServerListService.DefaultServersMirrors,
+                mirrors: Services.ServerListService.DefaultServersMirrors,
                 ct: ct);
 
             var savedId = "";
-            try { savedId = (_config.Current.LastServerId ?? "").Trim(); } catch { }
+            try { savedId = (_config.Current.LastServerId ?? "").Trim(); } catch { /* ignore */ }
 
             InvokeOnUi(() =>
             {

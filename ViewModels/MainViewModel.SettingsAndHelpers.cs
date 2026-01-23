@@ -1,3 +1,4 @@
+// File: ViewModels/MainViewModel.Helpers.cs
 using System;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -17,7 +18,7 @@ public sealed partial class MainViewModel
     {
         _isClosing = true;
 
-        try { _lifetimeCts.Cancel(); } catch { }
+        try { _lifetimeCts.Cancel(); } catch { /* ignore */ }
 
         CancelLoginWait();
     }
@@ -51,7 +52,7 @@ public sealed partial class MainViewModel
             if (disp.CheckAccess()) action();
             else disp.BeginInvoke(action, priority);
         }
-        catch { }
+        catch { /* ignore */ }
     }
 
     private void InvokeOnUi(Action action, DispatcherPriority priority = DispatcherPriority.Send)
@@ -66,7 +67,7 @@ public sealed partial class MainViewModel
             if (disp.CheckAccess()) action();
             else disp.Invoke(action, priority);
         }
-        catch { }
+        catch { /* ignore */ }
     }
 
     private const int ProgressUiMinIntervalMs = 80;
@@ -101,7 +102,7 @@ public sealed partial class MainViewModel
         _ = Task.Run(async () =>
         {
             try { await Task.Delay(delay).ConfigureAwait(false); }
-            catch { }
+            catch { /* ignore */ }
             finally
             {
                 Interlocked.Exchange(ref _progressPumpScheduled, 0);
@@ -171,7 +172,7 @@ public sealed partial class MainViewModel
         var lver = (s.LoaderVersion ?? "").Trim();
         var mc = (s.MinecraftVersion ?? "1.21.1").Trim();
 
-        string L(string? t) => FormatLoaderName(t);
+        static string L(string? t) => FormatLoaderName(t);
 
         if (loaderType == "vanilla" || string.IsNullOrWhiteSpace(loaderType))
             return $"AUTO • {L(loaderType)} {mc}";
@@ -200,7 +201,7 @@ public sealed partial class MainViewModel
                 LogLines.RemoveAt(0);
         });
 
-        try { _log.Info(text); } catch { }
+        try { _log.Info(text); } catch { /* ignore */ }
     }
 
     private void RefreshCanStates()
@@ -354,8 +355,7 @@ public sealed partial class MainViewModel
         // не выше хардкапа
         max = Math.Min(max, hardCap);
 
-        // если система очень слабая — всё равно UI держим 4GB минимум (по ТЗ),
-        // но реальная "адекватность" будет зависеть от железа
+        // UI держим 4GB минимум (по ТЗ)
         return Math.Max(max, 4096);
     }
 

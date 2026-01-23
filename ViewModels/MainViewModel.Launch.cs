@@ -1,3 +1,4 @@
+// File: ViewModels/MainViewModel.Launch.cs
 using System;
 using System.Diagnostics;
 using System.Linq;
@@ -164,7 +165,7 @@ public sealed partial class MainViewModel
                 _config.Current.LastServerIp = ipToSave;
                 ScheduleConfigSave();
             }
-            catch { }
+            catch { /* ignore */ }
 
             StatusText = "Запуск игры...";
 
@@ -229,7 +230,7 @@ public sealed partial class MainViewModel
                 });
             };
         }
-        catch { }
+        catch { /* ignore */ }
     }
 
     private MinecraftService.LoaderSpec CreateLoaderSpecFromServer(ServerEntry s)
@@ -244,6 +245,8 @@ public sealed partial class MainViewModel
         if (string.IsNullOrWhiteSpace(loaderVer))
             throw new InvalidOperationException($"Loader '{loaderType}' требует версию (loader.version).");
 
+        // Для forge/neoforge можем собрать дефолтный installerUrl.
+        // Для остальных (fabric/quilt и т.п.) — ожидаем, что серверный конфиг отдаст installerUrl.
         if (string.IsNullOrWhiteSpace(installerUrl))
         {
             if (loaderType == "neoforge")
@@ -258,7 +261,7 @@ public sealed partial class MainViewModel
             }
             else
             {
-                throw new InvalidOperationException($"Неизвестный loader '{loaderType}' (нет installerUrl).");
+                throw new InvalidOperationException($"Loader '{loaderType}' требует installerUrl (не задан в конфиге сервера).");
             }
         }
 

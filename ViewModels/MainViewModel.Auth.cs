@@ -1,3 +1,4 @@
+// File: ViewModels/MainViewModel.Auth.cs
 using System;
 using System.Diagnostics;
 using System.Net;
@@ -22,8 +23,8 @@ public sealed partial class MainViewModel
 
         if (cts is null) return;
 
-        try { cts.Cancel(); } catch { }
-        try { cts.Dispose(); } catch { }
+        try { cts.Cancel(); } catch { /* ignore */ }
+        try { cts.Dispose(); } catch { /* ignore */ }
     }
 
     private static bool LooksLikeUnauthorized(Exception ex)
@@ -77,7 +78,7 @@ public sealed partial class MainViewModel
             if (expiresAtUnix > 0)
                 return DateTimeOffset.FromUnixTimeSeconds(expiresAtUnix);
         }
-        catch { }
+        catch { /* ignore */ }
 
         return DateTimeOffset.UtcNow.AddMinutes(10);
     }
@@ -126,7 +127,7 @@ public sealed partial class MainViewModel
             if (resp is not null && resp.Ok && resp.Balance >= 0)
                 PostToUi(() => Rezonite = resp.Balance);
         }
-        catch { }
+        catch { /* ignore */ }
     }
 
     private async Task ApplySuccessfulLoginAsync(AuthTokens tokens, CancellationToken ct)
@@ -139,10 +140,9 @@ public sealed partial class MainViewModel
         SiteUserName = string.IsNullOrWhiteSpace(me.UserName) ? "Пользователь" : me.UserName;
         IsLoggedIn = true;
 
-        // ✅ Ключевая логика: ник с сайта только при ПЕРВОЙ авторизации (когда в конфиге нет ника).
+        // ✅ ник с сайта только при ПЕРВОЙ авторизации (когда в конфиге нет ника).
         if (HasConfigUsername(out var local))
         {
-            // если в конфиге уже есть ник — оставляем его (только чистим формат, если битый)
             if (!string.Equals(Username, local, StringComparison.Ordinal))
                 Username = local;
         }
@@ -157,9 +157,9 @@ public sealed partial class MainViewModel
             _config.Current.LastSuccessfulLoginUtc = DateTimeOffset.UtcNow;
             ScheduleConfigSave();
         }
-        catch { }
+        catch { /* ignore */ }
 
-        await TrySendDailyLauncherLoginEventAsync(ct);
+        await TrySendDailyLauncherLoginEventAsync(ct).ConfigureAwait(false);
 
         if (!me.CanPlay)
         {
@@ -191,10 +191,9 @@ public sealed partial class MainViewModel
 
     private void ApplyOfflineAuthenticatedUiState(AuthTokens tokens, string statusText)
     {
-        // ✅ “не переподключаться каждый раз”: токены держим, UI не сбрасываем.
+        // ✅ сеть/сайт легли -> не разлогиниваем, токен НЕ удаляем
         _tokens = tokens;
 
-        // профиль не трогаем: если был — останется, если не был — будет null.
         if (!IsLoggedIn)
             IsLoggedIn = true;
 
@@ -232,13 +231,11 @@ public sealed partial class MainViewModel
         {
             if (LooksLikeUnauthorized(ex))
             {
-                // токен реально невалиден -> сбрасываем
                 _tokenStore.Clear();
                 ApplyLoggedOutUiState("Требуется вход.");
             }
             else
             {
-                // ✅ сеть/сайт легли -> не разлогиниваем, токен НЕ удаляем
                 ApplyOfflineAuthenticatedUiState(saved, "Вход сохранён (нет связи с сайтом).");
                 AppendLog("Автовход: сайт/сеть недоступны — использую сохранённую авторизацию.");
             }
@@ -434,7 +431,7 @@ public sealed partial class MainViewModel
                 _config.Current.LastUsername = null;
                 ScheduleConfigSave();
             }
-            catch { }
+            catch { /* ignore */ }
 
             // ✅ сбрасываем UI-ник, НЕ через сеттер (иначе он снова сохранит в конфиг)
             _username = "Player";

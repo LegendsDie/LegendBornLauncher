@@ -1,14 +1,15 @@
 using System;
+using System.IO;
 using System.Runtime.InteropServices;
 
 namespace LegendBorn.Models;
 
 public sealed class LauncherConfig
 {
-    public string ConfigSchemaVersion { get; set; } = CurrentSchemaVersion;
+    // ✅ bump schema (добавили RamGb и улучшили авто-алгоритм/кроссплатформ)
+    public const string CurrentSchemaVersion = "0.2.8";
 
-    // ✅ bump schema (изменили правила RAM)
-    public const string CurrentSchemaVersion = "0.2.7";
+    public string ConfigSchemaVersion { get; set; } = CurrentSchemaVersion;
 
     public string? LastServerId { get; set; }
 
@@ -20,9 +21,17 @@ public sealed class LauncherConfig
 
     public string? GameRootPath { get; set; }
 
-    // RamMb <= 0 => AUTO
-    // ✅ ТЗ: ручной ввод 4..16 GB
-    public int RamMb { get; set; } = RamMinMb; // ✅ дефолт теперь 4GB (не 1GB)
+    /// <summary>
+    /// RAM в мегабайтах.
+    /// 0 или меньше => AUTO.
+    /// </summary>
+    public int RamMb { get; set; } = RamMinMb; // дефолт: 4GB
+
+    /// <summary>
+    /// Устаревшее поле (старые конфиги могли хранить GB).
+    /// Если задано (4..16), будет мигрировано в RamMb при Normalize().
+    /// </summary>
+    public int? RamGb { get; set; }
 
     public string? JavaPath { get; set; }
 
@@ -38,9 +47,15 @@ public sealed class LauncherConfig
 
     public string? LastLauncherVersion { get; set; }
 
-    // ✅ ТЗ: RAM диапазон
+    // ✅ ТЗ: ручной диапазон RAM
     public const int RamMinMb = 4096;   // 4GB
     public const int RamMaxMb = 16384;  // 16GB
+
+    // сколько оставить ОС минимум (2GB)
+    private const int OsReserveMb = 2048;
+
+    // шаг округления RAM
+    private const int RamStepMb = 256;
 
     public void Normalize()
     {
@@ -55,7 +70,25 @@ public sealed class LauncherConfig
 
         LastMenuIndex = Clamp(LastMenuIndex, min: 0, max: 50);
 
+        // ✅ миграция старого поля RamGb -> RamMb
+        if (RamGb is int gb && gb is >= 1 and <= 128)
+        {
+            // если в старом конфиге RamMb пустое/авто — берём gb
+            if (RamMb == 0 || RamMb == RamMinMb) // RamMinMb был дефолтом, но миграцию делаем осторожно
+            {
+                RamMb = gb * 1024;
+            }
+            RamGb = null; // убираем, чтобы дальше не мешало
+        }
+
         RamMb = NormalizeRamMb(RamMb);
+
+        // пути: чуть-чуть подчистим мусор
+        if (!string.IsNullOrWhiteSpace(GameRootPath))
+            GameRootPath = NormalizePath(GameRootPath);
+
+        if (!string.IsNullOrWhiteSpace(JavaPath))
+            JavaPath = NormalizePath(JavaPath);
 
         LastSuccessfulLoginUtc = NormalizeUtc(LastSuccessfulLoginUtc);
         LastLauncherStartUtc = NormalizeUtc(LastLauncherStartUtc);
@@ -68,6 +101,17 @@ public sealed class LauncherConfig
 
     public bool IsRamAuto => RamMb <= 0;
 
+    public void SetAutoRam() => RamMb = 0;
+
+    public void SetManualRamMb(int mb) => RamMb = NormalizeRamMb(mb);
+
+    public void SetManualRamGb(int gb) => RamMb = NormalizeRamMb(gb * 1024);
+
+    /// <summary>
+    /// Итоговая RAM для запуска:
+    /// - если RamMb вручную => нормализованное значение
+    /// - если AUTO => рассчитывается по физической памяти
+    /// </summary>
     public int GetEffectiveRamMb()
     {
         if (!IsRamAuto)
@@ -75,29 +119,23 @@ public sealed class LauncherConfig
 
         var total = TryGetTotalPhysicalMemoryMb();
         if (total <= 0)
-            return RamMinMb; // ✅ минимум 4GB
+            return RamMinMb;
 
-        // ✅ Auto: 50% от RAM, но:
-        // - минимум 4GB
-        // - максимум 16GB
+        // ✅ Auto-логика:
+        // - берём 50% от физической RAM
         // - оставляем системе минимум 2GB
+        // - жёсткие рамки 4..16GB
+        // - округление до 256MB
         var rec = (int)Math.Round(total * 0.50);
 
-        var maxByReserve = Math.Max(RamMinMb, total - 2048);
+        var maxByReserve = Math.Max(RamMinMb, total - OsReserveMb);
         var hardMax = Math.Min(RamMaxMb, maxByReserve);
 
         rec = Clamp(rec, RamMinMb, hardMax);
+        rec = RoundDownToStep(rec, RamStepMb);
 
-        rec = (rec / 256) * 256;
-        if (rec < RamMinMb) rec = RamMinMb;
-        if (rec > RamMaxMb) rec = RamMaxMb;
-
-        return rec;
+        return Clamp(rec, RamMinMb, RamMaxMb);
     }
-
-    public void SetAutoRam() => RamMb = 0;
-
-    public void SetManualRamMb(int mb) => RamMb = NormalizeRamMb(mb);
 
     private static int NormalizeRamMb(int mb)
     {
@@ -105,24 +143,33 @@ public sealed class LauncherConfig
         if (mb <= 0)
             return 0;
 
-        mb = Clamp(mb, min: RamMinMb, max: RamMaxMb);
+        // защита от “вбили 4..16 и подразумевали GB”
+        // если указали маленькое число 4..64 — вероятнее всего это GB, а не MB
+        if (mb is >= 4 and <= 64)
+            mb *= 1024;
+
+        mb = Clamp(mb, RamMinMb, RamMaxMb);
 
         var total = TryGetTotalPhysicalMemoryMb();
         if (total > 0)
         {
             // запас минимум 2GB
-            var maxAllowed = Math.Max(RamMinMb, total - 2048);
+            var maxAllowed = Math.Max(RamMinMb, total - OsReserveMb);
             maxAllowed = Math.Min(maxAllowed, RamMaxMb);
 
             if (mb > maxAllowed)
                 mb = maxAllowed;
         }
 
-        mb = (mb / 256) * 256;
-        if (mb < RamMinMb) mb = RamMinMb;
-        if (mb > RamMaxMb) mb = RamMaxMb;
+        mb = RoundDownToStep(mb, RamStepMb);
 
-        return mb;
+        return Clamp(mb, RamMinMb, RamMaxMb);
+    }
+
+    private static int RoundDownToStep(int value, int step)
+    {
+        if (step <= 1) return value;
+        return (value / step) * step;
     }
 
     private static string NormalizeRequired(string? value, string fallback)
@@ -161,13 +208,86 @@ public sealed class LauncherConfig
         }
     }
 
-    private static int TryGetTotalPhysicalMemoryMb()
+    private static string? NormalizePath(string? path)
     {
         try
         {
-            if (!OperatingSystem.IsWindows())
+            var p = (path ?? "").Trim().Trim('"');
+            if (string.IsNullOrWhiteSpace(p)) return null;
+
+            // не делаем Path.GetFullPath если это может взорваться на кривом вводе — но попробуем безопасно
+            p = p.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+
+            // убираем завершающие слеши (кроме корня)
+            while (p.Length > 3 && (p.EndsWith("\\") || p.EndsWith("/")))
+                p = p[..^1];
+
+            return string.IsNullOrWhiteSpace(p) ? null : p;
+        }
+        catch
+        {
+            return NormalizeOptional(path);
+        }
+    }
+
+    private static int TryGetTotalPhysicalMemoryMb()
+    {
+        // ✅ кроссплатформ: Windows через GlobalMemoryStatusEx, Linux через /proc/meminfo
+        try
+        {
+            if (OperatingSystem.IsWindows())
+                return TryGetTotalPhysicalMemoryMb_Windows();
+
+            if (OperatingSystem.IsLinux())
+                return TryGetTotalPhysicalMemoryMb_Linux();
+
+            // macOS/прочее — пока без нативных вызовов, вернём 0 => fallback на 4GB
+            return 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static int TryGetTotalPhysicalMemoryMb_Linux()
+    {
+        try
+        {
+            const string memInfo = "/proc/meminfo";
+            if (!File.Exists(memInfo))
                 return 0;
 
+            // MemTotal:       16322464 kB
+            foreach (var line in File.ReadLines(memInfo))
+            {
+                if (!line.StartsWith("MemTotal:", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2) return 0;
+
+                if (!long.TryParse(parts[1], out var kb) || kb <= 0)
+                    return 0;
+
+                var mb = kb / 1024;
+                if (mb <= 0) return 0;
+                if (mb > int.MaxValue) return int.MaxValue;
+                return (int)mb;
+            }
+
+            return 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static int TryGetTotalPhysicalMemoryMb_Windows()
+    {
+        try
+        {
             var ms = new MEMORYSTATUSEX();
             ms.dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>();
 

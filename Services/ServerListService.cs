@@ -15,23 +15,54 @@ namespace LegendBorn.Services;
 
 public sealed class ServerListService
 {
-    public const string DefaultServersUrl = "https://legendborn.ru/launcher/servers.json";
+    // ==========================================================
+    // Launcher mirrors (servers.json / pack)
+    // ==========================================================
 
-    public const string SourceForgeMasterServersUrl =
-        "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/servers.json";
+    // CloudBucket (custom domain) — PRIMARY
+    public const string CloudBucketLauncherBaseUrl = "https://pack.legendborn.ru/launcher/";
 
-    public const string R2LegendBornPackBaseUrl =
-        "https://61d923abe5b5273c70457fd3d27111f3.r2.cloudflarestorage.com/legendborn-pack";
+    // Selectel S3 — FALLBACK (у нас он уже есть).
+    // Дефолт берём из панели "Основной домен" бакета + "/launcher/".
+    // Можно переопределить без пересборки:
+    // 1) ENV: LEGENDBORN_SELECTEL_LAUNCHER_BASE_URL
+    // 2) Файл: <CacheDir>/selectel_launcher_base.txt (одна строка - base url)
+    //
+    // Пример дефолта (как на твоём скрине):
+    // https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/
+    public const string SelectelLauncherBaseUrlDefault =
+        "https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/";
 
-    public static readonly string R2ServersUrl =
-        $"{R2LegendBornPackBaseUrl.TrimEnd('/')}/launcher/servers.json";
+    private const string EnvSelectelBase = "LEGENDBORN_SELECTEL_LAUNCHER_BASE_URL";
 
-    public static readonly string[] DefaultServersMirrors =
-    {
-        DefaultServersUrl,
-        R2ServersUrl,
-        SourceForgeMasterServersUrl
-    };
+    // SourceForge — MIRROR (стабильный CDN)
+    public const string SourceForgeLauncherBaseUrl =
+        "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/";
+
+    // Чтобы не перечитывать файл/ENV каждый вызов
+    private static readonly Lazy<string> _selectelBaseLazy = new(ResolveSelectelLauncherBaseUrl);
+    public static string SelectelLauncherBaseUrl => _selectelBaseLazy.Value;
+
+    public static string CloudBucketServersUrl => CombineUrl(CloudBucketLauncherBaseUrl, "servers.json");
+    public static string SelectelServersUrl => CombineUrl(SelectelLauncherBaseUrl, "servers.json");
+    public static string SourceForgeServersUrl => CombineUrl(SourceForgeLauncherBaseUrl, "servers.json");
+
+    /// <summary>
+    /// Базовые зеркала servers.json.
+    /// Primary — CloudBucket.
+    /// Далее: Selectel и SourceForge.
+    /// Можно передавать свои зеркала в GetServersAsync — они добавятся к этому списку.
+    /// </summary>
+    public static string[] DefaultServersMirrors =>
+        new[] { CloudBucketServersUrl, SelectelServersUrl, SourceForgeServersUrl }
+            .Select(NormalizeAbsoluteUrl)
+            .Where(u => !string.IsNullOrWhiteSpace(u))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    // ==========================================================
+    // Timeouts / limits
+    // ==========================================================
 
     private const int PrimaryTimeoutSec1 = 6;
     private const int PrimaryTimeoutSec2 = 12;
@@ -39,10 +70,25 @@ public sealed class ServerListService
 
     private const long MaxServersJsonBytes = 2 * 1024 * 1024;
 
-    private static readonly HttpClient _http = CreateHttp();
+    // ==========================================================
+    // HTTP + Cache
+    // ==========================================================
+
+    private static readonly HttpClient SharedHttp = CreateHttp();
+
+    private readonly HttpClient _http;
+    private readonly Action<string>? _log;
 
     private static readonly string CacheFilePath =
         Path.Combine(LauncherPaths.CacheDir, "servers_cache.json");
+
+    private static readonly string CacheMetaPath =
+        Path.Combine(LauncherPaths.CacheDir, "servers_cache.meta.json");
+
+    private static readonly string SelectelBaseOverridePath =
+        Path.Combine(LauncherPaths.CacheDir, "selectel_launcher_base.txt");
+
+    private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -52,85 +98,112 @@ public sealed class ServerListService
         WriteIndented = true
     };
 
+    // Не даём параллельным вызовам одновременно качать servers.json (особенно при старте UI).
+    private static readonly SemaphoreSlim _gate = new(1, 1);
+
+    public ServerListService(HttpClient? http = null, Action<string>? log = null)
+    {
+        _http = http ?? SharedHttp;
+        _log = log;
+    }
+
+    // ==========================================================
+    // Public API
+    // ==========================================================
+
     public async Task<IReadOnlyList<ServerInfo>> GetServersAsync(
         IEnumerable<string>? mirrors = null,
         CancellationToken ct = default)
     {
-        var urls = (mirrors ?? DefaultServersMirrors)
-            .Select(NormalizeAbsoluteUrl)
-            .Where(u => !string.IsNullOrWhiteSpace(u))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-        if (urls.Length == 0)
-            throw new InvalidOperationException("Нет URL для servers.json");
-
-        var primary = urls.FirstOrDefault(u => u.Contains("legendborn.ru", StringComparison.OrdinalIgnoreCase))
-                      ?? urls[0];
-
-        var primaryRes =
-            await TryFetchServersFromUrlAsync(primary, ct, TimeSpan.FromSeconds(PrimaryTimeoutSec1)).ConfigureAwait(false)
-            ?? await TryFetchServersFromUrlAsync(primary, ct, TimeSpan.FromSeconds(PrimaryTimeoutSec2)).ConfigureAwait(false);
-
-        if (primaryRes is not null)
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            SaveCacheQuiet(primaryRes.Value.Json);
-            return primaryRes.Value.Servers;
+            var urls = MergeAndNormalizeUrls(mirrors);
+
+            if (urls.Length == 0)
+                throw new InvalidOperationException("Нет URL для servers.json");
+
+            // Primary: CloudBucket (если есть), иначе первый из списка
+            var primary =
+                urls.FirstOrDefault(u => u.Contains("pack.legendborn.ru", StringComparison.OrdinalIgnoreCase))
+                ?? urls[0];
+
+            _log?.Invoke($"servers.json: primary = {primary}");
+
+            // meta для conditional requests (ETag / Last-Modified)
+            var cached = TryLoadCache(out var cacheMeta);
+
+            // primary: 2 попытки (часто первый коннект может быть “холодным”)
+            var primaryRes =
+                await TryFetchServersFromUrlAsync(primary, cacheMeta, ct, TimeSpan.FromSeconds(PrimaryTimeoutSec1)).ConfigureAwait(false)
+                ?? await TryFetchServersFromUrlAsync(primary, cacheMeta, ct, TimeSpan.FromSeconds(PrimaryTimeoutSec2)).ConfigureAwait(false);
+
+            if (primaryRes is not null)
+            {
+                SaveCacheQuiet(primaryRes.Value.Json, primaryRes.Value.Meta);
+                return primaryRes.Value.Servers;
+            }
+
+            var fallbacks = urls
+                .Where(u => !u.Equals(primary, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+
+            if (fallbacks.Length == 0)
+            {
+                if (cached is not null && cached.Count > 0)
+                    return cached;
+
+                throw new InvalidOperationException("Primary зеркало упало, fallback'ов нет, кеш пуст.");
+            }
+
+            // Фолбэки — race по скорости: запускаем все и берём самый быстрый успешный.
+            fallbacks = OrderFallbacks(fallbacks);
+
+            _log?.Invoke("servers.json: fallbacks = " + string.Join(" | ", fallbacks));
+
+            using var raceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+
+            var tasks = new List<Task<(string Json, IReadOnlyList<ServerInfo> Servers, ServersCacheMeta? Meta)?>>(fallbacks.Length);
+            foreach (var u in fallbacks)
+                tasks.Add(TryFetchServersFromUrlAsync(u, cacheMeta, raceCts.Token, TimeSpan.FromSeconds(FallbackTimeoutSec)));
+
+            while (tasks.Count > 0)
+            {
+                var finished = await Task.WhenAny(tasks).ConfigureAwait(false);
+                tasks.Remove(finished);
+
+                (string Json, IReadOnlyList<ServerInfo> Servers, ServersCacheMeta? Meta)? res = null;
+                try
+                {
+                    res = await finished.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (raceCts.IsCancellationRequested && !ct.IsCancellationRequested)
+                {
+                }
+                catch
+                {
+                }
+
+                if (res is not null)
+                {
+                    raceCts.Cancel();
+                    try { await Task.WhenAll(tasks).ConfigureAwait(false); } catch { }
+
+                    SaveCacheQuiet(res.Value.Json, res.Value.Meta);
+                    return res.Value.Servers;
+                }
+            }
+
+            // Онлайн не получилось — отдаём кеш
+            if (cached is not null && cached.Count > 0)
+                return cached;
+
+            throw new InvalidOperationException("Не удалось загрузить servers.json ни с одного URL (cloudbucket + fallbacks).");
         }
-
-        var fallbacks = urls
-            .Where(u => !u.Equals(primary, StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-
-        if (fallbacks.Length == 0)
+        finally
         {
-            var cachedOnly = TryLoadCache();
-            if (cachedOnly is not null && cachedOnly.Count > 0)
-                return cachedOnly;
-
-            throw new InvalidOperationException("Primary зеркало упало, fallback'ов нет, кеш пуст.");
+            try { _gate.Release(); } catch { }
         }
-
-        fallbacks = OrderFallbacks(fallbacks);
-
-        using var raceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-
-        var tasks = new List<Task<(string Json, IReadOnlyList<ServerInfo> Servers)?>>(fallbacks.Length);
-        foreach (var u in fallbacks)
-            tasks.Add(TryFetchServersFromUrlAsync(u, raceCts.Token, TimeSpan.FromSeconds(FallbackTimeoutSec)));
-
-        while (tasks.Count > 0)
-        {
-            var finished = await Task.WhenAny(tasks).ConfigureAwait(false);
-            tasks.Remove(finished);
-
-            (string Json, IReadOnlyList<ServerInfo> Servers)? res = null;
-            try
-            {
-                res = await finished.ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (raceCts.IsCancellationRequested && !ct.IsCancellationRequested)
-            {
-            }
-            catch
-            {
-            }
-
-            if (res is not null)
-            {
-                raceCts.Cancel();
-                try { await Task.WhenAll(tasks).ConfigureAwait(false); } catch { }
-
-                SaveCacheQuiet(res.Value.Json);
-                return res.Value.Servers;
-            }
-        }
-
-        var cached = TryLoadCache();
-        if (cached is not null && cached.Count > 0)
-            return cached;
-
-        throw new InvalidOperationException("Не удалось загрузить servers.json ни с одного URL (site + fallbacks).");
     }
 
     public async Task<IReadOnlyList<ServerInfo>> GetServersOrDefaultAsync(
@@ -143,8 +216,15 @@ public sealed class ServerListService
         }
         catch
         {
-            var sfPack = "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/";
-            var r2Pack = $"{R2LegendBornPackBaseUrl.TrimEnd('/')}/launcher/pack/";
+            // максимально “живучий” дефолт на случай полного оффлайна
+            var cloudPack = NormalizeAbsoluteBaseUrl(CombineUrl(CloudBucketLauncherBaseUrl, "pack/"));
+            var selPack = NormalizeAbsoluteBaseUrl(CombineUrl(SelectelLauncherBaseUrl, "pack/"));
+            var sfPack = NormalizeAbsoluteBaseUrl(CombineUrl(SourceForgeLauncherBaseUrl, "pack/"));
+
+            var packMirrors = new[] { cloudPack, selPack, sfPack }
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
 
             return new[]
             {
@@ -158,23 +238,25 @@ public sealed class ServerListService
                     {
                         Type = "neoforge",
                         Version = "21.1.216",
+                        // Официальная ссылка (LoaderInstaller дальше может переписать на зеркало)
                         InstallerUrl = "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.216/neoforge-21.1.216-installer.jar"
                     },
                     ClientVersionId = "LegendBorn",
-                    PackBaseUrl = sfPack,
-                    PackMirrors = new[]
-                    {
-                        sfPack,
-                        r2Pack
-                    },
+                    PackBaseUrl = cloudPack,
+                    PackMirrors = packMirrors,
                     SyncPack = true
                 }
             };
         }
     }
 
-    private async Task<(string Json, IReadOnlyList<ServerInfo> Servers)?> TryFetchServersFromUrlAsync(
+    // ==========================================================
+    // Fetch + parse
+    // ==========================================================
+
+    private async Task<(string Json, IReadOnlyList<ServerInfo> Servers, ServersCacheMeta? Meta)?> TryFetchServersFromUrlAsync(
         string url,
+        ServersCacheMeta? cacheMeta,
         CancellationToken ct,
         TimeSpan timeout)
     {
@@ -189,10 +271,34 @@ public sealed class ServerListService
 
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/plain")); // некоторые CDN отдают без json-типа
+            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
             req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
+            TrySetUa(req);
+
+            // Conditional GET: если кеш свежий — получим 304
+            if (!string.IsNullOrWhiteSpace(cacheMeta?.ETag))
+                req.Headers.TryAddWithoutValidation("If-None-Match", cacheMeta!.ETag);
+
+            if (!string.IsNullOrWhiteSpace(cacheMeta?.LastModified))
+                req.Headers.TryAddWithoutValidation("If-Modified-Since", cacheMeta!.LastModified);
 
             using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token)
                 .ConfigureAwait(false);
+
+            // 304 — возвращаем кеш, если он есть/валидный
+            if (resp.StatusCode == HttpStatusCode.NotModified)
+            {
+                var cached = TryLoadCache(out _);
+                if (cached is not null && cached.Count > 0)
+                {
+                    var meta304 = BuildCacheMetaFromResponse(resp, fallback: cacheMeta);
+                    _log?.Invoke($"servers.json: 304 NotModified -> cache ({url})");
+                    return ("", cached, meta304);
+                }
+
+                return null;
+            }
 
             if (!resp.IsSuccessStatusCode)
                 return null;
@@ -212,6 +318,8 @@ public sealed class ServerListService
                 return null;
 
             var trimmed = json.TrimStart();
+
+            // HTML/страница ошибки
             if (trimmed.StartsWith("<", StringComparison.Ordinal))
                 return null;
 
@@ -237,16 +345,38 @@ public sealed class ServerListService
             if (result.Count == 0)
                 return null;
 
-            return (json, result);
+            var meta = BuildCacheMetaFromResponse(resp, fallback: null);
+
+            _log?.Invoke($"servers.json: OK ({url}) servers={result.Count}");
+            return (json, result, meta);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
         }
-        catch
+        catch (Exception ex)
         {
+            _log?.Invoke($"servers.json: fail {url} — {ex.Message}");
             return null;
         }
+    }
+
+    private static ServersCacheMeta BuildCacheMetaFromResponse(HttpResponseMessage resp, ServersCacheMeta? fallback)
+    {
+        string? lastModified = resp.Content.Headers.LastModified?.ToString();
+
+        if (string.IsNullOrWhiteSpace(lastModified) &&
+            resp.Headers.TryGetValues("Last-Modified", out var lmVals))
+        {
+            lastModified = lmVals.FirstOrDefault();
+        }
+
+        return new ServersCacheMeta
+        {
+            SavedUtcUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            ETag = resp.Headers.ETag?.ToString() ?? fallback?.ETag,
+            LastModified = lastModified ?? fallback?.LastModified
+        };
     }
 
     private static async Task<string> ReadUtf8LimitedAsync(Stream stream, long maxBytes, CancellationToken ct)
@@ -269,61 +399,314 @@ public sealed class ServerListService
         return Encoding.UTF8.GetString(ms.ToArray());
     }
 
-    private static bool LooksLikeR2(string url)
+    // ==========================================================
+    // Normalization / ordering
+    // ==========================================================
+
+    private static string[] MergeAndNormalizeUrls(IEnumerable<string>? extraMirrors)
+    {
+        var urls = new List<string>(DefaultServersMirrors.Length + 8);
+        urls.AddRange(DefaultServersMirrors);
+
+        if (extraMirrors is not null)
+            urls.AddRange(extraMirrors);
+
+        return urls
+            .Select(NormalizeAbsoluteUrl)
+            .Where(u => !string.IsNullOrWhiteSpace(u))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static bool LooksLikeCloudBucket(string url)
     {
         url = (url ?? "").ToLowerInvariant();
-        return url.Contains("r2.cloudflarestorage.com");
+        return url.Contains("pack.legendborn.ru");
+    }
+
+    private static bool LooksLikeSelectel(string url)
+    {
+        url = (url ?? "").ToLowerInvariant();
+        return url.Contains("selstorage.ru") ||
+               url.Contains("selcdn") ||
+               url.Contains("s3.ru-") ||
+               url.Contains("storage.selcloud.ru") ||
+               url.Contains("selectel");
     }
 
     private static bool LooksLikeSourceForge(string url)
     {
         url = (url ?? "").ToLowerInvariant();
-        return url.Contains("master.dl.sourceforge.net") || url.Contains("sourceforge.net");
+        return url.Contains("master.dl.sourceforge.net") ||
+               url.Contains("sourceforge.net") ||
+               url.Contains("downloads.sourceforge.net");
     }
 
     private static string[] OrderFallbacks(string[] fallbacks)
     {
+        // Порядок тут вторичен (race по скорости), но сделаем детерминированно:
+        // Selectel -> SourceForge CDN -> прочие.
         return fallbacks
             .Select(NormalizeAbsoluteUrl)
             .Where(u => !string.IsNullOrWhiteSpace(u))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(u =>
             {
-                if (u.Contains("legendborn.ru", StringComparison.OrdinalIgnoreCase)) return 0;
-                if (LooksLikeR2(u)) return 1;
-                if (u.Contains("master.dl.sourceforge.net", StringComparison.OrdinalIgnoreCase)) return 2;
-                if (LooksLikeSourceForge(u)) return 3;
+                if (LooksLikeSelectel(u)) return 0;
+                if (u.Contains("master.dl.sourceforge.net", StringComparison.OrdinalIgnoreCase)) return 1;
+                if (LooksLikeSourceForge(u)) return 2;
+                if (LooksLikeCloudBucket(u)) return 3; // на случай если CloudBucket попал в fallbacks
                 return 4;
             })
             .ToArray();
     }
 
-    private static void SaveCacheQuiet(string json)
+    private static ServerInfo? NormalizeServer(ServerInfo s)
     {
-        if (string.IsNullOrWhiteSpace(json))
-            return;
+        var id = (s.Id ?? "").Trim();
+        var name = (s.Name ?? "").Trim();
+        var address = (s.Address ?? "").Trim();
 
+        if (string.IsNullOrWhiteSpace(id)) return null;
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        if (string.IsNullOrWhiteSpace(address)) return null;
+
+        var mc = (s.MinecraftVersion ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(mc)) return null;
+
+        var loader = s.Loader;
+
+        // legacy fields fallback
+        if (loader is null)
+        {
+            var legacyName = (s.LoaderName ?? "vanilla").Trim();
+            var legacyVer = (s.LoaderVersion ?? "").Trim();
+
+            loader = new LoaderInfo
+            {
+                Type = legacyName,
+                Version = legacyVer,
+                InstallerUrl = ""
+            };
+        }
+
+        var loaderType = (loader.Type ?? "vanilla").Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(loaderType))
+            loaderType = "vanilla";
+
+        if (loaderType != "vanilla" && loaderType != "neoforge")
+            return null;
+
+        var loaderVer = (loader.Version ?? "").Trim();
+        var installerUrl = (loader.InstallerUrl ?? "").Trim();
+
+        if (loaderType == "neoforge")
+        {
+            if (string.IsNullOrWhiteSpace(loaderVer))
+                return null;
+
+            // дефолтная офф. ссылка, если не задана
+            if (string.IsNullOrWhiteSpace(installerUrl))
+                installerUrl = $"https://maven.neoforged.net/releases/net/neoforged/neoforge/{loaderVer}/neoforge-{loaderVer}-installer.jar";
+
+            if (string.IsNullOrWhiteSpace(NormalizeAbsoluteUrl(installerUrl)))
+                return null;
+        }
+        else
+        {
+            loaderVer = "";
+            installerUrl = "";
+        }
+
+        // pack urls
+        var packBase = NormalizeAbsoluteBaseUrl(s.PackBaseUrl);
+
+        var mirrors = (s.PackMirrors ?? Array.Empty<string>())
+            .Select(NormalizeAbsoluteBaseUrl)
+            .Where(u => !string.IsNullOrWhiteSpace(u))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        // packBaseUrl всегда тоже считаем зеркалом
+        var effective = new List<string>(mirrors.Length + 1);
+        if (!string.IsNullOrWhiteSpace(packBase))
+            effective.Add(packBase);
+        effective.AddRange(mirrors);
+
+        var finalMirrors = effective
+            .Select(NormalizeAbsoluteBaseUrl)
+            .Where(u => !string.IsNullOrWhiteSpace(u))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(u =>
+            {
+                // Для pack: CloudBucket (primary) -> Selectel -> SourceForge -> остальное
+                if (LooksLikeCloudBucket(u)) return 0;
+                if (LooksLikeSelectel(u)) return 1;
+                if (u.Contains("master.dl.sourceforge.net", StringComparison.OrdinalIgnoreCase)) return 2;
+                if (LooksLikeSourceForge(u)) return 3;
+                return 4;
+            })
+            .ToArray();
+
+        var clientVid = (s.ClientVersionId ?? "").Trim();
+
+        return s with
+        {
+            Id = id,
+            Name = name,
+            Address = address,
+            MinecraftVersion = mc,
+            Loader = new LoaderInfo { Type = loaderType, Version = loaderVer, InstallerUrl = installerUrl },
+            ClientVersionId = string.IsNullOrWhiteSpace(clientVid) ? null : clientVid,
+            PackBaseUrl = packBase,
+            PackMirrors = finalMirrors
+        };
+    }
+
+    private static string CombineUrl(string baseUrl, string relative)
+    {
+        baseUrl = (baseUrl ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(baseUrl)) return "";
+
+        relative = (relative ?? "").TrimStart('/');
+
+        if (!baseUrl.EndsWith("/"))
+            baseUrl += "/";
+
+        return baseUrl + relative;
+    }
+
+    private static string NormalizeAbsoluteUrl(string? url)
+    {
+        url = (url ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(url)) return "";
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return "";
+
+        if (!uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+            !uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+            return "";
+
+        // вычищаем query/fragment чтобы не плодить разные кеш-ключи
+        var b = new UriBuilder(uri) { Query = "", Fragment = "" };
+        return b.Uri.ToString();
+    }
+
+    private static string NormalizeAbsoluteBaseUrl(string? url)
+    {
+        url = NormalizeAbsoluteUrl(url);
+        if (string.IsNullOrWhiteSpace(url)) return "";
+        if (!url.EndsWith("/")) url += "/";
+        return url;
+    }
+
+    private static void TrySetUa(HttpRequestMessage req)
+    {
+        try
+        {
+            var ua = LauncherIdentity.UserAgent;
+            req.Headers.UserAgent.Clear();
+
+            if (!string.IsNullOrWhiteSpace(ua))
+                req.Headers.UserAgent.ParseAdd(ua);
+            else
+                req.Headers.UserAgent.ParseAdd($"LegendBornLauncher/{LauncherIdentity.InformationalVersion}");
+        }
+        catch
+        {
+            // ignore
+        }
+    }
+
+    private static string ResolveSelectelLauncherBaseUrl()
+    {
+        // 1) ENV override
+        try
+        {
+            var env = Environment.GetEnvironmentVariable(EnvSelectelBase);
+            var envNorm = NormalizeAbsoluteBaseUrl(env);
+            if (!string.IsNullOrWhiteSpace(envNorm))
+                return envNorm;
+        }
+        catch { }
+
+        // 2) file override
+        try
+        {
+            if (File.Exists(SelectelBaseOverridePath))
+            {
+                var txt = File.ReadAllText(SelectelBaseOverridePath, Utf8NoBom);
+                var fileNorm = NormalizeAbsoluteBaseUrl(txt);
+                if (!string.IsNullOrWhiteSpace(fileNorm))
+                    return fileNorm;
+            }
+        }
+        catch { }
+
+        // 3) default (настроен)
+        return NormalizeAbsoluteBaseUrl(SelectelLauncherBaseUrlDefault);
+    }
+
+    // ==========================================================
+    // Cache
+    // ==========================================================
+
+    private sealed class ServersCacheMeta
+    {
+        [JsonPropertyName("savedUtcUnix")] public long SavedUtcUnix { get; set; }
+        [JsonPropertyName("etag")] public string? ETag { get; set; }
+        [JsonPropertyName("lastModified")] public string? LastModified { get; set; }
+    }
+
+    private static void SaveCacheQuiet(string json, ServersCacheMeta? meta)
+    {
+        // Если пришёл 304 и json пустой — просто обновим мету (если есть),
+        // а сам кеш оставим как есть.
         try
         {
             LauncherPaths.EnsureDir(LauncherPaths.CacheDir);
 
-            var tmp = CacheFilePath + ".tmp";
-            File.WriteAllText(tmp, json, Encoding.UTF8);
+            if (!string.IsNullOrWhiteSpace(json))
+            {
+                var tmp = CacheFilePath + ".tmp";
+                File.WriteAllText(tmp, json, Utf8NoBom);
+                ReplaceOrMoveAtomic(tmp, CacheFilePath);
+                TryDeleteQuiet(tmp);
+            }
 
-            ReplaceOrMoveAtomic(tmp, CacheFilePath);
-            TryDeleteQuiet(tmp);
+            if (meta is not null)
+            {
+                var metaJson = JsonSerializer.Serialize(meta, JsonOptions);
+                var tmpMeta = CacheMetaPath + ".tmp";
+                File.WriteAllText(tmpMeta, metaJson, Utf8NoBom);
+                ReplaceOrMoveAtomic(tmpMeta, CacheMetaPath);
+                TryDeleteQuiet(tmpMeta);
+            }
         }
         catch { }
     }
 
-    private static IReadOnlyList<ServerInfo>? TryLoadCache()
+    private static IReadOnlyList<ServerInfo>? TryLoadCache(out ServersCacheMeta? meta)
     {
+        meta = null;
+
         try
         {
+            if (File.Exists(CacheMetaPath))
+            {
+                try
+                {
+                    var mj = File.ReadAllText(CacheMetaPath, Utf8NoBom);
+                    meta = JsonSerializer.Deserialize<ServersCacheMeta>(mj, JsonOptions);
+                }
+                catch { meta = null; }
+            }
+
             if (!File.Exists(CacheFilePath))
                 return null;
 
-            var json = File.ReadAllText(CacheFilePath, Encoding.UTF8);
+            var json = File.ReadAllText(CacheFilePath, Utf8NoBom);
             if (string.IsNullOrWhiteSpace(json))
                 return null;
 
@@ -354,126 +737,9 @@ public sealed class ServerListService
         }
     }
 
-    private static ServerInfo? NormalizeServer(ServerInfo s)
-    {
-        var id = (s.Id ?? "").Trim();
-        var name = (s.Name ?? "").Trim();
-        var address = (s.Address ?? "").Trim();
-
-        if (string.IsNullOrWhiteSpace(id)) return null;
-        if (string.IsNullOrWhiteSpace(name)) return null;
-        if (string.IsNullOrWhiteSpace(address)) return null;
-
-        var mc = (s.MinecraftVersion ?? "").Trim();
-        if (string.IsNullOrWhiteSpace(mc)) return null;
-
-        var loader = s.Loader;
-
-        if (loader is null)
-        {
-            var legacyName = (s.LoaderName ?? "vanilla").Trim();
-            var legacyVer = (s.LoaderVersion ?? "").Trim();
-
-            loader = new LoaderInfo
-            {
-                Type = legacyName,
-                Version = legacyVer,
-                InstallerUrl = ""
-            };
-        }
-
-        var loaderType = (loader.Type ?? "vanilla").Trim().ToLowerInvariant();
-        if (string.IsNullOrWhiteSpace(loaderType))
-            loaderType = "vanilla";
-
-        if (loaderType != "vanilla" && loaderType != "neoforge")
-            return null;
-
-        var loaderVer = (loader.Version ?? "").Trim();
-        var installerUrl = (loader.InstallerUrl ?? "").Trim();
-
-        if (loaderType == "neoforge")
-        {
-            if (string.IsNullOrWhiteSpace(loaderVer))
-                return null;
-
-            if (string.IsNullOrWhiteSpace(installerUrl))
-                installerUrl = $"https://maven.neoforged.net/releases/net/neoforged/neoforge/{loaderVer}/neoforge-{loaderVer}-installer.jar";
-
-            if (string.IsNullOrWhiteSpace(NormalizeAbsoluteUrl(installerUrl)))
-                return null;
-        }
-        else
-        {
-            loaderVer = "";
-            installerUrl = "";
-        }
-
-        var packBase = NormalizeAbsoluteBaseUrl(s.PackBaseUrl);
-
-        var mirrors = (s.PackMirrors ?? Array.Empty<string>())
-            .Select(NormalizeAbsoluteBaseUrl)
-            .Where(u => !string.IsNullOrWhiteSpace(u))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-        var effective = new List<string>(mirrors.Length + 1);
-        if (!string.IsNullOrWhiteSpace(packBase))
-            effective.Add(packBase);
-
-        effective.AddRange(mirrors);
-
-        var finalMirrors = effective
-            .Select(NormalizeAbsoluteBaseUrl)
-            .Where(u => !string.IsNullOrWhiteSpace(u))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(u =>
-            {
-                if (LooksLikeR2(u)) return 0;
-                if (u.Contains("master.dl.sourceforge.net", StringComparison.OrdinalIgnoreCase)) return 1;
-                if (LooksLikeSourceForge(u)) return 2;
-                if (u.Contains("legendborn.ru", StringComparison.OrdinalIgnoreCase)) return 3;
-                return 4;
-            })
-            .ToArray();
-
-        var clientVid = (s.ClientVersionId ?? "").Trim();
-
-        return s with
-        {
-            Id = id,
-            Name = name,
-            Address = address,
-            MinecraftVersion = mc,
-            Loader = new LoaderInfo { Type = loaderType, Version = loaderVer, InstallerUrl = installerUrl },
-            ClientVersionId = string.IsNullOrWhiteSpace(clientVid) ? null : clientVid,
-            PackBaseUrl = packBase,
-            PackMirrors = finalMirrors
-        };
-    }
-
-    private static string NormalizeAbsoluteUrl(string? url)
-    {
-        url = (url ?? "").Trim();
-        if (string.IsNullOrWhiteSpace(url)) return "";
-
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-            return "";
-
-        if (!uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
-            !uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
-            return "";
-
-        return uri.ToString();
-    }
-
-    private static string NormalizeAbsoluteBaseUrl(string? url)
-    {
-        url = NormalizeAbsoluteUrl(url);
-        if (string.IsNullOrWhiteSpace(url)) return "";
-        if (!url.EndsWith("/")) url += "/";
-        return url;
-    }
+    // ==========================================================
+    // HTTP
+    // ==========================================================
 
     private static HttpClient CreateHttp()
     {
@@ -498,6 +764,8 @@ public sealed class ServerListService
             var ua = LauncherIdentity.UserAgent;
             if (!string.IsNullOrWhiteSpace(ua))
                 http.DefaultRequestHeaders.UserAgent.ParseAdd(ua);
+            else
+                http.DefaultRequestHeaders.UserAgent.ParseAdd($"LegendBornLauncher/{LauncherIdentity.InformationalVersion}");
         }
         catch
         {
@@ -506,38 +774,59 @@ public sealed class ServerListService
                 http.DefaultRequestHeaders.UserAgent.Clear();
                 http.DefaultRequestHeaders.UserAgent.ParseAdd($"LegendBornLauncher/{LauncherIdentity.InformationalVersion}");
             }
-            catch
-            {
-            }
+            catch { }
         }
 
         return http;
     }
 
+    // ==========================================================
+    // Atomic file ops
+    // ==========================================================
+
     private static void ReplaceOrMoveAtomic(string sourceTmp, string destPath)
     {
-        if (OperatingSystem.IsWindows() && File.Exists(destPath))
+        try
         {
-            var backup = destPath + ".bak";
+            if (OperatingSystem.IsWindows() && File.Exists(destPath))
+            {
+                var backup = destPath + ".bak";
+                try
+                {
+                    TryDeleteQuiet(backup);
+                    File.Replace(sourceTmp, destPath, backup, ignoreMetadataErrors: true);
+                }
+                finally
+                {
+                    TryDeleteQuiet(backup);
+                }
+                return;
+            }
+
+            File.Move(sourceTmp, destPath, overwrite: true);
+        }
+        catch
+        {
+            // fallback
             try
             {
-                TryDeleteQuiet(backup);
-                File.Replace(sourceTmp, destPath, backup, ignoreMetadataErrors: true);
-            }
-            finally
-            {
-                TryDeleteQuiet(backup);
-            }
-            return;
-        }
+                if (File.Exists(destPath))
+                    File.Delete(destPath);
 
-        File.Move(sourceTmp, destPath, overwrite: true);
+                File.Move(sourceTmp, destPath);
+            }
+            catch { }
+        }
     }
 
     private static void TryDeleteQuiet(string path)
     {
         try { if (File.Exists(path)) File.Delete(path); } catch { }
     }
+
+    // ==========================================================
+    // DTOs
+    // ==========================================================
 
     public sealed record ServersRoot(
         [property: JsonPropertyName("version")] int Version,
@@ -560,6 +849,7 @@ public sealed class ServerListService
 
         [JsonPropertyName("loader")] public LoaderInfo? Loader { get; init; } = null;
 
+        // legacy
         [JsonPropertyName("loaderName")] public string? LoaderName { get; init; } = null;
         [JsonPropertyName("loaderVersion")] public string? LoaderVersion { get; init; } = null;
 
