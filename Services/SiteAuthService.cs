@@ -24,6 +24,9 @@ public sealed class SiteAuthService
 
     private const int DefaultAttempts = 3;
 
+    // Presence
+    private const int PresenceAttempts = 2;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -59,9 +62,29 @@ public sealed class SiteAuthService
     }
 
     /// <summary>
+    /// Ответ presence (может расширяться на сайте).
+    /// </summary>
+    public sealed class PresenceResponse : OkResponse
+    {
+        // опционально: сервер может вернуть серверное время
+        [JsonPropertyName("serverTimeUtc")]
+        public DateTimeOffset? ServerTimeUtc { get; set; }
+
+        // опционально: сервер может вернуть то, что записал
+        [JsonPropertyName("launcherLastSeenUtc")]
+        public DateTimeOffset? LauncherLastSeenUtc { get; set; }
+
+        [JsonPropertyName("siteLastSeenUtc")]
+        public DateTimeOffset? SiteLastSeenUtc { get; set; }
+    }
+
+    /// <summary>
     /// Friend DTO, совместимый с сайтом:
     /// - Новый формат: { id, name, status, source, note, image? }
     /// - Легаси формат (если где-то ещё есть): { userId, publicId, name, image }
+    ///
+    /// ✅ Добавлены поля presence (не ломают старый сайт):
+    /// onlinePlace / launcherOnline / siteOnline / launcherLastSeenUtc / siteLastSeenUtc / lastSeenUtc / lastActivityUtc
     /// </summary>
     public sealed class FriendDto
     {
@@ -93,6 +116,47 @@ public sealed class SiteAuthService
 
         [JsonPropertyName("note")]
         public string? Note { get; set; }
+
+        // =========================
+        // ✅ PRESENCE (новое)
+        // =========================
+
+        /// <summary>
+        /// "launcher" | "site" | "offline" (лучший вариант для UI, приоритет выбирается на сервере)
+        /// </summary>
+        [JsonPropertyName("onlinePlace")]
+        public string? OnlinePlace { get; set; }
+
+        /// <summary>
+        /// true, если друг онлайн именно в лаунчере (сервер вычисляет по heartbeat/TTL)
+        /// </summary>
+        [JsonPropertyName("launcherOnline")]
+        public bool? LauncherOnline { get; set; }
+
+        /// <summary>
+        /// true, если друг онлайн на сайте (сервер вычисляет по активности/TTL)
+        /// </summary>
+        [JsonPropertyName("siteOnline")]
+        public bool? SiteOnline { get; set; }
+
+        /// <summary>
+        /// ISO 8601 UTC (рекомендуется), когда последний раз виделся лаунчер
+        /// </summary>
+        [JsonPropertyName("launcherLastSeenUtc")]
+        public DateTimeOffset? LauncherLastSeenUtc { get; set; }
+
+        /// <summary>
+        /// ISO 8601 UTC (рекомендуется), когда последний раз была активность на сайте
+        /// </summary>
+        [JsonPropertyName("siteLastSeenUtc")]
+        public DateTimeOffset? SiteLastSeenUtc { get; set; }
+
+        // запасные/легаси варианты, если на сервере будут другие имена:
+        [JsonPropertyName("lastSeenUtc")]
+        public DateTimeOffset? LastSeenUtc { get; set; }
+
+        [JsonPropertyName("lastActivityUtc")]
+        public DateTimeOffset? LastActivityUtc { get; set; }
     }
 
     public sealed class FriendsListResponse : OkResponse
@@ -156,7 +220,7 @@ public sealed class SiteAuthService
     }
 
     private static string NormalizeToken(string token)
-        => (token ?? string.Empty).Trim().Trim('"' );
+        => (token ?? string.Empty).Trim().Trim('"');
 
     private static bool IsRetryableStatus(HttpStatusCode code)
         => (int)code >= 500
@@ -300,8 +364,17 @@ public sealed class SiteAuthService
             throw new ArgumentException("accessToken is empty", nameof(accessToken));
 
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
         // Без кэша (иногда помогает с CDN)
         req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
+
+        // ✅ Полезно для сервера: явно помечаем клиент как Launcher
+        try
+        {
+            req.Headers.TryAddWithoutValidation("X-Client", "LegendBornLauncher");
+            req.Headers.TryAddWithoutValidation("X-Client-Version", (LauncherIdentity.InformationalVersion ?? "").Trim());
+        }
+        catch { /* ignore */ }
     }
 
     private static T? TryDeserialize<T>(string json)
@@ -548,6 +621,80 @@ public sealed class SiteAuthService
             try { return JsonSerializer.Deserialize<LauncherEventResponse>(respJson, JsonOptions); }
             catch { return null; }
         }
+    }
+
+    // =========================
+    // Presence API (Launcher)
+    // =========================
+
+    /// <summary>
+    /// ✅ Heartbeat "я онлайн в лаунчере".
+    /// Сервер должен сохранять launcherLastSeenUtc = now и возвращать ok.
+    /// </summary>
+    public async Task<OkResponse> SendLauncherHeartbeatAsync(string accessToken, CancellationToken ct)
+    {
+        // body можно расширять, сервер может игнорировать
+        var bodyModel = new
+        {
+            state = "online",
+            client = "LegendBornLauncher",
+            version = (LauncherIdentity.InformationalVersion ?? "").Trim(),
+            sentAtUtc = DateTimeOffset.UtcNow
+        };
+
+        using var resp = await SendAsyncWithRetry(
+            factory: () =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/presence/launcher");
+                EnsureBearer(req, accessToken);
+                req.Content = JsonBody(bodyModel);
+                return req;
+            },
+            ct: ct,
+            attempts: PresenceAttempts,
+            perTryTimeout: TimeSpan.FromSeconds(12)).ConfigureAwait(false);
+
+        if (IsAuthError(resp.StatusCode))
+            return new OkResponse { Ok = false, Error = "Требуется авторизация." };
+
+        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
+        var dto = TryDeserialize<OkResponse>(body) ?? new OkResponse();
+        NormalizeOkFromHttp(dto, resp, body);
+        return dto;
+    }
+
+    /// <summary>
+    /// Опционально: при закрытии лаунчера (можно не делать — TTL тоже решает).
+    /// </summary>
+    public async Task<OkResponse> SendLauncherOfflineAsync(string accessToken, CancellationToken ct)
+    {
+        var bodyModel = new
+        {
+            state = "offline",
+            client = "LegendBornLauncher",
+            version = (LauncherIdentity.InformationalVersion ?? "").Trim(),
+            sentAtUtc = DateTimeOffset.UtcNow
+        };
+
+        using var resp = await SendAsyncWithRetry(
+            factory: () =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/presence/launcher/offline");
+                EnsureBearer(req, accessToken);
+                req.Content = JsonBody(bodyModel);
+                return req;
+            },
+            ct: ct,
+            attempts: 1,
+            perTryTimeout: TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+
+        if (IsAuthError(resp.StatusCode))
+            return new OkResponse { Ok = false, Error = "Требуется авторизация." };
+
+        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
+        var dto = TryDeserialize<OkResponse>(body) ?? new OkResponse();
+        NormalizeOkFromHttp(dto, resp, body);
+        return dto;
     }
 
     // =========================

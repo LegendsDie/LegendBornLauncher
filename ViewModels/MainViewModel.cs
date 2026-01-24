@@ -455,11 +455,17 @@ public sealed partial class MainViewModel : ObservableObject
             {
                 if (SelectedMenuIndex == 0) SelectedMenuIndex = 1;
 
+                // ✅ ONLINE: запускаем presence (heartbeat лаунчера + polling друзей)
+                StartOnlinePresence();
+
                 // ✅ после успешного входа — подтягиваем друзей/заявки (реализация в partial Social)
                 ScheduleSocialRefresh();
             }
             else
             {
+                // ✅ ONLINE: стопаем presence
+                StopOnlinePresence();
+
                 if (SelectedMenuIndex != 3 && SelectedMenuIndex != 4)
                     SelectedMenuIndex = 0;
 
@@ -660,6 +666,10 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void BuildRamOptions(int maxAllowedMb, int recommendedMb)
     {
+        // ✅ ВАЖНО: не даём UI "сбросить" выбор пользователя, если RamOptions пересобирается.
+        // Сохраняем текущее значение и гарантируем, что оно будет присутствовать в списке.
+        var keep = _ramMb;
+
         RamOptions.Clear();
 
         // UI: показываем стандартные ступени 4..16 GB
@@ -672,6 +682,10 @@ public sealed partial class MainViewModel : ObservableObject
         recommendedMb = Math.Clamp(recommendedMb, RamMinMb, safeMax);
 
         EnsureRamOptionExists(recommendedMb);
+
+        // ✅ ДОБАВЛЕНО: возвращаем пользовательский выбор в список (в пределах текущих ограничений)
+        if (keep > 0)
+            EnsureRamOptionExists(NormalizeRamMb(keep));
     }
 
     private void EnsureRamOptionExists(int value)

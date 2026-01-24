@@ -56,8 +56,12 @@
                                    Foreground="{StaticResource TextStrongLocal}"
                                    FontWeight="SemiBold"/>
 
-                        <ComboBox ItemsSource="{Binding RamOptions}"
-                                  SelectedItem="{Binding RamMb}"
+                        <!-- ✅ FIX: SelectedItem только OneWay (чтобы UI не мог сбросить VM),
+                             а выбор пользователя пишем в VM через SelectionChanged -->
+                        <ComboBox x:Name="RamCombo"
+                                  ItemsSource="{Binding RamOptions}"
+                                  SelectedItem="{Binding RamMb, Mode=OneWay}"
+                                  SelectionChanged="RamCombo_OnSelectionChanged"
                                   Margin="0,10,0,0"
                                   Height="44"/>
 
@@ -140,7 +144,7 @@
                                   Visibility="Collapsed"/>
                     </Grid>
 
-                    <!-- Корневой чекбокс (чтобы можно было аккуратно управлять состоянием в code-behind без VM) -->
+                    <!-- Корневой чекбокс -->
                     <CheckBox x:Name="RootAutoScroll"
                               Grid.Row="0"
                               HorizontalAlignment="Right"
@@ -184,7 +188,6 @@
                                                 Margin="0,0,10,0"
                                                 Click="CopyLogs_OnClick"/>
 
-                                        <!-- Click-first fallback, если ClearLogCommand отсутствует -->
                                         <Button Style="{StaticResource GhostButton}"
                                                 Content="Очистить"
                                                 Height="36"

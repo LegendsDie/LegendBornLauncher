@@ -17,18 +17,25 @@ public partial class ProfileTabView : UserControl
     public ProfileTabView()
     {
         InitializeComponent();
+
         Loaded += ProfileTabView_Loaded;
         Unloaded += ProfileTabView_Unloaded;
     }
 
     private void ProfileTabView_Loaded(object sender, RoutedEventArgs e)
     {
-        // Авто-обновление при входе на вкладку (дебаунс-метод предпочтительнее)
+        // ✅ При входе на вкладку:
+        // 1) запускаем presence (чтобы лаунчер-онлайн точно фиксировался)
+        // 2) обновляем список друзей (через дебаунс, если есть)
         try
         {
             var vm = GetHostDataContext();
             if (vm is null) return;
 
+            // presence
+            TryExecuteMethod(vm, "StartOnlinePresence");
+
+            // refresh friends
             if (!TryExecuteMethod(vm, "ScheduleFriendsRefresh"))
                 TryExecuteCommand(vm, "RefreshFriendsCommand");
         }
@@ -37,7 +44,16 @@ public partial class ProfileTabView : UserControl
 
     private void ProfileTabView_Unloaded(object sender, RoutedEventArgs e)
     {
-        // ничего
+        // ✅ При уходе с вкладки можно остановить loops (чтобы не гонять сеть, если вкладка не активна)
+        // Если ты хочешь, чтобы presence работал всегда, просто убери эту строку.
+        try
+        {
+            var vm = GetHostDataContext();
+            if (vm is null) return;
+
+            TryExecuteMethod(vm, "StopOnlinePresence");
+        }
+        catch { }
     }
 
     private void OpenSite_OnClick(object sender, RoutedEventArgs e)
@@ -114,7 +130,7 @@ public partial class ProfileTabView : UserControl
             var item = mi.DataContext;
             if (item is null) return;
 
-            // пользователям publicId не показываем, но копирование пусть берёт Id (fallback на PublicId если внезапно Id пустой)
+            // копируем Id (fallback PublicId)
             var id = TryGetStringProperty(item, "Id") ?? TryGetStringProperty(item, "PublicId");
             id = (id ?? "").Trim();
 
@@ -228,7 +244,10 @@ public partial class ProfileTabView : UserControl
         try
         {
             var p = obj.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            var v = p?.GetValue(obj) as string;
+            var vObj = p?.GetValue(obj);
+            if (vObj is null) return null;
+
+            var v = vObj.ToString();
             v = (v ?? "").Trim();
             return v.Length == 0 ? null : v;
         }

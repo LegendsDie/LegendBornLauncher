@@ -2,7 +2,6 @@
 using System;
 using System.Collections;
 using System.Collections.Specialized;
-using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Text;
@@ -22,6 +21,10 @@ public partial class SettingsTabView : UserControl
     private INotifyCollectionChanged? _logLinesNcc;
     private ScrollChangedEventHandler? _logScrollHandler;
 
+    // ✅ RAM: следим за пересборкой RamOptions и восстанавливаем выбранное значение
+    private INotifyCollectionChanged? _ramOptionsNcc;
+    private bool _suppressRamSelection;
+
     public SettingsTabView()
     {
         InitializeComponent();
@@ -30,7 +33,7 @@ public partial class SettingsTabView : UserControl
         Unloaded += SettingsTabView_Unloaded;
         DataContextChanged += SettingsTabView_DataContextChanged;
 
-        // UX: автоскролл контролируем чекбоксом (не через VM)
+        // UX: автоскролл логов — чекбоксом (не через VM)
         if (RootAutoScroll != null)
         {
             RootAutoScroll.Checked += (_, __) => _logAutoScroll = true;
@@ -43,6 +46,9 @@ public partial class SettingsTabView : UserControl
         HookLogsCollection();
         HookLogsUi();
 
+        HookRamOptions();
+        FixRamSelection();
+
         Dispatcher.BeginInvoke(new Action(() => ScrollLogsToEnd(force: true)));
     }
 
@@ -50,14 +56,19 @@ public partial class SettingsTabView : UserControl
     {
         UnhookLogsUi();
         UnhookLogsCollection();
+
+        UnhookRamOptions();
     }
 
     private void SettingsTabView_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
-        // DataContext мог смениться — переподцепим коллекцию логов.
         UnhookLogsCollection();
         HookLogsCollection();
         HookLogsUi();
+
+        UnhookRamOptions();
+        HookRamOptions();
+        FixRamSelection();
     }
 
     // ===================== Data access (no hard dependency on MainViewModel) =====================
@@ -115,6 +126,135 @@ public partial class SettingsTabView : UserControl
         }
     }
 
+    private static int? TryGetIntProperty(object vm, string propertyName)
+    {
+        try
+        {
+            var prop = vm.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
+            if (prop == null) return null;
+
+            var val = prop.GetValue(vm);
+            if (val == null) return null;
+
+            // ✅ Надёжно для int / int? / любых числовых типов
+            if (val is int i) return i;
+
+            // иногда int? приходит как boxed int (выше уже поймали),
+            // но на всякий — пробуем конвертацию
+            if (val is IConvertible)
+            {
+                try { return Convert.ToInt32(val); }
+                catch { /* ignore */ }
+            }
+
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    // ===================== RAM (fix: never reset) =====================
+    private void HookRamOptions()
+    {
+        try
+        {
+            var vm = GetHostDataContext();
+            if (vm == null) return;
+
+            var ramOptions = GetPropertyValue(vm, "RamOptions");
+            if (ramOptions is INotifyCollectionChanged ncc)
+            {
+                _ramOptionsNcc = ncc;
+                _ramOptionsNcc.CollectionChanged += RamOptions_CollectionChanged;
+            }
+        }
+        catch { }
+    }
+
+    private void UnhookRamOptions()
+    {
+        try
+        {
+            if (_ramOptionsNcc != null)
+                _ramOptionsNcc.CollectionChanged -= RamOptions_CollectionChanged;
+        }
+        catch { }
+        finally
+        {
+            _ramOptionsNcc = null;
+        }
+    }
+
+    private void RamOptions_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        Dispatcher.BeginInvoke(new Action(FixRamSelection));
+    }
+
+    private void FixRamSelection()
+    {
+        try
+        {
+            if (RamCombo == null) return;
+
+            var vm = GetHostDataContext();
+            if (vm == null) return;
+
+            var ramMb = TryGetIntProperty(vm, "RamMb");
+            if (ramMb is null || ramMb.Value <= 0) return;
+
+            var ramOptionsObj = GetPropertyValue(vm, "RamOptions");
+            if (ramOptionsObj is IList list)
+            {
+                // ✅ если выбранное значение отсутствует в списке — добавим
+                var exists = false;
+                for (int i = 0; i < list.Count; i++)
+                {
+                    if (list[i] is int v && v == ramMb.Value) { exists = true; break; }
+                }
+
+                if (!exists)
+                    list.Add(ramMb.Value);
+            }
+
+            _suppressRamSelection = true;
+            try
+            {
+                if (RamCombo.SelectedItem is int cur && cur == ramMb.Value)
+                    return;
+
+                RamCombo.SelectedItem = ramMb.Value;
+            }
+            finally
+            {
+                _suppressRamSelection = false;
+            }
+        }
+        catch { }
+    }
+
+    // ✅ Пользователь выбрал значение — записываем в VM вручную
+    private void RamCombo_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        try
+        {
+            if (_suppressRamSelection) return;
+
+            if (sender is not ComboBox cb) return;
+            if (cb.SelectedItem is not int mb) return; // null/не int игнорируем
+
+            var vm = GetHostDataContext();
+            if (vm == null) return;
+
+            var current = TryGetIntProperty(vm, "RamMb");
+            if (current.HasValue && current.Value == mb) return;
+
+            TrySetIntProperty(vm, "RamMb", mb);
+        }
+        catch { }
+    }
+
     // ===================== Logs collection hook =====================
     private void HookLogsCollection()
     {
@@ -124,8 +264,6 @@ public partial class SettingsTabView : UserControl
             if (vm == null) return;
 
             var logLines = GetPropertyValue(vm, "LogLines");
-
-            // LogLines должен быть коллекцией. Если ещё и INotifyCollectionChanged — подпишемся.
             if (logLines is INotifyCollectionChanged ncc)
             {
                 _logLinesNcc = ncc;
@@ -179,11 +317,9 @@ public partial class SettingsTabView : UserControl
     {
         try
         {
-            // Если меняется Extent — это добавили строки (не пользовательский скролл)
             if (e.ExtentHeightChange != 0)
                 return;
 
-            // Если пользователь вручную ушёл вверх — отключаем автоскролл, но синхронизируем UI чекбокса.
             var bottom = Math.Max(0, e.ExtentHeight - e.ViewportHeight);
             var follow = e.VerticalOffset >= bottom - 1.0;
 
@@ -240,11 +376,9 @@ public partial class SettingsTabView : UserControl
             var vm = GetHostDataContext();
             if (vm == null) return;
 
-            // Если есть ClearLogCommand — используем
             if (TryExecuteCommand(vm, "ClearLogCommand"))
                 return;
 
-            // Fallback: если LogLines — IList, чистим напрямую
             var logLines = GetPropertyValue(vm, "LogLines");
             if (logLines is IList list)
                 list.Clear();
