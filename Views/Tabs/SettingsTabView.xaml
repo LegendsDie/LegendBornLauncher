@@ -1,0 +1,227 @@
+<UserControl x:Class="LegendBorn.Views.Tabs.SettingsTabView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DesignHeight="600"
+             d:DesignWidth="900"
+             Focusable="False">
+
+    <Grid>
+        <Border Style="{StaticResource CardStyle}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <!-- Header -->
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Text="Настройки"
+                               Foreground="{StaticResource TextStrongLocal}"
+                               FontSize="18"
+                               FontWeight="Bold"/>
+
+                    <!-- Click-first, чтобы не зависеть от OpenStartCommand -->
+                    <Button Grid.Column="1"
+                            Style="{StaticResource WinCtlButton}"
+                            HorizontalAlignment="Right"
+                            ToolTip="На главную"
+                            Click="OpenStart_OnClick">
+                        <TextBlock FontFamily="Segoe MDL2 Assets"
+                                   Text="&#xE711;"
+                                   FontSize="14"/>
+                    </Button>
+                </Grid>
+
+                <!-- Settings body -->
+                <Grid Grid.Row="1" Margin="0,14,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.25*"/>
+                        <ColumnDefinition Width="18"/>
+                        <ColumnDefinition Width="1*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Left column -->
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="Память (RAM)"
+                                   Foreground="{StaticResource TextStrongLocal}"
+                                   FontWeight="SemiBold"/>
+
+                        <ComboBox ItemsSource="{Binding RamOptions}"
+                                  SelectedItem="{Binding RamMb}"
+                                  Margin="0,10,0,0"
+                                  Height="44"/>
+
+                        <TextBlock Margin="0,18,0,0"
+                                   Text="При запуске Minecraft"
+                                   Foreground="{StaticResource TextStrongLocal}"
+                                   FontWeight="SemiBold"/>
+
+                        <StackPanel Margin="0,10,0,0">
+                            <RadioButton GroupName="GameUiMode"
+                                         Foreground="{StaticResource TextStrongLocal}"
+                                         Content="Скрывать лаунчер пока игра запущена"
+                                         IsChecked="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=GameUiModeHide, Mode=TwoWay}"/>
+
+                            <RadioButton GroupName="GameUiMode"
+                                         Foreground="{StaticResource TextStrongLocal}"
+                                         Content="Сворачивать лаунчер пока игра запущена"
+                                         IsChecked="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=GameUiModeMinimize, Mode=TwoWay}"/>
+
+                            <RadioButton GroupName="GameUiMode"
+                                         Foreground="{StaticResource TextStrongLocal}"
+                                         Content="Оставлять лаунчер открытым"
+                                         IsChecked="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=GameUiModeNone, Mode=TwoWay}"/>
+                        </StackPanel>
+
+                        <TextBlock Margin="0,10,0,0"
+                                   Foreground="{StaticResource TextDimLocal}"
+                                   FontSize="12">
+                            Лаунчер вернётся, когда Minecraft закроется.
+                        </TextBlock>
+                    </StackPanel>
+
+                    <!-- Right column -->
+                    <StackPanel Grid.Column="2" VerticalAlignment="Top">
+                        <Button Style="{StaticResource GhostButton}"
+                                Content="Проверить обновления лаунчера"
+                                Command="{Binding CheckLauncherUpdatesCommand}"
+                                Height="44"
+                                Padding="18,0"/>
+
+                        <Button Style="{StaticResource GhostButton}"
+                                Content="Проверить сборку"
+                                Command="{Binding RefreshVersionsCommand}"
+                                Margin="0,14,0,0"
+                                Height="44"
+                                Padding="18,0"/>
+                    </StackPanel>
+                </Grid>
+
+                <!-- Divider -->
+                <Border Grid.Row="2"
+                        Margin="0,18,0,18"
+                        Height="1"
+                        Background="{StaticResource DividerBrushLocal}"
+                        Opacity="0.9"/>
+
+                <!-- Diagnostics -->
+                <Grid Grid.Row="3">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Text="Диагностика"
+                                   Foreground="{StaticResource TextStrongLocal}"
+                                   FontWeight="SemiBold"/>
+
+                        <!-- UX: toggle autoscroll -->
+                        <CheckBox Grid.Column="1"
+                                  Content="Следовать за выводом"
+                                  Foreground="{StaticResource TextDimLocal}"
+                                  VerticalAlignment="Center"
+                                  IsChecked="{Binding ElementName=RootAutoScroll, Path=IsChecked}"
+                                  Visibility="Collapsed"/>
+                    </Grid>
+
+                    <!-- Корневой чекбокс (чтобы можно было аккуратно управлять состоянием в code-behind без VM) -->
+                    <CheckBox x:Name="RootAutoScroll"
+                              Grid.Row="0"
+                              HorizontalAlignment="Right"
+                              VerticalAlignment="Center"
+                              Foreground="{StaticResource TextDimLocal}"
+                              Content="Следовать за выводом"
+                              IsChecked="True"/>
+
+                    <Expander Grid.Row="1"
+                              Margin="0,12,0,0"
+                              Foreground="{StaticResource TextStrongLocal}"
+                              Header="Логи (последние 120)"
+                              IsExpanded="False">
+
+                        <Border Margin="0,10,0,0"
+                                Background="#101329"
+                                BorderBrush="{StaticResource StrokeGlow}"
+                                BorderThickness="1"
+                                CornerRadius="14"
+                                Padding="14"
+                                ClipToBounds="True">
+
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="12"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+
+                                <Grid Grid.Row="0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <StackPanel Orientation="Horizontal" Grid.Column="1">
+                                        <Button Style="{StaticResource GhostButton}"
+                                                Content="Копировать"
+                                                Height="36"
+                                                Padding="16,0"
+                                                Margin="0,0,10,0"
+                                                Click="CopyLogs_OnClick"/>
+
+                                        <!-- Click-first fallback, если ClearLogCommand отсутствует -->
+                                        <Button Style="{StaticResource GhostButton}"
+                                                Content="Очистить"
+                                                Height="36"
+                                                Padding="16,0"
+                                                Click="ClearLogs_OnClick"/>
+                                    </StackPanel>
+                                </Grid>
+
+                                <ListBox x:Name="LogListBox"
+                                         Grid.Row="2"
+                                         ItemsSource="{Binding LogLines}"
+                                         Background="Transparent"
+                                         BorderThickness="0"
+                                         Foreground="{StaticResource TextDimLocal}"
+                                         FontSize="12"
+                                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                         ScrollViewer.CanContentScroll="True"
+                                         VirtualizingStackPanel.IsVirtualizing="True"
+                                         VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                         ItemContainerStyle="{StaticResource LogListItemStyle}">
+
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}"
+                                                       Foreground="{StaticResource TextDimLocal}"
+                                                       TextWrapping="NoWrap"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </Grid>
+                        </Border>
+                    </Expander>
+                </Grid>
+
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

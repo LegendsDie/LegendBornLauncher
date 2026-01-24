@@ -1,11 +1,19 @@
-﻿<Application x:Class="LegendBorn.App"
+﻿<!-- File: /App.xaml -->
+<Application x:Class="LegendBorn.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              StartupUri="MainWindow.xaml">
+
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="/Resources/Themes/LauncherTheme.xaml" />
+
+                <!-- 1) Сначала базовая тема (RootBorderStyle, StrokeGlow, ProfileButton и т.п.) -->
+                <ResourceDictionary Source="/Resources/Themes/LauncherTheme.xaml"/>
+
+                <!-- 2) Потом локальные ресурсы окна (TextDimLocal/TextStrongLocal/AuthStartBg и стили на базе темы) -->
+                <ResourceDictionary Source="/Resources/Themes/MainWindowLocal.xaml"/>
+
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>
     </Application.Resources>

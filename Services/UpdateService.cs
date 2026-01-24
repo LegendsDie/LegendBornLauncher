@@ -1,4 +1,6 @@
 using System;
+using System.Net.Http;
+using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -70,7 +72,6 @@ public static class UpdateService
         CancellationToken ct = default)
     {
         var entered = false;
-        UpdateManager? mgr = null;
 
         try
         {
@@ -79,7 +80,8 @@ public static class UpdateService
 
             ct.ThrowIfCancellationRequested();
 
-            mgr = CreateManager();
+            // В вашей версии Velopack UpdateManager НЕ IDisposable -> using нельзя
+            var mgr = CreateManager();
 
             if (!mgr.IsInstalled)
             {
@@ -94,7 +96,18 @@ public static class UpdateService
                 return;
             }
 
-            var updates = await mgr.CheckForUpdatesAsync().ConfigureAwait(false);
+            Velopack.UpdateInfo? updates;
+            try
+            {
+                updates = await mgr.CheckForUpdatesAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                if (!silent)
+                    ShowError(BuildFriendlyError("Не удалось проверить обновления.", ex));
+                return;
+            }
+
             ct.ThrowIfCancellationRequested();
 
             var target = updates?.TargetFullRelease;
@@ -114,27 +127,46 @@ public static class UpdateService
                     return;
             }
 
-            await mgr.DownloadUpdatesAsync(updates!).ConfigureAwait(false);
-            ct.ThrowIfCancellationRequested();
+            try
+            {
+                await mgr.DownloadUpdatesAsync(updates!).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                if (!silent)
+                    ShowError(BuildFriendlyError("Не удалось скачать обновление.", ex));
+                return;
+            }
 
-            mgr.WaitExitThenApplyUpdates(target, restart: true);
+            ct.ThrowIfCancellationRequested();
 
             try
             {
-                Application.Current?.Dispatcher.Invoke(() =>
+                mgr.WaitExitThenApplyUpdates(target, restart: true);
+
+                try
                 {
-                    try { Application.Current.Shutdown(); } catch { }
-                });
+                    Application.Current?.Dispatcher.Invoke(() =>
+                    {
+                        try { Application.Current.Shutdown(); } catch { }
+                    });
+                }
+                catch { }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                if (!silent)
+                    ShowError(BuildFriendlyError("Не удалось применить обновление.", ex));
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+            // silent cancel
         }
         catch (Exception ex)
         {
             if (!silent)
-                ShowError($"Ошибка обновления:\n{ex}");
+                ShowError(BuildFriendlyError("Ошибка обновления.", ex));
         }
         finally
         {
@@ -143,6 +175,117 @@ public static class UpdateService
                 try { _gate.Release(); } catch { }
             }
         }
+    }
+
+    private static string BuildFriendlyError(string title, Exception ex)
+    {
+        var kind = ClassifyNetworkError(ex);
+
+        var hint = kind switch
+        {
+            NetworkErrorKind.DnsOrHostNotFound =>
+                "Похоже, система не может найти хост (DNS/блокировка домена). " +
+                "Чаще всего это связано с провайдером, DNS (1.1.1.1/8.8.8.8), VPN, прокси или корпоративной сетью.\n\n" +
+                "Что можно попробовать:\n" +
+                "• сменить DNS (например, 1.1.1.1 или 8.8.8.8)\n" +
+                "• включить/выключить VPN\n" +
+                "• проверить, открывается ли GitHub в браузере\n" +
+                "• проверить файл hosts и настройки прокси в системе",
+
+            NetworkErrorKind.TlsOrSsl =>
+                "Ошибка защищённого соединения (TLS/SSL). Возможные причины: " +
+                "неверное время/дата на ПК, перехват HTTPS антивирусом/прокси, устаревшие корневые сертификаты.\n\n" +
+                "Что можно попробовать:\n" +
+                "• проверить дату/время Windows\n" +
+                "• временно отключить HTTPS-сканирование в антивирусе\n" +
+                "• попробовать другую сеть/VPN",
+
+            NetworkErrorKind.Timeout =>
+                "Истекло время ожидания. Возможные причины: нестабильный интернет, блокировки, " +
+                "медленная сеть или недоступность GitHub.\n\n" +
+                "Что можно попробовать:\n" +
+                "• повторить попытку позже\n" +
+                "• попробовать VPN/другую сеть\n" +
+                "• проверить доступность GitHub в браузере",
+
+            NetworkErrorKind.ConnectionRefusedOrReset =>
+                "Соединение было сброшено/отклонено. Часто это блокировки, прокси, VPN, " +
+                "фильтрация трафика или временная проблема сети.\n\n" +
+                "Что можно попробовать:\n" +
+                "• попробовать другую сеть/VPN\n" +
+                "• отключить прокси/антивирусный веб-фильтр\n" +
+                "• повторить попытку позже",
+
+            _ =>
+                "Проверьте доступность GitHub и соединение с интернетом (DNS/VPN/прокси/антивирус)."
+        };
+
+        var raw = ex.ToString();
+        if (raw.Contains("release-assets.githubusercontent.com", StringComparison.OrdinalIgnoreCase))
+        {
+            hint =
+                "Не удаётся получить доступ к GitHub Release Assets (release-assets.githubusercontent.com). " +
+                "В некоторых сетях/странах домен может быть недоступен.\n\n" + hint;
+        }
+
+        return $"{title}\n\n{hint}\n\nТехнические детали:\n{ex}";
+    }
+
+    private enum NetworkErrorKind
+    {
+        Unknown = 0,
+        DnsOrHostNotFound,
+        Timeout,
+        TlsOrSsl,
+        ConnectionRefusedOrReset
+    }
+
+    private static NetworkErrorKind ClassifyNetworkError(Exception ex)
+    {
+        for (var e = ex; e != null; e = e.InnerException)
+        {
+            if (e is TimeoutException)
+                return NetworkErrorKind.Timeout;
+
+            if (e is HttpRequestException hre)
+            {
+                if (hre.InnerException is SocketException se)
+                {
+                    if (se.SocketErrorCode == SocketError.HostNotFound ||
+                        se.SocketErrorCode == SocketError.NoData ||
+                        se.SocketErrorCode == SocketError.TryAgain)
+                        return NetworkErrorKind.DnsOrHostNotFound;
+
+                    if (se.SocketErrorCode == SocketError.TimedOut)
+                        return NetworkErrorKind.Timeout;
+
+                    if (se.SocketErrorCode == SocketError.ConnectionRefused ||
+                        se.SocketErrorCode == SocketError.ConnectionReset ||
+                        se.SocketErrorCode == SocketError.NetworkReset ||
+                        se.SocketErrorCode == SocketError.HostUnreachable ||
+                        se.SocketErrorCode == SocketError.NetworkUnreachable)
+                        return NetworkErrorKind.ConnectionRefusedOrReset;
+                }
+
+                var msg = hre.Message ?? "";
+                if (msg.Contains("No such host is known", StringComparison.OrdinalIgnoreCase) ||
+                    msg.Contains("Name or service not known", StringComparison.OrdinalIgnoreCase))
+                    return NetworkErrorKind.DnsOrHostNotFound;
+
+                if (msg.Contains("SSL", StringComparison.OrdinalIgnoreCase) ||
+                    msg.Contains("TLS", StringComparison.OrdinalIgnoreCase) ||
+                    msg.Contains("authentication failed", StringComparison.OrdinalIgnoreCase))
+                    return NetworkErrorKind.TlsOrSsl;
+            }
+
+            var s = e.Message ?? "";
+            if (s.Contains("SSL", StringComparison.OrdinalIgnoreCase) ||
+                s.Contains("TLS", StringComparison.OrdinalIgnoreCase) ||
+                s.Contains("authentication failed", StringComparison.OrdinalIgnoreCase))
+                return NetworkErrorKind.TlsOrSsl;
+        }
+
+        return NetworkErrorKind.Unknown;
     }
 
     private static void ShowInfo(string text)

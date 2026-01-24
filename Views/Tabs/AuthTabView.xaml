@@ -1,0 +1,122 @@
+<UserControl x:Class="LegendBorn.Views.Tabs.AuthTabView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             mc:Ignorable="d"
+             d:DesignHeight="600"
+             d:DesignWidth="980"
+             Focusable="False">
+
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+    </UserControl.Resources>
+
+    <Grid>
+        <Border Style="{DynamicResource ScreenFrameStyle}">
+            <Grid>
+
+                <!-- Background image/brush -->
+                <Rectangle Fill="{DynamicResource AuthStartBg}"/>
+
+                <!-- Dark overlay -->
+                <Rectangle>
+                    <Rectangle.Fill>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#45060718" Offset="0"/>
+                            <GradientStop Color="#B0060718" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Rectangle.Fill>
+                </Rectangle>
+
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Center -->
+                    <StackPanel Grid.Row="0"
+                                VerticalAlignment="Center"
+                                HorizontalAlignment="Center"
+                                Width="520">
+
+                        <TextBlock Text="Добро пожаловать"
+                                   FontSize="26"
+                                   FontWeight="Bold"
+                                   Foreground="{DynamicResource TextStrongLocal}"
+                                   HorizontalAlignment="Center"/>
+
+                        <TextBlock Margin="0,10,0,0"
+                                   Foreground="{DynamicResource TextDimLocal}"
+                                   FontSize="13"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap">
+                            Авторизация выполняется через сайт.
+                        </TextBlock>
+
+                        <Button Style="{DynamicResource PrimaryButton}"
+                                Content="{Binding LoginButtonText}"
+                                Command="{Binding LoginViaSiteCommand}"
+                                Margin="0,18,0,0"
+                                Height="52"
+                                FontSize="15"
+                                Padding="26,0"/>
+
+                        <!-- Waiting confirm card -->
+                        <Border Margin="0,14,0,0"
+                                Background="#7A0F172A"
+                                BorderBrush="{DynamicResource StrokeGlow}"
+                                BorderThickness="1"
+                                CornerRadius="16"
+                                Padding="16"
+                                Visibility="{Binding IsWaitingSiteConfirm, Converter={StaticResource BoolToVis}}">
+
+                            <StackPanel>
+                                <TextBlock Text="Подтверди вход на сайте"
+                                           Foreground="{DynamicResource TextStrongLocal}"
+                                           FontWeight="SemiBold"/>
+
+                                <TextBlock Margin="0,8,0,0"
+                                           Foreground="{DynamicResource TextDimLocal}"
+                                           FontSize="12"
+                                           TextWrapping="Wrap">
+                                    Статус: <Run Text="{Binding StatusText}"/>
+                                </TextBlock>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+
+                                    <Button Style="{DynamicResource GhostButton}"
+                                            Content="Скопировать ссылку"
+                                            Height="42"
+                                            Padding="18,0"
+                                            Click="CopyOrRegenLoginLink_OnClick"/>
+
+                                    <Button Style="{DynamicResource DangerButton}"
+                                            Content="Отменить"
+                                            Command="{Binding SiteLogoutCommand}"
+                                            Margin="12,0,0,0"
+                                            Height="42"
+                                            Padding="18,0"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                    </StackPanel>
+
+                    <!-- Bottom status -->
+                    <TextBlock Grid.Row="1"
+                               Margin="0,0,0,14"
+                               Foreground="{DynamicResource TextDimLocal}"
+                               FontSize="12"
+                               HorizontalAlignment="Center"
+                               TextWrapping="Wrap"
+                               TextTrimming="CharacterEllipsis">
+                        <Run Text="{Binding StatusText}"/>
+                    </TextBlock>
+
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

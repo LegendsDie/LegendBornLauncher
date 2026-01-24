@@ -204,33 +204,70 @@ public sealed partial class MainViewModel
         try { _log.Info(text); } catch { /* ignore */ }
     }
 
+    // =========================
+    // FIX: RefreshCanStates всегда на UI потоке + коалесцирование
+    // =========================
+    private int _canStatesPumpScheduled;
+
     private void RefreshCanStates()
     {
         if (_isClosing) return;
 
-        Raise(nameof(CanPlay));
-        Raise(nameof(CanStop));
-        Raise(nameof(PlayButtonText));
-        Raise(nameof(LoginButtonText));
-        Raise(nameof(HasLoginUrl));
-        Raise(nameof(LoginStateText));
-        Raise(nameof(RamMbText));
+        var disp = Application.Current?.Dispatcher;
 
-        if (!_commandsReady) return;
+        // Если диспетчера нет (например, unit tests) — делаем безопасно как есть
+        if (disp == null || disp.CheckAccess())
+        {
+            RefreshCanStatesCore();
+            return;
+        }
 
-        RefreshVersionsCommand.RaiseCanExecuteChanged();
-        PlayCommand.RaiseCanExecuteChanged();
-        StopGameCommand.RaiseCanExecuteChanged();
+        // Коалесцируем частые вызовы из фоновых тасков/таймеров
+        if (Interlocked.Exchange(ref _canStatesPumpScheduled, 1) == 1)
+            return;
 
-        LoginViaSiteCommand.RaiseCanExecuteChanged();
-        SiteLogoutCommand.RaiseCanExecuteChanged();
+        disp.BeginInvoke(DispatcherPriority.DataBind, new Action(() =>
+        {
+            Interlocked.Exchange(ref _canStatesPumpScheduled, 0);
+            RefreshCanStatesCore();
+        }));
+    }
 
-        OpenProfileCommand.RaiseCanExecuteChanged();
+    private void RefreshCanStatesCore()
+    {
+        if (_isClosing) return;
 
-        OpenLoginUrlCommand.RaiseCanExecuteChanged();
-        CopyLoginUrlCommand.RaiseCanExecuteChanged();
+        try
+        {
+            Raise(nameof(CanPlay));
+            Raise(nameof(CanStop));
+            Raise(nameof(PlayButtonText));
+            Raise(nameof(LoginButtonText));
+            Raise(nameof(HasLoginUrl));
+            Raise(nameof(LoginStateText));
+            Raise(nameof(RamMbText));
 
-        CheckLauncherUpdatesCommand.RaiseCanExecuteChanged();
+            if (!_commandsReady) return;
+
+            // Каждое действие — в try/catch, чтобы ничего не уронило UI
+            try { RefreshVersionsCommand.RaiseCanExecuteChanged(); } catch { }
+            try { PlayCommand.RaiseCanExecuteChanged(); } catch { }
+            try { StopGameCommand.RaiseCanExecuteChanged(); } catch { }
+
+            try { LoginViaSiteCommand.RaiseCanExecuteChanged(); } catch { }
+            try { SiteLogoutCommand.RaiseCanExecuteChanged(); } catch { }
+
+            try { OpenProfileCommand.RaiseCanExecuteChanged(); } catch { }
+
+            try { OpenLoginUrlCommand.RaiseCanExecuteChanged(); } catch { }
+            try { CopyLoginUrlCommand.RaiseCanExecuteChanged(); } catch { }
+
+            try { CheckLauncherUpdatesCommand.RaiseCanExecuteChanged(); } catch { }
+        }
+        catch
+        {
+            // Никогда не роняем UI из RefreshCanStates
+        }
     }
 
     private void RaisePackPresentation()

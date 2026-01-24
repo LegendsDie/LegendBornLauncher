@@ -1,0 +1,348 @@
+<!-- File: /Resources/Themes/MainWindowLocal.xaml -->
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+        MainWindow-local resources.
+
+        Правило:
+        - LauncherTheme.xaml должен быть подключён РАНЬШЕ (теперь он подключён в App.xaml первым).
+        - Поэтому здесь можно безопасно использовать StaticResource для StrokeGlow/ProfileButton/ProgressBarAccurateStyle.
+        - DynamicResource нельзя использовать в Style.BasedOn.
+    -->
+
+    <!-- Background -->
+    <ImageBrush x:Key="AuthStartBg"
+                ImageSource="pack://application:,,,/Resources/Assets/launcherstart.png"
+                Stretch="UniformToFill"/>
+
+    <!-- Local palette -->
+    <SolidColorBrush x:Key="TextStrongLocal" Color="#EAF0FF"/>
+    <SolidColorBrush x:Key="TextDimLocal" Color="#A9B4D6"/>
+    <SolidColorBrush x:Key="DividerBrushLocal" Color="#2A2F49"/>
+
+    <LinearGradientBrush x:Key="SoftCardGlowBrush" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#1A7C3AED" Offset="0"/>
+        <GradientStop Color="#007C3AED" Offset="1"/>
+    </LinearGradientBrush>
+
+    <!-- Typography helpers -->
+    <Style x:Key="SectionHeaderText" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="{StaticResource TextStrongLocal}"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="FontSize" Value="14"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+    </Style>
+
+    <Style x:Key="SectionSubText" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="{StaticResource TextDimLocal}"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+    </Style>
+
+    <!-- Cards -->
+    <Style x:Key="InnerCardStyle" TargetType="Border">
+        <Setter Property="Background" Value="#101329"/>
+        <Setter Property="BorderBrush" Value="{StaticResource StrokeGlow}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="16"/>
+        <Setter Property="Padding" Value="14"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Setter Property="UseLayoutRounding" Value="True"/>
+    </Style>
+
+    <Style x:Key="ProfileHeaderStyle" TargetType="Border">
+        <Setter Property="CornerRadius" Value="18"/>
+        <Setter Property="BorderBrush" Value="{StaticResource StrokeGlow}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="18"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Setter Property="UseLayoutRounding" Value="True"/>
+        <Setter Property="Background">
+            <Setter.Value>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                    <GradientStop Color="#121735" Offset="0"/>
+                    <GradientStop Color="#0E122B" Offset="1"/>
+                </LinearGradientBrush>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="NewsCardStyle" TargetType="Border">
+        <Setter Property="Background" Value="#101329"/>
+        <Setter Property="BorderBrush" Value="{StaticResource StrokeGlow}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="18"/>
+        <Setter Property="Padding" Value="16"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Setter Property="UseLayoutRounding" Value="True"/>
+    </Style>
+
+    <Style x:Key="NewsTagPillStyle" TargetType="Border">
+        <Setter Property="CornerRadius" Value="999"/>
+        <Setter Property="Background" Value="#1F243D"/>
+        <Setter Property="BorderBrush" Value="#2A2F49"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="10,4"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Setter Property="UseLayoutRounding" Value="True"/>
+    </Style>
+
+    <!-- =========================
+         Existing styles
+         ========================= -->
+
+    <Style x:Key="BottomStripProgressBarStyle"
+           TargetType="ProgressBar"
+           BasedOn="{StaticResource ProgressBarAccurateStyle}">
+        <Setter Property="Height" Value="4"/>
+        <Setter Property="VerticalAlignment" Value="Bottom"/>
+        <Setter Property="HorizontalAlignment" Value="Stretch"/>
+        <Setter Property="Margin" Value="26,0,26,18"/>
+        <Setter Property="IsHitTestVisible" Value="False"/>
+        <Setter Property="Opacity" Value="1"/>
+
+        <Style.Triggers>
+
+            <DataTrigger Binding="{Binding ProgressPercent}" Value="0">
+                <DataTrigger.EnterActions>
+                    <BeginStoryboard x:Name="HideStripAtZero">
+                        <Storyboard>
+                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                             To="0"
+                                             Duration="0:0:0.25"
+                                             BeginTime="0:0:1.5"/>
+                            <DoubleAnimation Storyboard.TargetProperty="Height"
+                                             To="0"
+                                             Duration="0:0:0.20"
+                                             BeginTime="0:0:1.5"/>
+                            <ThicknessAnimation Storyboard.TargetProperty="Margin"
+                                                To="26,0,26,0"
+                                                Duration="0:0:0.20"
+                                                BeginTime="0:0:1.5"/>
+                        </Storyboard>
+                    </BeginStoryboard>
+                </DataTrigger.EnterActions>
+                <DataTrigger.ExitActions>
+                    <StopStoryboard BeginStoryboardName="HideStripAtZero"/>
+                    <BeginStoryboard>
+                        <Storyboard>
+                            <DoubleAnimation Storyboard.TargetProperty="Height"
+                                             To="4"
+                                             Duration="0:0:0.12"/>
+                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                             To="1"
+                                             Duration="0:0:0.12"/>
+                            <ThicknessAnimation Storyboard.TargetProperty="Margin"
+                                                To="26,0,26,18"
+                                                Duration="0:0:0.12"/>
+                        </Storyboard>
+                    </BeginStoryboard>
+                </DataTrigger.ExitActions>
+            </DataTrigger>
+
+            <DataTrigger Binding="{Binding ProgressPercent}" Value="100">
+                <DataTrigger.EnterActions>
+                    <BeginStoryboard x:Name="HideStripAtHundred">
+                        <Storyboard>
+                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                             To="0"
+                                             Duration="0:0:0.25"
+                                             BeginTime="0:0:2.0"/>
+                            <DoubleAnimation Storyboard.TargetProperty="Height"
+                                             To="0"
+                                             Duration="0:0:0.20"
+                                             BeginTime="0:0:2.0"/>
+                            <ThicknessAnimation Storyboard.TargetProperty="Margin"
+                                                To="26,0,26,0"
+                                                Duration="0:0:0.20"
+                                                BeginTime="0:0:2.0"/>
+                        </Storyboard>
+                    </BeginStoryboard>
+                </DataTrigger.EnterActions>
+                <DataTrigger.ExitActions>
+                    <StopStoryboard BeginStoryboardName="HideStripAtHundred"/>
+                    <BeginStoryboard>
+                        <Storyboard>
+                            <DoubleAnimation Storyboard.TargetProperty="Height"
+                                             To="4"
+                                             Duration="0:0:0.12"/>
+                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                             To="1"
+                                             Duration="0:0:0.12"/>
+                            <ThicknessAnimation Storyboard.TargetProperty="Margin"
+                                                To="26,0,26,18"
+                                                Duration="0:0:0.12"/>
+                        </Storyboard>
+                    </BeginStoryboard>
+                </DataTrigger.ExitActions>
+            </DataTrigger>
+
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="BrandButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="IsTabStop" Value="False"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border CornerRadius="12" Background="Transparent">
+                        <ContentPresenter/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Opacity" Value="0.95"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter Property="Opacity" Value="0.85"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.60"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="SmallIconButton" TargetType="Button">
+        <Setter Property="Width" Value="38"/>
+        <Setter Property="Height" Value="38"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="Background" Value="#141A2E"/>
+        <Setter Property="BorderBrush" Value="{StaticResource StrokeGlow}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Foreground" Value="{StaticResource TextStrongLocal}"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="IsTabStop" Value="False"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border CornerRadius="12"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}">
+                        <ContentPresenter HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Background" Value="#1B2440"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter Property="Background" Value="#0E1427"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.55"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="NewsTopButtonStyle"
+           TargetType="Button"
+           BasedOn="{StaticResource ProfileButton}">
+        <Setter Property="Margin" Value="0,0,10,0"/>
+        <Setter Property="Padding" Value="12,0"/>
+        <Setter Property="Height" Value="38"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="IsTabStop" Value="False"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+    </Style>
+
+    <Style x:Key="NewsCardButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="Margin" Value="0,0,0,10"/>
+        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+        <Setter Property="VerticalContentAlignment" Value="Stretch"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="IsTabStop" Value="False"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <ContentPresenter/>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- =========================
+         Social ListBox / Item styles
+         ========================= -->
+
+    <Style x:Key="SocialListBoxStyle" TargetType="ListBox">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="Margin" Value="0"/>
+        <Setter Property="MinHeight" Value="0"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Auto"/>
+        <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListBox">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            SnapsToDevicePixels="True">
+                        <ScrollViewer Focusable="False"
+                                      Padding="{TemplateBinding Padding}">
+                            <ItemsPresenter/>
+                        </ScrollViewer>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="SocialListItemStyle" TargetType="ListBoxItem">
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="Margin" Value="0,0,0,8"/>
+        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                    <Border x:Name="Bd"
+                            Background="#0C000000"
+                            BorderBrush="#2A2F49"
+                            BorderThickness="1"
+                            CornerRadius="12"
+                            Padding="10"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#141A2E"/>
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#1B2440"/>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource StrokeGlow}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.55"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+</ResourceDictionary>

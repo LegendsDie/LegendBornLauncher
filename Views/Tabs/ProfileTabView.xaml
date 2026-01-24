@@ -1,0 +1,576 @@
+<UserControl x:Class="LegendBorn.Views.Tabs.ProfileTabView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DesignHeight="640"
+             d:DesignWidth="980"
+             Focusable="False">
+
+    <UserControl.Resources>
+
+        <!-- Визуальная точка статуса -->
+        <Style x:Key="OnlineDotStyle" TargetType="Ellipse">
+            <Setter Property="Width" Value="9"/>
+            <Setter Property="Height" Value="9"/>
+            <Setter Property="Stroke" Value="#0E0E10"/>
+            <Setter Property="StrokeThickness" Value="1"/>
+            <Setter Property="HorizontalAlignment" Value="Right"/>
+            <Setter Property="VerticalAlignment" Value="Bottom"/>
+            <Setter Property="Margin" Value="0,0,-1,-1"/>
+            <Setter Property="Fill" Value="#6B7280"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsOnline}" Value="True">
+                    <Setter Property="Fill" Value="#34D399"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- Мини-кнопка-иконка (обновить) -->
+        <Style x:Key="IconGhostButtonStyle"
+               TargetType="Button"
+               BasedOn="{StaticResource GhostButton}">
+            <Setter Property="Width" Value="34"/>
+            <Setter Property="Height" Value="34"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+
+        <!-- Нормальный айтем друзей (без странных “кружков/минусов”) -->
+        <Style x:Key="FriendListItemStyle" TargetType="ListBoxItem">
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="0,0,0,10"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="#2A2F49"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="Bd"
+                                Background="#0C000000"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="14"
+                                Padding="12"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Stretch"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#14000000"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource StrokeGlow}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#1A000000"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource Accent2}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.55"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ListBox база -->
+        <Style x:Key="SocialListBoxBase"
+               TargetType="ListBox"
+               BasedOn="{StaticResource SocialListBoxStyle}">
+            <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
+            <Setter Property="VirtualizingStackPanel.IsVirtualizing" Value="True"/>
+            <Setter Property="VirtualizingStackPanel.VirtualizationMode" Value="Recycling"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Disabled"/>
+            <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
+        </Style>
+
+        <!-- Шаблон строки друга (ТОЛЬКО ОДНА строка статуса) -->
+        <DataTemplate x:Key="FriendRowTemplate">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="12"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Avatar -->
+                <Border Width="42"
+                        Height="42"
+                        CornerRadius="14"
+                        ClipToBounds="True"
+                        Background="#24324B"
+                        VerticalAlignment="Center">
+                    <Grid>
+                        <Rectangle Fill="#1A203A"/>
+                        <TextBlock Text="{Binding Initial}"
+                                   Foreground="{StaticResource TextStrongLocal}"
+                                   FontWeight="Bold"
+                                   FontSize="14"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"/>
+                        <Image Source="{Binding AvatarUrl, IsAsync=True}"
+                               Stretch="UniformToFill"/>
+                        <Ellipse Style="{StaticResource OnlineDotStyle}"/>
+                    </Grid>
+                </Border>
+
+                <!-- Text -->
+                <StackPanel Grid.Column="2" VerticalAlignment="Center" MinWidth="0">
+                    <TextBlock Text="{Binding Name}"
+                               Foreground="{StaticResource TextStrongLocal}"
+                               FontWeight="SemiBold"
+                               FontSize="13"
+                               TextTrimming="CharacterEllipsis"/>
+
+                    <!-- Единственная строка статуса -->
+                    <TextBlock Margin="0,4,0,0"
+                               Text="{Binding PresenceLine}"
+                               Foreground="{StaticResource TextDimLocal}"
+                               FontSize="11"
+                               TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+
+                <!-- Контекстное меню -->
+                <Grid.ContextMenu>
+                    <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                        <MenuItem Header="Открыть профиль" Click="OpenFriendProfile_OnClick"/>
+                        <MenuItem Header="Скопировать ID" Click="CopyFriendId_OnClick"/>
+                    </ContextMenu>
+                </Grid.ContextMenu>
+            </Grid>
+        </DataTemplate>
+
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="14"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <Border Grid.Row="0" Style="{StaticResource ProfileHeaderStyle}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Left -->
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="14"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Border Width="64"
+                            Height="64"
+                            CornerRadius="22"
+                            ClipToBounds="True"
+                            Background="#24324B">
+                        <Grid>
+                            <Rectangle Fill="{StaticResource SoftCardGlowBrush}"/>
+                            <TextBlock Text="{Binding UserInitial}"
+                                       FontWeight="Bold"
+                                       FontSize="18"
+                                       Foreground="{StaticResource TextStrongLocal}"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"/>
+                            <Image Source="{Binding AvatarUrl, IsAsync=True}" Stretch="UniformToFill"/>
+                        </Grid>
+                    </Border>
+
+                    <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding SiteUserName}"
+                                   Foreground="{StaticResource TextStrongLocal}"
+                                   FontSize="20"
+                                   FontWeight="Bold"
+                                   TextTrimming="CharacterEllipsis"/>
+
+                        <StackPanel Margin="0,6,0,0">
+                            <StackPanel Orientation="Horizontal">
+                                <Border Style="{StaticResource NewsTagPillStyle}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="Резонит" Foreground="{StaticResource TextDimLocal}" FontSize="11"/>
+                                        <TextBlock Text="  " Foreground="{StaticResource TextDimLocal}" FontSize="11"/>
+                                        <TextBlock Text="{Binding Rezonite, StringFormat={}{0:N0}}"
+                                                   Foreground="{StaticResource TextStrongLocal}"
+                                                   FontWeight="SemiBold"
+                                                   FontSize="11"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Margin="10,0,0,0" Style="{StaticResource NewsTagPillStyle}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="Minecraft" Foreground="{StaticResource TextDimLocal}" FontSize="11"/>
+                                        <TextBlock Text="  " Foreground="{StaticResource TextDimLocal}" FontSize="11"/>
+                                        <TextBlock Text="{Binding Username}"
+                                                   Foreground="{StaticResource TextStrongLocal}"
+                                                   FontWeight="SemiBold"
+                                                   FontSize="11"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   MaxWidth="220"/>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <Border Margin="0,10,0,0" Style="{StaticResource NewsTagPillStyle}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Клан" Foreground="{StaticResource TextDimLocal}" FontSize="11"/>
+                                    <TextBlock Text="  " Foreground="{StaticResource TextDimLocal}" FontSize="11"/>
+                                    <TextBlock Text="{Binding ClanName, FallbackValue=Нет клана}"
+                                               Foreground="{StaticResource TextStrongLocal}"
+                                               FontWeight="SemiBold"
+                                               FontSize="11"
+                                               TextTrimming="CharacterEllipsis"
+                                               MaxWidth="320"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </StackPanel>
+                </Grid>
+
+                <!-- Right -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Style="{StaticResource GhostButton}"
+                            Content="Открыть сайт"
+                            Height="36"
+                            Padding="16,0"
+                            Margin="0,0,10,0"
+                            Click="OpenSite_OnClick"/>
+
+                    <Button Style="{StaticResource DangerButton}"
+                            Content="Выйти"
+                            Height="36"
+                            Padding="16,0"
+                            Margin="0,0,10,0"
+                            Click="Logout_OnClick"/>
+
+                    <Button Style="{StaticResource WinCtlButton}"
+                            ToolTip="На главную"
+                            Click="OpenStart_OnClick">
+                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE711;" FontSize="14"/>
+                    </Button>
+                </StackPanel>
+
+            </Grid>
+        </Border>
+
+        <!-- Body -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="1.05*"/>
+                <ColumnDefinition Width="14"/>
+                <ColumnDefinition Width="1*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Left -->
+            <Border Grid.Column="0" Style="{StaticResource CardStyle}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel>
+
+                        <!-- Заголовок без “Основные данные подтягиваются...” -->
+                        <TextBlock Text="Профиль" Style="{StaticResource SectionHeaderText}"/>
+
+                        <!-- ===== ХАРАКТЕРИСТИКИ (сверху) ===== -->
+                        <Border Margin="0,14,0,0" Style="{StaticResource InnerCardStyle}">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="12"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <StackPanel Grid.Row="0">
+                                    <TextBlock Text="Характеристики"
+                                               Foreground="{StaticResource TextStrongLocal}"
+                                               FontWeight="SemiBold"/>
+                                    <TextBlock Margin="0,6,0,0"
+                                               Foreground="{StaticResource TextDimLocal}"
+                                               FontSize="11"
+                                               Text="Рост идёт от действий — это витрина прогресса."
+                                               TextTrimming="CharacterEllipsis"/>
+                                </StackPanel>
+
+                                <Border Grid.Row="2"
+                                        Background="#0C000000"
+                                        CornerRadius="16"
+                                        BorderBrush="{StaticResource StrokeGlow}"
+                                        BorderThickness="1"
+                                        Padding="14">
+                                    <ItemsControl ItemsSource="{Binding ProfileStats}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,10,0,0">
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="8"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                    </Grid.RowDefinitions>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <TextBlock Text="{Binding Name}"
+                                                               Foreground="{StaticResource TextStrongLocal}"
+                                                               FontWeight="SemiBold"/>
+                                                    <TextBlock Grid.Column="1"
+                                                               Foreground="{StaticResource TextDimLocal}"
+                                                               Text="{Binding LevelText, FallbackValue='УР. 0'}"/>
+
+                                                    <Grid Grid.Row="1" Grid.ColumnSpan="2">
+                                                        <Border Background="#26FFFFFF" CornerRadius="6"/>
+                                                        <Border Background="{Binding Brush, FallbackValue={StaticResource Accent2}}"
+                                                                CornerRadius="6"
+                                                                RenderTransformOrigin="0,0.5">
+                                                            <Border.RenderTransform>
+                                                                <ScaleTransform ScaleX="{Binding Progress, FallbackValue=0}" ScaleY="1"/>
+                                                            </Border.RenderTransform>
+                                                        </Border>
+                                                    </Grid>
+
+                                                    <TextBlock Grid.Row="2" Grid.ColumnSpan="2"
+                                                               Margin="0,6,0,0"
+                                                               Foreground="{StaticResource TextDimLocal}"
+                                                               FontSize="11"
+                                                               Text="{Binding Hint, FallbackValue=''}"/>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </Border>
+                            </Grid>
+                        </Border>
+
+                        <!-- ===== ДРУЗЬЯ (ниже) ===== -->
+                        <Border Margin="0,14,0,0" Style="{StaticResource InnerCardStyle}">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="12"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+
+                                <!-- Header -->
+                                <Grid Grid.Row="0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <StackPanel>
+                                        <TextBlock Text="Друзья"
+                                                   Foreground="{StaticResource TextStrongLocal}"
+                                                   FontWeight="SemiBold"/>
+                                        <TextBlock Margin="0,6,0,0"
+                                                   Foreground="{StaticResource TextDimLocal}"
+                                                   FontSize="11"
+                                                   Text="{Binding FriendsPreviewSummaryText}"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                    </StackPanel>
+
+                                    <Button Grid.Column="1"
+                                            Style="{StaticResource IconGhostButtonStyle}"
+                                            ToolTip="Обновить друзей"
+                                            Command="{Binding RefreshFriendsCommand}"
+                                            IsEnabled="{Binding CanRefreshFriends}">
+                                        <TextBlock FontFamily="Segoe MDL2 Assets"
+                                                   Text="&#xE72C;"
+                                                   Foreground="{StaticResource TextDimLocal}"
+                                                   FontSize="14"/>
+                                    </Button>
+                                </Grid>
+
+                                <!-- List + Empty -->
+                                <Grid Grid.Row="2">
+                                    <ListBox x:Name="FriendsList"
+                                             Style="{StaticResource SocialListBoxBase}"
+                                             ItemsSource="{Binding FriendsPreview}"
+                                             SelectedItem="{Binding SelectedFriend, Mode=TwoWay}"
+                                             ItemContainerStyle="{StaticResource FriendListItemStyle}"
+                                             ItemTemplate="{StaticResource FriendRowTemplate}"
+                                             MouseDoubleClick="FriendsList_OnMouseDoubleClick"/>
+
+                                    <!-- Empty placeholder -->
+                                    <Border Background="#0C000000"
+                                            BorderBrush="#2A2F49"
+                                            BorderThickness="1"
+                                            CornerRadius="12"
+                                            Padding="12">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding ElementName=FriendsList, Path=HasItems}" Value="False">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+
+                                        <StackPanel>
+                                            <TextBlock Foreground="{StaticResource TextStrongLocal}"
+                                                       FontWeight="SemiBold"
+                                                       FontSize="12"
+                                                       Text="Нет друзей для показа."/>
+                                            <TextBlock Margin="0,6,0,0"
+                                                       Foreground="{StaticResource TextDimLocal}"
+                                                       FontSize="11"
+                                                       Text="Показываем максимум 2: сначала онлайн, затем рандом."
+                                                       TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- Overlay: только если реально нет токена -->
+                                    <Border Background="#A0000000"
+                                            CornerRadius="16"
+                                            Padding="12">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding HasSiteToken}" Value="False">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+
+                                        <TextBlock Foreground="{StaticResource TextStrongLocal}"
+                                                   FontSize="12"
+                                                   TextWrapping="Wrap"
+                                                   Text="Друзья доступны после авторизации на сайте."/>
+                                    </Border>
+                                </Grid>
+
+                            </Grid>
+                        </Border>
+
+                        <Border Height="6" Background="Transparent"/>
+
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+
+            <!-- Right: ЗАГЛУШКА ВЫБОРА СКИНА -->
+            <Border Grid.Column="2" Style="{StaticResource CardStyle}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel>
+                                <TextBlock Text="Скин"
+                                           Foreground="{StaticResource TextStrongLocal}"
+                                           FontWeight="Bold"
+                                           FontSize="14"/>
+                                <TextBlock Foreground="{StaticResource TextDimLocal}" FontSize="12">
+                                    Выбор скина будет доступен позже
+                                </TextBlock>
+                            </StackPanel>
+
+                            <Border Grid.Column="1"
+                                    CornerRadius="999"
+                                    Background="#1F243D"
+                                    BorderBrush="#2A2F49"
+                                    BorderThickness="1"
+                                    Padding="10,4"
+                                    VerticalAlignment="Center">
+                                <TextBlock Foreground="{StaticResource TextDimLocal}"
+                                           FontSize="11"
+                                           Text="Скоро"/>
+                            </Border>
+                        </Grid>
+
+                        <Border Margin="0,14,0,0"
+                                Background="#0C000000"
+                                CornerRadius="16"
+                                BorderBrush="{StaticResource StrokeGlow}"
+                                BorderThickness="1"
+                                Padding="14">
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="14"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- Preview -->
+                                <Border Width="110" Height="110"
+                                        CornerRadius="16"
+                                        Background="#12162A"
+                                        BorderBrush="#2A2F49"
+                                        BorderThickness="1"
+                                        ClipToBounds="True">
+                                    <Grid>
+                                        <Rectangle Fill="#151B33"/>
+                                        <TextBlock Text="SKIN"
+                                                   Foreground="{StaticResource TextDimLocal}"
+                                                   FontWeight="Bold"
+                                                   Opacity="0.35"
+                                                   FontSize="18"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"/>
+                                    </Grid>
+                                </Border>
+
+                                <!-- Info -->
+                                <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                    <TextBlock Text="Скин персонажа"
+                                               Foreground="{StaticResource TextStrongLocal}"
+                                               FontWeight="SemiBold"/>
+                                    <TextBlock Margin="0,6,0,0"
+                                               Foreground="{StaticResource TextDimLocal}"
+                                               FontSize="11"
+                                               TextWrapping="Wrap"
+                                               Text="Здесь будет выбор/загрузка скина, предпросмотр и привязка к аккаунту."/>
+                                    <StackPanel Margin="0,12,0,0" Orientation="Horizontal">
+                                        <Button Style="{StaticResource GhostButton}"
+                                                Content="Выбрать"
+                                                Height="34"
+                                                Padding="14,0"
+                                                IsEnabled="False"/>
+                                        <Button Margin="10,0,0,0"
+                                                Style="{StaticResource GhostButton}"
+                                                Content="Загрузить"
+                                                Height="34"
+                                                Padding="14,0"
+                                                IsEnabled="False"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <TextBlock Margin="0,14,0,0"
+                                   Foreground="{StaticResource TextDimLocal}"
+                                   FontSize="11"
+                                   Text="Скоро тут появятся пресеты, история и быстрый выбор."
+                                   TextWrapping="Wrap"/>
+
+                        <Border Height="6" Background="Transparent"/>
+
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+
+        </Grid>
+    </Grid>
+</UserControl>

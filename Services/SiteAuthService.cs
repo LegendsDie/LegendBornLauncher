@@ -6,6 +6,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using LegendBorn.Launching;
@@ -34,22 +35,82 @@ public sealed class SiteAuthService
 
     private static readonly HttpClient Http = CreateHttp();
 
-    // ===== DTO for Friends API (nested to avoid conflicts) =====
+    // =========================
+    // Friends API DTO (internal)
+    // =========================
+
+    /// <summary>
+    /// Базовый ответ { ok, error?, message?, status? }.
+    /// status пригодится для /friends/request (sent/auto_accepted/already_sent и т.п.)
+    /// </summary>
     public class OkResponse
     {
+        [JsonPropertyName("ok")]
         public bool Ok { get; set; }
+
+        [JsonPropertyName("error")]
         public string? Error { get; set; }
+
+        [JsonPropertyName("message")]
         public string? Message { get; set; }
+
+        [JsonPropertyName("status")]
+        public string? Status { get; set; }
+    }
+
+    /// <summary>
+    /// Friend DTO, совместимый с сайтом:
+    /// - Новый формат: { id, name, status, source, note, image? }
+    /// - Легаси формат (если где-то ещё есть): { userId, publicId, name, image }
+    /// </summary>
+    public sealed class FriendDto
+    {
+        // ✅ новый формат сайта: id = publicId строкой или cuid
+        [JsonPropertyName("id")]
+        public string? Id { get; set; }
+
+        // ✅ легаси
+        [JsonPropertyName("userId")]
+        public string? UserId { get; set; }
+
+        // ✅ легаси (User.publicId = Int)
+        [JsonPropertyName("publicId")]
+        public int? PublicId { get; set; }
+
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
+
+        // опционально (если сервер отдаёт, или в будущем)
+        [JsonPropertyName("image")]
+        public string? Image { get; set; }
+
+        // ✅ новый формат сайта
+        [JsonPropertyName("status")]
+        public string? Status { get; set; } // "online" | "offline"
+
+        [JsonPropertyName("source")]
+        public string? Source { get; set; } // "site" | "twitch" | "minecraft" | "telegram"
+
+        [JsonPropertyName("note")]
+        public string? Note { get; set; }
     }
 
     public sealed class FriendsListResponse : OkResponse
     {
+        [JsonPropertyName("friends")]
         public FriendDto[] Friends { get; set; } = Array.Empty<FriendDto>();
+
+        // на всякий (если когда-то вернёшь, как на section endpoint)
+        [JsonPropertyName("relationshipStatus")]
+        public string? RelationshipStatus { get; set; }
     }
 
     public sealed class FriendRequestsResponse : OkResponse
     {
+        [JsonPropertyName("incoming")]
         public FriendDto[] Incoming { get; set; } = Array.Empty<FriendDto>();
+
+        [JsonPropertyName("outgoing")]
         public FriendDto[] Outgoing { get; set; } = Array.Empty<FriendDto>();
     }
 
@@ -95,7 +156,7 @@ public sealed class SiteAuthService
     }
 
     private static string NormalizeToken(string token)
-        => (token ?? string.Empty).Trim().Trim('"');
+        => (token ?? string.Empty).Trim().Trim('"' );
 
     private static bool IsRetryableStatus(HttpStatusCode code)
         => (int)code >= 500
@@ -125,6 +186,9 @@ public sealed class SiteAuthService
 
             ms.Write(buffer, 0, read);
         }
+
+        if (ms.TryGetBuffer(out var seg) && seg.Array is not null)
+            return Encoding.UTF8.GetString(seg.Array, seg.Offset, seg.Count);
 
         return Encoding.UTF8.GetString(ms.ToArray());
     }
@@ -236,6 +300,8 @@ public sealed class SiteAuthService
             throw new ArgumentException("accessToken is empty", nameof(accessToken));
 
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        // Без кэша (иногда помогает с CDN)
+        req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
     }
 
     private static T? TryDeserialize<T>(string json)
@@ -272,8 +338,13 @@ public sealed class SiteAuthService
         if (!resp.IsSuccessStatusCode)
         {
             dto.Ok = false;
+
             if (string.IsNullOrWhiteSpace(dto.Error))
                 dto.Error = ExtractErrorFallback(body);
+
+            if (!string.IsNullOrWhiteSpace(dto.Error))
+                dto.Error = $"{dto.Error} (HTTP {(int)resp.StatusCode})";
+
             return;
         }
 
@@ -281,6 +352,9 @@ public sealed class SiteAuthService
         if (!dto.Ok && string.IsNullOrWhiteSpace(dto.Error))
             dto.Ok = true;
     }
+
+    private static StringContent JsonBody(object model)
+        => new StringContent(JsonSerializer.Serialize(model, JsonOptions), Utf8NoBom, "application/json");
 
     // =========================
     // Auth / Profile / Economy
@@ -290,11 +364,7 @@ public sealed class SiteAuthService
     public async Task<(string DeviceId, string ConnectUrl, long ExpiresAtUnix)> StartLauncherLoginAsync(CancellationToken ct)
     {
         using var resp = await SendAsyncWithRetry(
-            factory: () =>
-            {
-                var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/login");
-                return req;
-            },
+            factory: () => new HttpRequestMessage(HttpMethod.Post, "api/launcher/login"),
             ct: ct,
             attempts: DefaultAttempts,
             perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
@@ -423,14 +493,12 @@ public sealed class SiteAuthService
             Payload = payload
         };
 
-        var jsonBody = JsonSerializer.Serialize(reqModel, JsonOptions);
-
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/events");
                 EnsureBearer(req, accessToken);
-                req.Content = new StringContent(jsonBody, Utf8NoBom, "application/json");
+                req.Content = new StringContent(JsonSerializer.Serialize(reqModel, JsonOptions), Utf8NoBom, "application/json");
                 return req;
             },
             ct: ct,
@@ -546,14 +614,12 @@ public sealed class SiteAuthService
         if (string.IsNullOrWhiteSpace(query))
             return new OkResponse { Ok = false, Error = "Пустой запрос." };
 
-        var bodyJson = JsonSerializer.Serialize(new { query }, JsonOptions);
-
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/friends/request");
                 EnsureBearer(req, accessToken);
-                req.Content = new StringContent(bodyJson, Utf8NoBom, "application/json");
+                req.Content = JsonBody(new { query });
                 return req;
             },
             ct: ct,
@@ -570,21 +636,21 @@ public sealed class SiteAuthService
         return dto;
     }
 
-    // POST /api/launcher/friends/accept body { fromUserId }
+    // POST /api/launcher/friends/accept body { fromUserId } (и на всякий продублируем ключи)
     public async Task<OkResponse> AcceptFriendRequestAsync(string accessToken, string fromUserId, CancellationToken ct)
     {
         fromUserId = (fromUserId ?? "").Trim();
         if (string.IsNullOrWhiteSpace(fromUserId))
             return new OkResponse { Ok = false, Error = "Не указан отправитель." };
 
-        var bodyJson = JsonSerializer.Serialize(new { fromUserId }, JsonOptions);
-
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/friends/accept");
                 EnsureBearer(req, accessToken);
-                req.Content = new StringContent(bodyJson, Utf8NoBom, "application/json");
+
+                // ✅ совместимость: сервер может ждать fromUserId или id
+                req.Content = JsonBody(new { fromUserId, id = fromUserId, userId = fromUserId });
                 return req;
             },
             ct: ct,
@@ -601,21 +667,21 @@ public sealed class SiteAuthService
         return dto;
     }
 
-    // POST /api/launcher/friends/decline body { fromUserId }
+    // POST /api/launcher/friends/decline body { fromUserId } (и на всякий продублируем ключи)
     public async Task<OkResponse> DeclineFriendRequestAsync(string accessToken, string fromUserId, CancellationToken ct)
     {
         fromUserId = (fromUserId ?? "").Trim();
         if (string.IsNullOrWhiteSpace(fromUserId))
             return new OkResponse { Ok = false, Error = "Не указан отправитель." };
 
-        var bodyJson = JsonSerializer.Serialize(new { fromUserId }, JsonOptions);
-
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/friends/decline");
                 EnsureBearer(req, accessToken);
-                req.Content = new StringContent(bodyJson, Utf8NoBom, "application/json");
+
+                // ✅ совместимость: сервер может ждать fromUserId или id
+                req.Content = JsonBody(new { fromUserId, id = fromUserId, userId = fromUserId });
                 return req;
             },
             ct: ct,
@@ -632,21 +698,21 @@ public sealed class SiteAuthService
         return dto;
     }
 
-    // POST /api/launcher/friends/remove body { userId }
+    // POST /api/launcher/friends/remove body { userId } (и на всякий продублируем ключи)
     public async Task<OkResponse> RemoveFriendAsync(string accessToken, string userId, CancellationToken ct)
     {
         userId = (userId ?? "").Trim();
         if (string.IsNullOrWhiteSpace(userId))
             return new OkResponse { Ok = false, Error = "Не указан пользователь." };
 
-        var bodyJson = JsonSerializer.Serialize(new { userId }, JsonOptions);
-
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/friends/remove");
                 EnsureBearer(req, accessToken);
-                req.Content = new StringContent(bodyJson, Utf8NoBom, "application/json");
+
+                // ✅ совместимость: сервер может ждать userId или id
+                req.Content = JsonBody(new { userId, id = userId });
                 return req;
             },
             ct: ct,
