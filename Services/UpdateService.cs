@@ -88,7 +88,16 @@ public static class UpdateService
         bool showNoUpdates = false,
         CancellationToken ct = default)
     {
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        // ✅ cancellation-safe gate acquire (не вылетим мимо try/catch)
+        try
+        {
+            await _gate.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return;
+        }
+
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -102,28 +111,35 @@ public static class UpdateService
                 return;
             }
 
-            // already downloaded, pending restart
+            // 1) Если уже есть подготовленное обновление (скачано и ждёт рестарта)
             if (mgr.UpdatePendingRestart is VelopackAsset pending)
             {
                 if (!silent)
-                    ShowInfo("Обновление уже скачано. Лаунчер будет перезапущен для применения обновления.");
+                {
+                    var ask = ShowYesNo(
+                        "Обновление уже скачано и готово к установке.\n\nПрименить сейчас? Лаунчер перезапустится.");
 
-                RequestAppShutdown();
+                    if (ask != MessageBoxResult.Yes)
+                        return;
+                }
 
-                // waits for exit and applies
-                mgr.WaitExitThenApplyUpdates(pending, silent: true, restart: true);
+                // ✅ Правильный порядок: сначала запускаем updater (он ждёт выхода),
+                // затем выходим из приложения.
+                StartUpdaterAndExit(mgr, pending, silent, restart: true);
                 return;
             }
 
+            // 2) Проверка обновлений (у Velopack нет ct в CheckForUpdatesAsync, поэтому только watchdog)
             UpdateInfo? updates;
             try
             {
                 updates = await RunWithTimeout(
-                    () => mgr.CheckForUpdatesAsync(),
-                    CheckTimeout,
-                    ct).ConfigureAwait(false);
+                        () => mgr.CheckForUpdatesAsync(),
+                        CheckTimeout,
+                        ct)
+                    .ConfigureAwait(false);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!IsCancellation(ex, ct))
             {
                 if (!silent)
                     ShowError(BuildFriendlyError("Не удалось проверить обновления.", ex));
@@ -149,16 +165,18 @@ public static class UpdateService
                     return;
             }
 
+            // 3) Скачивание (у DownloadUpdatesAsync есть CancellationToken)
             try
             {
-                // ВАЖНО: DownloadUpdatesAsync часто возвращает Task (без результата),
-                // поэтому используем перегрузку RunWithTimeout(Func<Task> ...)
-                await RunWithTimeout(
-                    () => mgr.DownloadUpdatesAsync(updates!),
-                    DownloadTimeout,
-                    ct).ConfigureAwait(false);
+                // Реально отменяем загрузку и ставим общий таймаут.
+                using var dlCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                dlCts.CancelAfter(DownloadTimeout);
+
+                // progress можно прикрутить позже (Action<int> 0..100)
+                await mgr.DownloadUpdatesAsync(updates!, progress: null, cancelToken: dlCts.Token)
+                    .ConfigureAwait(false);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!IsCancellation(ex, ct))
             {
                 if (!silent)
                     ShowError(BuildFriendlyError("Не удалось скачать обновление.", ex));
@@ -167,18 +185,8 @@ public static class UpdateService
 
             ct.ThrowIfCancellationRequested();
 
-            try
-            {
-                RequestAppShutdown();
-
-                // apply after exit with restart
-                mgr.WaitExitThenApplyUpdates(target, silent: true, restart: true);
-            }
-            catch (Exception ex)
-            {
-                if (!silent)
-                    ShowError(BuildFriendlyError("Не удалось применить обновление.", ex));
-            }
+            // 4) Применение (правильный порядок + не заставляем silent=true всегда)
+            StartUpdaterAndExit(mgr, target, silent, restart: true);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -196,34 +204,85 @@ public static class UpdateService
     }
 
     // -------------------------
+    // Apply helpers
+    // -------------------------
+
+    private static void StartUpdaterAndExit(UpdateManager mgr, VelopackAsset toApply, bool silent, bool restart)
+    {
+        try
+        {
+            // ✅ запускаем updater (он будет ждать выхода приложения)
+            mgr.WaitExitThenApplyUpdates(toApply, silent: silent, restart: restart);
+
+            // ✅ затем инициируем нормальное закрытие приложения
+            RequestAppShutdown();
+
+            // ✅ last resort: если вдруг приложение не умирает из-за foreground-thread и т.п.
+            ForceExitSoon(TimeSpan.FromSeconds(15));
+        }
+        catch (Exception ex)
+        {
+            if (!silent)
+                ShowError(BuildFriendlyError("Не удалось применить обновление.", ex));
+        }
+    }
+
+    private static void ForceExitSoon(TimeSpan delay)
+    {
+        try
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(delay).ConfigureAwait(false);
+                    Environment.Exit(0);
+                }
+                catch { }
+            });
+        }
+        catch { }
+    }
+
+    // -------------------------
     // Watchdog helpers
     // -------------------------
 
-    // ✅ for Task<T>
+    // ✅ for Task<T> (не маскируем cancel под timeout)
     private static async Task<T> RunWithTimeout<T>(Func<Task<T>> action, TimeSpan timeout, CancellationToken ct)
     {
         var task = action();
-        var delayTask = Task.Delay(timeout, ct);
+        var delayTask = Task.Delay(timeout); // <- без ct, чтобы cancel не превращался в timeout
 
         var finished = await Task.WhenAny(task, delayTask).ConfigureAwait(false);
+
+        // если отменили — это отмена
+        ct.ThrowIfCancellationRequested();
+
         if (finished == delayTask)
             throw new TimeoutException($"Operation timed out after {timeout.TotalSeconds:0}s");
 
         return await task.ConfigureAwait(false);
     }
 
-    // ✅ for Task (void)
+    // ✅ for Task (void) (не маскируем cancel под timeout)
     private static async Task RunWithTimeout(Func<Task> action, TimeSpan timeout, CancellationToken ct)
     {
         var task = action();
-        var delayTask = Task.Delay(timeout, ct);
+        var delayTask = Task.Delay(timeout); // <- без ct
 
         var finished = await Task.WhenAny(task, delayTask).ConfigureAwait(false);
+
+        ct.ThrowIfCancellationRequested();
+
         if (finished == delayTask)
             throw new TimeoutException($"Operation timed out after {timeout.TotalSeconds:0}s");
 
         await task.ConfigureAwait(false);
     }
+
+    private static bool IsCancellation(Exception ex, CancellationToken ct)
+        => ct.IsCancellationRequested && ex is OperationCanceledException;
 
     private static void RequestAppShutdown()
     {
@@ -236,10 +295,14 @@ public static class UpdateService
             {
                 try
                 {
+                    // Сначала пытаемся закрыть главное окно (чтобы Closing-логика отработала)
                     if (app.MainWindow != null)
-                        app.MainWindow.Close(); // даст Closing-логике отработать
-                    else
-                        app.Shutdown();
+                    {
+                        try { app.MainWindow.Close(); } catch { }
+                    }
+
+                    // Затем гарантируем Shutdown (иначе можно зависнуть из-за ShutdownMode/окон/foreground threads)
+                    try { app.Shutdown(); } catch { }
                 }
                 catch
                 {
@@ -320,6 +383,8 @@ public static class UpdateService
             if (e is TimeoutException)
                 return NetworkErrorKind.Timeout;
 
+            // ВАЖНО: TaskCanceledException бывает и при таймаутах HttpClient.
+            // Отмену "пользователем" мы обрабатываем выше (OperationCanceledException + ct.IsCancellationRequested).
             if (e is TaskCanceledException)
                 return NetworkErrorKind.Timeout;
 
