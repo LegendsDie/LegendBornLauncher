@@ -17,6 +17,10 @@ namespace LegendBorn;
 
 public partial class MainWindow : Window
 {
+    private const int AuthTabIndex = 0;
+    private const int StartTabIndex = 1;
+    private const int ProfileTabIndex = 2;
+    private const int SettingsTabIndex = 3;
     private const int NewsTabIndex = 4;
 
     private bool _updatesChecked;
@@ -483,12 +487,32 @@ public partial class MainWindow : Window
         catch { }
     }
 
+    // ✅ Toggle Settings: если Settings уже открыт — вернуть на "главную"
+    private void OpenSettingsTab_OnClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (_isClosing) return;
+
+            if (_vm.SelectedMenuIndex == SettingsTabIndex)
+            {
+                // “Главная”: если не залогинен — Auth, иначе Start
+                _vm.SelectedMenuIndex = _vm.IsLoggedIn ? StartTabIndex : AuthTabIndex;
+            }
+            else
+            {
+                _vm.SelectedMenuIndex = SettingsTabIndex;
+            }
+        }
+        catch { }
+    }
+
     private static bool IsClickOnInteractive(DependencyObject? d)
     {
         while (d != null)
         {
             if (d is ButtonBase) return true;
-            if (d is TextBoxBase) return true;              // FIX: правильный TextBoxBase (Controls.Primitives)
+            if (d is TextBoxBase) return true;
             if (d is Selector) return true;
             if (d is Thumb) return true;
             if (d is ScrollBar) return true;

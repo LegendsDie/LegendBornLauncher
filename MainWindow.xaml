@@ -235,9 +235,10 @@
                                 </Button.ContextMenu>
                             </Button>
 
+                            <!-- ✅ Настройки: toggle -->
                             <Button Style="{StaticResource WinCtlButton}"
                                     ToolTip="Настройки"
-                                    Command="{Binding OpenSettingsCommand}">
+                                    Click="OpenSettingsTab_OnClick">
                                 <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE713;" FontSize="14"/>
                             </Button>
 

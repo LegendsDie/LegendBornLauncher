@@ -10,10 +10,10 @@
 
         <!-- App version -->
         <Version>0.3.2</Version>
-        <AssemblyVersion>0.3.2.0</AssemblyVersion>
-        <FileVersion>0.3.2.0</FileVersion>
+        <AssemblyVersion>0.3.3.0</AssemblyVersion>
+        <FileVersion>0.3.3.0</FileVersion>
 
-        <InformationalVersion>0.3.2</InformationalVersion>
+        <InformationalVersion>0.3.3</InformationalVersion>
         <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 
         <StartupObject>LegendBorn.App</StartupObject>

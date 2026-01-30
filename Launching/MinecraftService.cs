@@ -28,12 +28,8 @@ public sealed class MinecraftService
 
     private static readonly HttpClient _http = CreateHttp();
 
-    // =========================
-    // Pack mirrors (DEFAULT)
-    // =========================
-    // ВАЖНО: legendborn.ru больше НЕ используем.
-    // Primary: CloudBucket (pack.legendborn.ru)
-    // Fallbacks: Selectel (selstorage) + SourceForge (master/downloads)
+    // ====== защита от параллельных Prepare/Sync ======
+    private readonly SemaphoreSlim _exclusive = new(1, 1);
 
     private static readonly string[] DefaultPackMirrors =
     {
@@ -96,7 +92,7 @@ public sealed class MinecraftService
     private string? _primaryBaseUrlThisRun;
     private bool _primaryOkThisRun;
 
-    // ✅ “быстрый CDN-фоллбек” этой сессии (между SourceForge и Selectel)
+    // “быстрый CDN-фоллбек” этой сессии (между SourceForge и Selectel)
     private string? _fastCdnFallbackThisRun;
 
     private string MirrorStatsPath => Path.Combine(_path.BasePath, "launcher", "mirror_stats.json");
@@ -135,7 +131,22 @@ public sealed class MinecraftService
 
     public sealed record LoaderSpec(string Type, string Version, string InstallerUrl);
 
-    public async Task SyncPackAsync(string[]? packMirrors, CancellationToken ct = default)
+    // =========================
+    // Public API (exclusive)
+    // =========================
+
+    public Task SyncPackAsync(string[]? packMirrors, CancellationToken ct = default)
+        => RunExclusiveAsync(ct, t => SyncPackCoreAsync(packMirrors, t));
+
+    public Task<string> PrepareAsync(
+        string minecraftVersion,
+        LoaderSpec loader,
+        string[]? packMirrors,
+        bool syncPack,
+        CancellationToken ct = default)
+        => RunExclusiveAsync(ct, t => PrepareCoreAsync(minecraftVersion, loader, packMirrors, syncPack, t));
+
+    private async Task SyncPackCoreAsync(string[]? packMirrors, CancellationToken ct)
     {
         var mirrors = ExpandAndOrderPackMirrors(packMirrors);
 
@@ -145,12 +156,12 @@ public sealed class MinecraftService
         await EnsurePackUpToDateAsync(mirrors, ct).ConfigureAwait(false);
     }
 
-    public async Task<string> PrepareAsync(
+    private async Task<string> PrepareCoreAsync(
         string minecraftVersion,
         LoaderSpec loader,
         string[]? packMirrors,
         bool syncPack,
-        CancellationToken ct = default)
+        CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(minecraftVersion))
             throw new ArgumentException("minecraftVersion is empty");
@@ -161,7 +172,7 @@ public sealed class MinecraftService
         var installerUrl = (loader.InstallerUrl ?? "").Trim();
 
         if (syncPack)
-            await SyncPackAsync(packMirrors, ct).ConfigureAwait(false);
+            await SyncPackCoreAsync(packMirrors, ct).ConfigureAwait(false);
 
         ct.ThrowIfCancellationRequested();
 
@@ -188,6 +199,20 @@ public sealed class MinecraftService
         ProgressPercent?.Invoke(this, 100);
         Log?.Invoke(this, "Подготовка завершена.");
         return launchVersionId;
+    }
+
+    private async Task RunExclusiveAsync(CancellationToken ct, Func<CancellationToken, Task> action)
+    {
+        await _exclusive.WaitAsync(ct).ConfigureAwait(false);
+        try { await action(ct).ConfigureAwait(false); }
+        finally { _exclusive.Release(); }
+    }
+
+    private async Task<T> RunExclusiveAsync<T>(CancellationToken ct, Func<CancellationToken, Task<T>> action)
+    {
+        await _exclusive.WaitAsync(ct).ConfigureAwait(false);
+        try { return await action(ct).ConfigureAwait(false); }
+        finally { _exclusive.Release(); }
     }
 
     public async Task<Process> BuildAndLaunchAsync(string version, string username, int ramMb, string? serverIp = null)
@@ -240,7 +265,6 @@ public sealed class MinecraftService
     {
         url = (url ?? "").ToLowerInvariant();
 
-        // Selectel Object Storage / CDN варианты
         return url.Contains(".selstorage.ru") ||
                url.Contains("selstorage.ru") ||
                url.Contains("storage.selcloud.ru") ||
@@ -254,7 +278,6 @@ public sealed class MinecraftService
 
     private static string[] ExpandAndOrderPackMirrors(string[]? packMirrors)
     {
-        // Если пользователь передал список — сохраняем порядок (это важно для primary)
         if (packMirrors is { Length: > 0 })
         {
             var ordered = new List<string>(packMirrors.Length);
@@ -270,7 +293,6 @@ public sealed class MinecraftService
             return ordered.ToArray();
         }
 
-        // Иначе — дефолтный список + эвристика порядка
         var defaults = DefaultPackMirrors
             .Select(NormalizeAbsoluteBaseUrl)
             .Where(x => !string.IsNullOrWhiteSpace(x))
@@ -280,7 +302,6 @@ public sealed class MinecraftService
         return defaults
             .OrderBy(u =>
             {
-                // primary: CloudBucket -> Selectel -> SF master -> SF downloads -> остальное
                 var lu = u.ToLowerInvariant();
                 if (LooksLikeCloudBucket(lu)) return 0;
                 if (LooksLikeSelectel(lu)) return 1;
@@ -375,6 +396,7 @@ public sealed class MinecraftService
         }
 
         var errors = new ConcurrentQueue<Exception>();
+        var pendings = new ConcurrentQueue<string>();
 
         await Parallel.ForEachAsync(
             normalizedMap,
@@ -391,6 +413,7 @@ public sealed class MinecraftService
                         destRel: kv.Key,
                         file: kv.Value,
                         errors: errors,
+                        pendings: pendings,
                         state: state,
                         stateLock: stateLock,
                         activeBaseUrl: activeBaseUrl,
@@ -401,7 +424,6 @@ public sealed class MinecraftService
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
                 {
-                    // общий ct обработаем после
                 }
                 catch (Exception ex)
                 {
@@ -423,8 +445,9 @@ public sealed class MinecraftService
             }
         }
 
-        // delete/prune поддержка (delete в твоём manifest)
         ApplyDeletesAndPrunes(manifest, wanted, state, stateLock);
+
+        var hasPending = !pendings.IsEmpty;
 
         lock (stateLock)
         {
@@ -434,25 +457,35 @@ public sealed class MinecraftService
                     state.Files.Remove(k);
             }
 
-            state.PackId = manifest.PackId;
-            state.ManifestVersion = GetManifestIdentity(manifest);
+            // ВАЖНО: если есть pending — сборка ещё НЕ в нужном состоянии, не ставим версию manifest как "применённую".
+            if (!hasPending)
+            {
+                state.PackId = manifest.PackId;
+                state.ManifestVersion = GetManifestIdentity(manifest);
+            }
         }
 
         SavePackState(state);
 
-        Log?.Invoke(this, $"Сборка: актуальна ({GetManifestDisplayVersion(manifest)}).");
-        ProgressPercent?.Invoke(this, 100);
+        if (hasPending)
+        {
+            var cnt = pendings.Count;
+            Log?.Invoke(this, $"Сборка: синхронизация завершена, но {cnt} файл(ов) сохранены как .pending (файлы заняты). Закрой Minecraft и запусти синхронизацию ещё раз — pending применятся автоматически.");
+        }
+        else
+        {
+            Log?.Invoke(this, $"Сборка: актуальна ({GetManifestDisplayVersion(manifest)}).");
+        }
 
+        ProgressPercent?.Invoke(this, 100);
         SaveMirrorStatsQuiet(force: true);
     }
 
     private void ApplyDeletesAndPrunes(PackManifest manifest, HashSet<string> wanted, PackState state, object stateLock)
     {
-        // 1) delete: может быть как список путей, так и список корней
         var deletes = (manifest.Delete is { Length: > 0 } ? manifest.Delete : null);
         var prunes = (manifest.Prune is { Length: > 0 } ? manifest.Prune : null);
 
-        // delete: удаляем точечно
         if (deletes is { Length: > 0 })
         {
             foreach (var raw in deletes)
@@ -460,7 +493,6 @@ public sealed class MinecraftService
                 var rel = NormalizeRelPath(raw);
                 if (string.IsNullOrWhiteSpace(rel)) continue;
 
-                // если указали "root/" — считаем это prune-root
                 if (raw.Trim().EndsWith("/") || raw.Trim().EndsWith("\\"))
                     continue;
 
@@ -490,7 +522,6 @@ public sealed class MinecraftService
             }
         }
 
-        // 2) prune: удаляем лишнее внутри корней
         var rootsRaw = new List<string>();
 
         if (prunes is { Length: > 0 })
@@ -498,7 +529,6 @@ public sealed class MinecraftService
 
         if (deletes is { Length: > 0 })
         {
-            // если в delete кто-то указал корни с "/" — тоже обработаем как prune
             foreach (var r in deletes)
             {
                 if (r is null) continue;
@@ -521,10 +551,13 @@ public sealed class MinecraftService
             PruneExtras(roots, wanted);
     }
 
+    private enum DownloadApplyResult { Applied, SavedPending }
+
     private async Task ProcessOneFileAsync(
         string destRel,
         PackFile file,
         ConcurrentQueue<Exception> errors,
+        ConcurrentQueue<string> pendings,
         PackState state,
         object stateLock,
         string activeBaseUrl,
@@ -546,6 +579,9 @@ public sealed class MinecraftService
             if (!IsValidSha256(file.Sha256))
                 throw new InvalidOperationException($"Invalid sha256 in manifest for {destRel}");
 
+            if (file.Size < 0)
+                throw new InvalidOperationException($"Manifest содержит отрицательный size для {destRel}");
+
             if (file.Size == 0 && !IsEmptySha(file.Sha256))
                 throw new InvalidOperationException($"Manifest содержит size=0, но sha256 не пустого файла: {destRel}");
 
@@ -554,9 +590,19 @@ public sealed class MinecraftService
             if (!IsUnderGameDir(localPath))
                 throw new InvalidOperationException($"Unsafe path in manifest: {file.Path}");
 
-            await TryApplyPendingAsync(destRel, localPath, file.Sha256, ct).ConfigureAwait(false);
+            // 1) сначала пробуем применить pending (если он валиден)
+            var (pendingApplied, hasValidPendingButLocked) = await TryApplyPendingAsync(destRel, localPath, file.Sha256, ct).ConfigureAwait(false);
 
-            // Проверка существующего файла
+            // Если pending валиден, но файл занят — НЕ качаем заново (экономим трафик), просто ждём следующего прогона
+            if (!pendingApplied && hasValidPendingButLocked)
+            {
+                pendings.Enqueue(destRel);
+                Log?.Invoke(this, $"Сборка: {destRel} — есть валидный .pending, но файл занят. Применю позже.");
+                addBytes(Math.Max(0, file.Size));
+                return;
+            }
+
+            // 2) Проверка существующего файла
             var check = await CheckFileAsync(destRel, localPath, file, state, stateLock, ct).ConfigureAwait(false);
             if (check == FileCheckResult.Match)
             {
@@ -564,15 +610,15 @@ public sealed class MinecraftService
                 return;
             }
 
-            // Пользовательские конфиги не перезаписываем
+            // 3) User-mutable: не перезаписываем если уже есть
             if (IsUserMutableDest(destRel) && File.Exists(localPath))
             {
-                Log?.Invoke(this, $"Сборка: {destRel} изменён локально — оставляю как есть.");
+                Log?.Invoke(this, $"Сборка: {destRel} изменён/кастомный — оставляю как есть.");
                 addBytes(Math.Max(0, file.Size));
                 return;
             }
 
-            // Фикс: пустые файлы не скачиваем вообще
+            // 4) Пустые файлы не качаем
             if (file.Size == 0 && IsEmptySha(file.Sha256))
             {
                 await EnsureEmptyFileAsync(localPath, destRel, ct).ConfigureAwait(false);
@@ -588,7 +634,7 @@ public sealed class MinecraftService
 
             var blobRel = GetBlobRelPath(file);
 
-            await DownloadFileFromMirrorsAsync(
+            var outcome = await DownloadFileFromMirrorsAsync(
                 activeBaseUrl: activeBaseUrl,
                 blobRel: blobRel,
                 file: file,
@@ -599,12 +645,21 @@ public sealed class MinecraftService
                 ct: ct,
                 onBytes: bytes => addBytes(bytes)).ConfigureAwait(false);
 
-            lock (stateLock)
+            if (outcome == DownloadApplyResult.Applied)
             {
-                UpdatePackStateEntry(state, destRel, localPath, file.Sha256);
-            }
+                lock (stateLock)
+                {
+                    UpdatePackStateEntry(state, destRel, localPath, file.Sha256);
+                }
 
-            Log?.Invoke(this, $"Сборка: OK {destRel}");
+                Log?.Invoke(this, $"Сборка: OK {destRel}");
+            }
+            else
+            {
+                // pending сохранён, но state НЕ обновляем (иначе будет ложный Match)
+                pendings.Enqueue(destRel);
+                Log?.Invoke(this, $"Сборка: PENDING {destRel} (файл занят, применю позже)");
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -612,7 +667,8 @@ public sealed class MinecraftService
         }
         catch (Exception ex)
         {
-            errors.Enqueue(ex);
+            // делаем ошибку информативнее
+            errors.Enqueue(new InvalidOperationException($"Ошибка обработки файла {destRel}: {ex.Message}", ex));
         }
     }
 
@@ -647,7 +703,6 @@ public sealed class MinecraftService
                 }
             }
 
-            // для size=0 sha(empty) — считаем матчом если длина 0
             if (file.Size == 0 && IsEmptySha(file.Sha256))
             {
                 if (info.Length == 0)
@@ -775,8 +830,7 @@ public sealed class MinecraftService
     }
 
     // =========================
-    // Manifest download w/ priority:
-    // Primary (first) -> if fail: race SF/Selectel first -> then race others
+    // Manifest download
     // =========================
 
     private async Task<(string activeBaseUrl, PackManifest manifest)> DownloadManifestFromMirrorsAsync(string[] mirrors, CancellationToken ct)
@@ -793,7 +847,6 @@ public sealed class MinecraftService
         if (list.Length == 0)
             throw new InvalidOperationException("Mirrors list is empty after normalize");
 
-        // primary = первый в списке (важно для приоритета Cloud bucket)
         var primary = list[0];
 
         _primaryBaseUrlThisRun = primary;
@@ -824,7 +877,6 @@ public sealed class MinecraftService
         if (fallbacksAll.Length == 0)
             throw new InvalidOperationException("Primary mirror failed and no fallbacks are available.");
 
-        // 1) сначала отдельная гонка только между SF/Selectel
         var cdnFallbacks = fallbacksAll.Where(IsSfOrSelectel).ToArray();
         if (cdnFallbacks.Length > 0)
         {
@@ -839,7 +891,6 @@ public sealed class MinecraftService
             }
         }
 
-        // 2) затем — все остальные fallbacks (в гонку)
         var otherFallbacks = fallbacksAll.Where(u => !IsSfOrSelectel(u)).ToArray();
         if (otherFallbacks.Length == 0)
             throw new InvalidOperationException("Не удалось скачать manifest: CDN зеркала (SF/Selectel) недоступны, других fallback'ов нет.");
@@ -885,9 +936,7 @@ public sealed class MinecraftService
                     return res.Value;
                 }
             }
-            catch
-            {
-            }
+            catch { }
         }
 
         return null;
@@ -1027,7 +1076,7 @@ public sealed class MinecraftService
             ((int)StatusCode >= 500 && (int)StatusCode <= 599);
     }
 
-    private async Task DownloadFileFromMirrorsAsync(
+    private async Task<DownloadApplyResult> DownloadFileFromMirrorsAsync(
         string activeBaseUrl,
         string blobRel,
         PackFile file,
@@ -1050,19 +1099,23 @@ public sealed class MinecraftService
         var active = NormalizeAbsoluteBaseUrl(activeBaseUrl);
         var fastCdn = NormalizeAbsoluteBaseUrl(_fastCdnFallbackThisRun);
 
-        // 1) primary (только если он реально отработал в этой сессии)
-        if (_primaryOkThisRun && !string.IsNullOrWhiteSpace(primary))
-            ordered.Add(primary);
-
-        // 2) active (откуда был скачан manifest)
+        // 1) active (откуда был скачан manifest)
         if (!string.IsNullOrWhiteSpace(active))
             ordered.Add(active);
 
-        // 3) ✅ быстрый CDN-фоллбек (SF/Selectel), если определился
+        // 2) быстрый CDN-фоллбек
         if (!string.IsNullOrWhiteSpace(fastCdn))
             ordered.Add(fastCdn);
 
-        // остальное
+        // 3) primary: если отработал по manifest — ставим наверх, иначе оставим в хвосте (но НЕ исключаем полностью)
+        if (!string.IsNullOrWhiteSpace(primary))
+        {
+            if (_primaryOkThisRun)
+                ordered.Insert(0, primary);
+            else
+                ordered.Add(primary);
+        }
+
         var rest = mirrors
             .Where(m =>
                 !m.Equals(primary, StringComparison.OrdinalIgnoreCase) &&
@@ -1070,7 +1123,6 @@ public sealed class MinecraftService
                 !m.Equals(fastCdn, StringComparison.OrdinalIgnoreCase))
             .ToArray();
 
-        // ВАЖНО: сначала прочие SF/Selectel, затем остальное — по статистике.
         var restCdn = rest.Where(IsSfOrSelectel).ToArray();
         var restOther = rest.Where(m => !IsSfOrSelectel(m)).ToArray();
 
@@ -1099,7 +1151,6 @@ public sealed class MinecraftService
                 onBytes(b);
             }
 
-            // Для config/ сначала пробуем прямой путь, потом blob (часто именно конфиги не залиты как blobs)
             var candidates = BuildDownloadCandidates(destRel, blobRel);
 
             try
@@ -1114,26 +1165,23 @@ public sealed class MinecraftService
                     var sw = Stopwatch.StartNew();
                     try
                     {
-                        await DownloadToFileAsync(url, localPath, file.Size, file.Sha256, destRel, ct, Counted).ConfigureAwait(false);
+                        var outcome = await DownloadToFileAsync(url, localPath, file.Size, file.Sha256, destRel, ct, Counted).ConfigureAwait(false);
                         sw.Stop();
 
                         TouchMirrorOkBlob(baseUrl, NormalizeLatencyForSize(sw.Elapsed.TotalMilliseconds, file.Size));
-                        return;
+                        return outcome;
                     }
                     catch (DownloadHttpException hex)
                     {
                         last = hex;
 
-                        // если blob не найден/400/404 — пробуем следующий кандидат (например прямой путь)
                         if (hex.IsClientError && !hex.IsTransient)
                             continue;
 
-                        // transient — переходим к следующему зеркалу
                         throw;
                     }
                 }
 
-                // если кандидаты закончились — считаем как ошибка зеркала
                 throw last ?? new InvalidOperationException("Не удалось скачать файл ни одним способом на данном зеркале.");
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -1166,20 +1214,17 @@ public sealed class MinecraftService
 
         if (isConfig)
         {
-            // config: сначала прямой путь, потом blob
             list.Add(destRel);
             if (!string.Equals(blobRel, destRel, StringComparison.OrdinalIgnoreCase))
                 list.Add(blobRel);
         }
         else
         {
-            // остальное: сначала blob, потом прямой путь
             list.Add(blobRel);
             if (!string.Equals(destRel, blobRel, StringComparison.OrdinalIgnoreCase))
                 list.Add(destRel);
         }
 
-        // убираем дубли
         return list
             .Select(NormalizeRelPath)
             .Where(x => !string.IsNullOrWhiteSpace(x))
@@ -1187,7 +1232,15 @@ public sealed class MinecraftService
             .ToList();
     }
 
-    private async Task DownloadToFileAsync(
+    private static long CalcSizeTolerance(long expectedSize)
+    {
+        if (expectedSize <= 0) return 0;
+        // 5% или минимум 1 MiB
+        var tol = Math.Max(1L * 1024 * 1024, expectedSize / 20);
+        return tol;
+    }
+
+    private async Task<DownloadApplyResult> DownloadToFileAsync(
         string url,
         string localPath,
         long expectedSize,
@@ -1218,6 +1271,8 @@ public sealed class MinecraftService
         if (media.Contains("text/html", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Зеркало вернуло HTML вместо файла.");
 
+        var tol = CalcSizeTolerance(expectedSize);
+
         var len = resp.Content.Headers.ContentLength;
         if (expectedSize > 0 && len.HasValue && len.Value > 0)
         {
@@ -1225,12 +1280,43 @@ public sealed class MinecraftService
             if (len.Value < threshold)
                 throw new InvalidOperationException(
                     $"Зеркало вернуло подозрительно маленький ответ (Content-Length={len.Value}, ожидается около {expectedSize}).");
+
+            if (len.Value > expectedSize + tol)
+                throw new InvalidOperationException(
+                    $"Зеркало заявило слишком большой Content-Length={len.Value}, ожидается {expectedSize} (+{tol} допуск).");
         }
 
         using var sha = SHA256.Create();
         var buffer = new byte[128 * 1024];
 
-        await Provisioning(resp, reqCts.Token, tmp, buffer, sha, onBytes).ConfigureAwait(false);
+        try
+        {
+            await Provisioning(resp, reqCts.Token, tmp, buffer, sha, onBytes, expectedSize, tol).ConfigureAwait(false);
+        }
+        catch
+        {
+            TryDeleteQuiet(tmp);
+            throw;
+        }
+
+        // если size задан — дополнительно проверим фактический размер tmp
+        if (expectedSize > 0)
+        {
+            try
+            {
+                var info = new FileInfo(tmp);
+                if (info.Length != expectedSize)
+                {
+                    TryDeleteQuiet(tmp);
+                    throw new InvalidOperationException($"Размер файла не совпал: expected {expectedSize}, got {info.Length} ({destRel})");
+                }
+            }
+            catch
+            {
+                TryDeleteQuiet(tmp);
+                throw;
+            }
+        }
 
         sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
         var actual = Convert.ToHexString(sha.Hash!).ToLowerInvariant();
@@ -1245,29 +1331,38 @@ public sealed class MinecraftService
         if (ok)
         {
             TryDeleteQuiet(tmp);
-            return;
+            return DownloadApplyResult.Applied;
         }
 
+        // pending имеет смысл только для НЕ user-mutable путей (иначе мы всё равно не перезаписываем)
         if (IsPendingAllowedDest(destRel))
         {
             var pending = localPath + ".pending";
             var pendingOk = await TryMoveOrReplaceWithRetryAsync(tmp, pending, ct, attempts: 10, delayMs: 200).ConfigureAwait(false);
             if (pendingOk)
             {
+                TryDeleteQuiet(tmp);
                 Log?.Invoke(this, $"Сборка: файл занят, сохранил pending: {destRel}");
-                return;
+                return DownloadApplyResult.SavedPending;
             }
 
             TryDeleteQuiet(tmp);
-            Log?.Invoke(this, $"Сборка: файл занят и не удалось сохранить pending: {destRel}. Пропускаю.");
-            return;
+            throw new IOException($"Файл занят и не удалось сохранить pending: {destRel}");
         }
 
         TryDeleteQuiet(tmp);
         throw new IOException($"Не удалось записать файл сборки (занят другим процессом): {destRel}");
     }
 
-    private static async Task Provisioning(HttpResponseMessage resp, CancellationToken token, string tmp, byte[] buffer, SHA256 sha, Action<long> onBytes)
+    private static async Task Provisioning(
+        HttpResponseMessage resp,
+        CancellationToken token,
+        string tmp,
+        byte[] buffer,
+        SHA256 sha,
+        Action<long> onBytes,
+        long expectedSize,
+        long tolerance)
     {
         await using var input = await resp.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
         await using var output = new FileStream(
@@ -1278,11 +1373,22 @@ public sealed class MinecraftService
             bufferSize: 128 * 1024,
             options: FileOptions.Asynchronous | FileOptions.SequentialScan);
 
+        long downloaded = 0;
+
         int read;
         while ((read = await input.ReadAsync(buffer, 0, buffer.Length, token).ConfigureAwait(false)) > 0)
         {
+            if (expectedSize > 0)
+            {
+                // если сервер льёт больше ожидаемого — останавливаем (DoS/битое зеркало)
+                if (downloaded + read > expectedSize + tolerance)
+                    throw new InvalidOperationException($"Ответ слишком большой: > {expectedSize}+{tolerance} байт");
+            }
+
             await output.WriteAsync(buffer, 0, read, token).ConfigureAwait(false);
             sha.TransformBlock(buffer, 0, read, null, 0);
+
+            downloaded += read;
             onBytes(read);
         }
 
@@ -1297,7 +1403,6 @@ public sealed class MinecraftService
         if (!string.IsNullOrWhiteSpace(dir))
             Directory.CreateDirectory(dir);
 
-        // Если уже пустой — ок
         if (File.Exists(localPath))
         {
             try
@@ -1308,7 +1413,6 @@ public sealed class MinecraftService
             catch { }
         }
 
-        // пишем атомарно через tmp (как для скачивания)
         var tmp = localPath + ".tmp";
         TryDeleteQuiet(tmp);
 
@@ -1334,32 +1438,38 @@ public sealed class MinecraftService
         throw new IOException($"Не удалось создать пустой файл: {destRel}");
     }
 
-    private async Task TryApplyPendingAsync(string destRel, string localPath, string expectedSha256, CancellationToken ct)
+    private async Task<(bool applied, bool validButLocked)> TryApplyPendingAsync(string destRel, string localPath, string expectedSha256, CancellationToken ct)
     {
         var pending = localPath + ".pending";
         if (!File.Exists(pending))
-            return;
+            return (false, false);
 
+        // проверяем валидность pending
         try
         {
             var sha = await ComputeSha256Async(pending, ct).ConfigureAwait(false);
             if (!sha.Equals(expectedSha256, StringComparison.OrdinalIgnoreCase))
             {
                 TryDeleteQuiet(pending);
-                return;
+                return (false, false);
             }
         }
         catch
         {
-            return;
+            return (false, false);
         }
 
+        // пытаемся применить
         var ok = await TryMoveOrReplaceWithRetryAsync(pending, localPath, ct, attempts: 10, delayMs: 200).ConfigureAwait(false);
         if (ok)
         {
             TryDeleteQuiet(pending);
             Log?.Invoke(this, $"Сборка: применил pending для {destRel}");
+            return (true, false);
         }
+
+        // pending валиден, но файл занят
+        return (false, true);
     }
 
     private static async Task<bool> TryMoveOrReplaceWithRetryAsync(string source, string dest, CancellationToken ct, int attempts, int delayMs)
@@ -1439,27 +1549,32 @@ public sealed class MinecraftService
     {
         destRel = destRel.Replace('\\', '/');
         if (!IsAllowedDest(destRel)) return false;
-        return !destRel.StartsWith("config/", StringComparison.OrdinalIgnoreCase);
+
+        // pending НЕ нужен для user-mutable путей (мы их не перезаписываем)
+        return !IsUserMutableDest(destRel);
     }
 
     private static bool IsUserMutableDest(string destRel)
     {
+        // По твоей просьбе: не трогаем config/defaultconfigs/resourcepacks/shaderpacks.
+        // kubejs НЕ добавляем.
         destRel = destRel.Replace('\\', '/');
-        return destRel.StartsWith("config/", StringComparison.OrdinalIgnoreCase);
+
+        return destRel.StartsWith("config/", StringComparison.OrdinalIgnoreCase)
+            || destRel.StartsWith("defaultconfigs/", StringComparison.OrdinalIgnoreCase)
+            || destRel.StartsWith("resourcepacks/", StringComparison.OrdinalIgnoreCase)
+            || destRel.StartsWith("shaderpacks/", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsValidFileRelPath(string destRel)
     {
-        // Должен быть файл внутри одного из префиксов, не директория
         destRel = destRel.Replace('\\', '/');
 
         if (string.IsNullOrWhiteSpace(destRel)) return false;
         if (destRel.EndsWith("/")) return false;
 
-        // Должен быть хотя бы один '/' (чтобы "mods" как файл не прошёл)
         if (!destRel.Contains('/')) return false;
 
-        // Минимально: должен содержать имя после последнего '/'
         var name = destRel.Split('/').LastOrDefault();
         if (string.IsNullOrWhiteSpace(name)) return false;
         if (name == "." || name == "..") return false;
@@ -1535,7 +1650,6 @@ public sealed class MinecraftService
             !uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
             return "";
 
-        // убираем query/fragment, нормализуем path с /
         var b = new UriBuilder(uri)
         {
             Query = "",
@@ -1630,9 +1744,7 @@ public sealed class MinecraftService
                 http.DefaultRequestHeaders.UserAgent.Clear();
                 http.DefaultRequestHeaders.UserAgent.ParseAdd($"LegendBornLauncher/{LauncherIdentity.InformationalVersion}");
             }
-            catch
-            {
-            }
+            catch { }
         }
 
         return http;
@@ -1947,7 +2059,7 @@ public sealed class MinecraftService
         return id;
     }
 
-    // ===== Manifest models (совместимость: packVersion/build + legacy version/prune) =====
+    // ===== Manifest models =====
 
     public sealed class PackManifest
     {
@@ -1957,11 +2069,9 @@ public sealed class MinecraftService
         [JsonPropertyName("channel")]
         public string? Channel { get; set; }
 
-        // основной вариант у тебя
         [JsonPropertyName("packVersion")]
         public string? PackVersion { get; set; }
 
-        // legacy вариант (если где-то был)
         [JsonPropertyName("version")]
         public string? Version { get; set; }
 
@@ -1983,11 +2093,9 @@ public sealed class MinecraftService
         [JsonPropertyName("mirrors")]
         public string[]? Mirrors { get; set; }
 
-        // у тебя сейчас delete вместо prune
         [JsonPropertyName("delete")]
         public string[]? Delete { get; set; }
 
-        // legacy
         [JsonPropertyName("prune")]
         public string[]? Prune { get; set; }
     }

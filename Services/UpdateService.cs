@@ -1,3 +1,4 @@
+// File: /Services/UpdateService.cs
 using System;
 using System.Net.Http;
 using System.Net.Sockets;
@@ -14,12 +15,20 @@ public static class UpdateService
     private const string RepoUrlOrSlug = "https://github.com/LegendsDie/LegendBornLauncher";
     private const string Channel = "win";
 
+    // watchdog timeouts (не даём зависать вечно)
+    private static readonly TimeSpan CheckTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan DownloadTimeout = TimeSpan.FromMinutes(10);
+
     private static readonly SemaphoreSlim _gate = new(1, 1);
 
     private static GithubSource CreateSource()
     {
         var repoUrl = NormalizeGithubRepoUrl(RepoUrlOrSlug);
-        return new GithubSource(repoUrl: repoUrl, accessToken: "", prerelease: false);
+
+        // optional: env token to reduce GitHub rate-limit issues
+        var token = Environment.GetEnvironmentVariable("LEGENDBORN_GITHUB_TOKEN") ?? "";
+
+        return new GithubSource(repoUrl: repoUrl, accessToken: token, prerelease: false);
     }
 
     private static UpdateManager CreateManager()
@@ -41,29 +50,37 @@ public static class UpdateService
         if (input.StartsWith("//", StringComparison.Ordinal))
             input = "https:" + input;
 
-        if (input.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-            input.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        // slug: owner/repo
+        if (!input.Contains("://", StringComparison.Ordinal))
         {
-            if (Uri.TryCreate(input, UriKind.Absolute, out var uri))
-            {
-                var parts = uri.AbsolutePath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length >= 2)
-                    return $"https://github.com/{parts[0]}/{parts[1]}";
-            }
+            var slug = input.Trim().TrimEnd('/');
 
-            return input.Trim().TrimEnd('/');
+            if (slug.StartsWith("github.com/", StringComparison.OrdinalIgnoreCase))
+                slug = slug["github.com/".Length..];
+
+            var sp = slug.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (sp.Length >= 2)
+                return $"https://github.com/{sp[0]}/{sp[1]}";
+
+            return "https://github.com/LegendsDie/LegendBornLauncher";
         }
 
-        var slug = input.Trim().TrimEnd('/');
+        // full URL
+        if (Uri.TryCreate(input, UriKind.Absolute, out var uri))
+        {
+            var parts = uri.AbsolutePath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2)
+            {
+                var owner = parts[0];
+                var repo = parts[1];
+                if (repo.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+                    repo = repo[..^4];
 
-        if (slug.StartsWith("github.com/", StringComparison.OrdinalIgnoreCase))
-            slug = slug.Substring("github.com/".Length);
+                return $"https://github.com/{owner}/{repo}";
+            }
+        }
 
-        var sp = slug.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (sp.Length >= 2)
-            return $"https://github.com/{sp[0]}/{sp[1]}";
-
-        return "https://github.com/LegendsDie/LegendBornLauncher";
+        return input.Trim().TrimEnd('/');
     }
 
     public static async Task CheckAndUpdateAsync(
@@ -71,16 +88,11 @@ public static class UpdateService
         bool showNoUpdates = false,
         CancellationToken ct = default)
     {
-        var entered = false;
-
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            await _gate.WaitAsync(ct).ConfigureAwait(false);
-            entered = true;
-
             ct.ThrowIfCancellationRequested();
 
-            // В вашей версии Velopack UpdateManager НЕ IDisposable -> using нельзя
             var mgr = CreateManager();
 
             if (!mgr.IsInstalled)
@@ -90,16 +102,26 @@ public static class UpdateService
                 return;
             }
 
-            if (mgr.UpdatePendingRestart is { } pending)
+            // already downloaded, pending restart
+            if (mgr.UpdatePendingRestart is VelopackAsset pending)
             {
-                mgr.ApplyUpdatesAndRestart(pending);
+                if (!silent)
+                    ShowInfo("Обновление уже скачано. Лаунчер будет перезапущен для применения обновления.");
+
+                RequestAppShutdown();
+
+                // waits for exit and applies
+                mgr.WaitExitThenApplyUpdates(pending, silent: true, restart: true);
                 return;
             }
 
-            Velopack.UpdateInfo? updates;
+            UpdateInfo? updates;
             try
             {
-                updates = await mgr.CheckForUpdatesAsync().ConfigureAwait(false);
+                updates = await RunWithTimeout(
+                    () => mgr.CheckForUpdatesAsync(),
+                    CheckTimeout,
+                    ct).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -129,7 +151,12 @@ public static class UpdateService
 
             try
             {
-                await mgr.DownloadUpdatesAsync(updates!).ConfigureAwait(false);
+                // ВАЖНО: DownloadUpdatesAsync часто возвращает Task (без результата),
+                // поэтому используем перегрузку RunWithTimeout(Func<Task> ...)
+                await RunWithTimeout(
+                    () => mgr.DownloadUpdatesAsync(updates!),
+                    DownloadTimeout,
+                    ct).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -142,16 +169,10 @@ public static class UpdateService
 
             try
             {
-                mgr.WaitExitThenApplyUpdates(target, restart: true);
+                RequestAppShutdown();
 
-                try
-                {
-                    Application.Current?.Dispatcher.Invoke(() =>
-                    {
-                        try { Application.Current.Shutdown(); } catch { }
-                    });
-                }
-                catch { }
+                // apply after exit with restart
+                mgr.WaitExitThenApplyUpdates(target, silent: true, restart: true);
             }
             catch (Exception ex)
             {
@@ -170,11 +191,67 @@ public static class UpdateService
         }
         finally
         {
-            if (entered)
-            {
-                try { _gate.Release(); } catch { }
-            }
+            try { _gate.Release(); } catch { }
         }
+    }
+
+    // -------------------------
+    // Watchdog helpers
+    // -------------------------
+
+    // ✅ for Task<T>
+    private static async Task<T> RunWithTimeout<T>(Func<Task<T>> action, TimeSpan timeout, CancellationToken ct)
+    {
+        var task = action();
+        var delayTask = Task.Delay(timeout, ct);
+
+        var finished = await Task.WhenAny(task, delayTask).ConfigureAwait(false);
+        if (finished == delayTask)
+            throw new TimeoutException($"Operation timed out after {timeout.TotalSeconds:0}s");
+
+        return await task.ConfigureAwait(false);
+    }
+
+    // ✅ for Task (void)
+    private static async Task RunWithTimeout(Func<Task> action, TimeSpan timeout, CancellationToken ct)
+    {
+        var task = action();
+        var delayTask = Task.Delay(timeout, ct);
+
+        var finished = await Task.WhenAny(task, delayTask).ConfigureAwait(false);
+        if (finished == delayTask)
+            throw new TimeoutException($"Operation timed out after {timeout.TotalSeconds:0}s");
+
+        await task.ConfigureAwait(false);
+    }
+
+    private static void RequestAppShutdown()
+    {
+        try
+        {
+            var app = Application.Current;
+            if (app?.Dispatcher is null) return;
+
+            if (app.Dispatcher.CheckAccess())
+            {
+                try
+                {
+                    if (app.MainWindow != null)
+                        app.MainWindow.Close(); // даст Closing-логике отработать
+                    else
+                        app.Shutdown();
+                }
+                catch
+                {
+                    try { app.Shutdown(); } catch { }
+                }
+
+                return;
+            }
+
+            app.Dispatcher.Invoke(RequestAppShutdown);
+        }
+        catch { }
     }
 
     private static string BuildFriendlyError(string title, Exception ex)
@@ -222,11 +299,7 @@ public static class UpdateService
 
         var raw = ex.ToString();
         if (raw.Contains("release-assets.githubusercontent.com", StringComparison.OrdinalIgnoreCase))
-        {
-            hint =
-                "Не удаётся получить доступ к GitHub Release Assets (release-assets.githubusercontent.com). " +
-                "В некоторых сетях/странах домен может быть недоступен.\n\n" + hint;
-        }
+            hint = "Не удаётся получить доступ к GitHub Release Assets (release-assets.githubusercontent.com).\n\n" + hint;
 
         return $"{title}\n\n{hint}\n\nТехнические детали:\n{ex}";
     }
@@ -245,6 +318,9 @@ public static class UpdateService
         for (var e = ex; e != null; e = e.InnerException)
         {
             if (e is TimeoutException)
+                return NetworkErrorKind.Timeout;
+
+            if (e is TaskCanceledException)
                 return NetworkErrorKind.Timeout;
 
             if (e is HttpRequestException hre)
@@ -301,10 +377,7 @@ public static class UpdateService
                 return;
             }
 
-            app.Dispatcher.Invoke(() =>
-            {
-                MessageBox.Show(text, "Обновление лаунчера", MessageBoxButton.OK, MessageBoxImage.Information);
-            });
+            app.Dispatcher.Invoke(() => ShowInfo(text));
         }
         catch { }
     }
@@ -322,10 +395,7 @@ public static class UpdateService
                 return;
             }
 
-            app.Dispatcher.Invoke(() =>
-            {
-                MessageBox.Show(text, "Обновление лаунчера", MessageBoxButton.OK, MessageBoxImage.Error);
-            });
+            app.Dispatcher.Invoke(() => ShowError(text));
         }
         catch { }
     }
@@ -340,8 +410,7 @@ public static class UpdateService
             if (app.Dispatcher.CheckAccess())
                 return MessageBox.Show(text, "Обновление лаунчера", MessageBoxButton.YesNo, MessageBoxImage.Information);
 
-            return app.Dispatcher.Invoke(() =>
-                MessageBox.Show(text, "Обновление лаунчера", MessageBoxButton.YesNo, MessageBoxImage.Information));
+            return app.Dispatcher.Invoke(() => ShowYesNo(text));
         }
         catch
         {
