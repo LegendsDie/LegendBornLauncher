@@ -340,12 +340,7 @@ public sealed partial class MainViewModel : ObservableObject
     }
 
     private string _username = "Player";
-
-    /// <summary>
-    /// ✅ Важно: защита от перетирания ника сайтом.
-    /// Если конфиг уже содержит нормальный ник (не "Player"),
-    /// то попытки выставить ник, совпадающий с профилем сайта, игнорируются.
-    /// </summary>
+    
     public string Username
     {
         get => _username;
@@ -458,7 +453,7 @@ public sealed partial class MainViewModel : ObservableObject
                 // ✅ ONLINE: запускаем presence (heartbeat лаунчера + polling друзей)
                 StartOnlinePresence();
 
-                // ✅ после успешного входа — подтягиваем друзей/заявки (реализация в partial Social)
+                // ✅ после успешного входа — подтягиваем друзей/заявки
                 ScheduleSocialRefresh();
             }
             else
@@ -469,7 +464,6 @@ public sealed partial class MainViewModel : ObservableObject
                 if (SelectedMenuIndex != 3 && SelectedMenuIndex != 4)
                     SelectedMenuIndex = 0;
 
-                // реализация в partial Social
                 ClearSocialUi();
             }
 
@@ -581,9 +575,6 @@ public sealed partial class MainViewModel : ObservableObject
 
     public AsyncRelayCommand CheckLauncherUpdatesCommand { get; private set; } = null!;
 
-    // Social команды/свойства определены в partial Social:
-    // RefreshFriendsCommand, SendFriendRequestCommand, AcceptFriendRequestCommand, DeclineFriendRequestCommand, RemoveFriendCommand
-
     private static ConfigService? _fallbackConfig;
     private static TokenStore? _fallbackTokens;
 
@@ -666,8 +657,6 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void BuildRamOptions(int maxAllowedMb, int recommendedMb)
     {
-        // ✅ ВАЖНО: не даём UI "сбросить" выбор пользователя, если RamOptions пересобирается.
-        // Сохраняем текущее значение и гарантируем, что оно будет присутствовать в списке.
         var keep = _ramMb;
 
         RamOptions.Clear();
@@ -677,13 +666,12 @@ public sealed partial class MainViewModel : ObservableObject
         foreach (var s in steps)
             RamOptions.Add(s);
 
-        // рекомендация — безопасная под текущий ПК
         var safeMax = Math.Clamp(maxAllowedMb, RamMinMb, RamMaxHardCapMb);
         recommendedMb = Math.Clamp(recommendedMb, RamMinMb, safeMax);
 
         EnsureRamOptionExists(recommendedMb);
 
-        // ✅ ДОБАВЛЕНО: возвращаем пользовательский выбор в список (в пределах текущих ограничений)
+        // возвращаем пользовательский выбор в список (в пределах текущих ограничений)
         if (keep > 0)
             EnsureRamOptionExists(NormalizeRamMb(keep));
     }

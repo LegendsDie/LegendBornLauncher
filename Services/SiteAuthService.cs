@@ -27,6 +27,10 @@ public sealed class SiteAuthService
     // Presence
     private const int PresenceAttempts = 2;
 
+    // ✅ Канонический presence endpoint на сайте (Next app router):
+    // app/api/presence/heartbeat/route.ts => /api/presence/heartbeat
+    private const string PresenceHeartbeatPath = "api/presence/heartbeat";
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -66,11 +70,9 @@ public sealed class SiteAuthService
     /// </summary>
     public sealed class PresenceResponse : OkResponse
     {
-        // опционально: сервер может вернуть серверное время
         [JsonPropertyName("serverTimeUtc")]
         public DateTimeOffset? ServerTimeUtc { get; set; }
 
-        // опционально: сервер может вернуть то, что записал
         [JsonPropertyName("launcherLastSeenUtc")]
         public DateTimeOffset? LauncherLastSeenUtc { get; set; }
 
@@ -78,36 +80,23 @@ public sealed class SiteAuthService
         public DateTimeOffset? SiteLastSeenUtc { get; set; }
     }
 
-    /// <summary>
-    /// Friend DTO, совместимый с сайтом:
-    /// - Новый формат: { id, name, status, source, note, image? }
-    /// - Легаси формат (если где-то ещё есть): { userId, publicId, name, image }
-    ///
-    /// ✅ Добавлены поля presence (не ломают старый сайт):
-    /// onlinePlace / launcherOnline / siteOnline / launcherLastSeenUtc / siteLastSeenUtc / lastSeenUtc / lastActivityUtc
-    /// </summary>
     public sealed class FriendDto
     {
-        // ✅ новый формат сайта: id = publicId строкой или cuid
         [JsonPropertyName("id")]
         public string? Id { get; set; }
 
-        // ✅ легаси
         [JsonPropertyName("userId")]
         public string? UserId { get; set; }
 
-        // ✅ легаси (User.publicId = Int)
         [JsonPropertyName("publicId")]
         public int? PublicId { get; set; }
 
         [JsonPropertyName("name")]
         public string? Name { get; set; }
 
-        // опционально (если сервер отдаёт, или в будущем)
         [JsonPropertyName("image")]
         public string? Image { get; set; }
 
-        // ✅ новый формат сайта
         [JsonPropertyName("status")]
         public string? Status { get; set; } // "online" | "offline"
 
@@ -121,37 +110,21 @@ public sealed class SiteAuthService
         // ✅ PRESENCE (новое)
         // =========================
 
-        /// <summary>
-        /// "launcher" | "site" | "offline" (лучший вариант для UI, приоритет выбирается на сервере)
-        /// </summary>
         [JsonPropertyName("onlinePlace")]
-        public string? OnlinePlace { get; set; }
+        public string? OnlinePlace { get; set; } // "launcher" | "site" | "offline"
 
-        /// <summary>
-        /// true, если друг онлайн именно в лаунчере (сервер вычисляет по heartbeat/TTL)
-        /// </summary>
         [JsonPropertyName("launcherOnline")]
         public bool? LauncherOnline { get; set; }
 
-        /// <summary>
-        /// true, если друг онлайн на сайте (сервер вычисляет по активности/TTL)
-        /// </summary>
         [JsonPropertyName("siteOnline")]
         public bool? SiteOnline { get; set; }
 
-        /// <summary>
-        /// ISO 8601 UTC (рекомендуется), когда последний раз виделся лаунчер
-        /// </summary>
         [JsonPropertyName("launcherLastSeenUtc")]
         public DateTimeOffset? LauncherLastSeenUtc { get; set; }
 
-        /// <summary>
-        /// ISO 8601 UTC (рекомендуется), когда последний раз была активность на сайте
-        /// </summary>
         [JsonPropertyName("siteLastSeenUtc")]
         public DateTimeOffset? SiteLastSeenUtc { get; set; }
 
-        // запасные/легаси варианты, если на сервере будут другие имена:
         [JsonPropertyName("lastSeenUtc")]
         public DateTimeOffset? LastSeenUtc { get; set; }
 
@@ -164,7 +137,6 @@ public sealed class SiteAuthService
         [JsonPropertyName("friends")]
         public FriendDto[] Friends { get; set; } = Array.Empty<FriendDto>();
 
-        // на всякий (если когда-то вернёшь, как на section endpoint)
         [JsonPropertyName("relationshipStatus")]
         public string? RelationshipStatus { get; set; }
     }
@@ -220,7 +192,22 @@ public sealed class SiteAuthService
     }
 
     private static string NormalizeToken(string token)
-        => (token ?? string.Empty).Trim().Trim('"');
+    {
+        token = (token ?? string.Empty).Trim().Trim('"');
+
+        // Иногда кто-то может передать "Bearer xxx" вместо чистого токена
+        if (token.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            token = token.Substring("Bearer ".Length).Trim();
+
+        return token;
+    }
+
+    private static long NormalizeUnixSeconds(long unix)
+    {
+        if (unix <= 0) return 0;
+        if (unix >= 10_000_000_000L) return unix / 1000; // ms -> sec
+        return unix;
+    }
 
     private static bool IsRetryableStatus(HttpStatusCode code)
         => (int)code >= 500
@@ -255,6 +242,15 @@ public sealed class SiteAuthService
             return Encoding.UTF8.GetString(seg.Array, seg.Offset, seg.Count);
 
         return Encoding.UTF8.GetString(ms.ToArray());
+    }
+
+    private static bool LooksLikeHtml(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return false;
+        var t = body.TrimStart();
+        return t.StartsWith("<!doctype", StringComparison.OrdinalIgnoreCase)
+               || t.StartsWith("<html", StringComparison.OrdinalIgnoreCase)
+               || t.StartsWith("<", StringComparison.Ordinal);
     }
 
     private static string TryGetString(JsonElement root, string name)
@@ -296,6 +292,7 @@ public sealed class SiteAuthService
         }
         catch { }
 
+        // небольшой линейный backoff + кап
         var ms = 250 * Math.Max(1, attemptIndex);
         return TimeSpan.FromMilliseconds(Math.Min(ms, 1500));
     }
@@ -371,8 +368,23 @@ public sealed class SiteAuthService
         // ✅ Полезно для сервера: явно помечаем клиент как Launcher
         try
         {
+            req.Headers.TryAddWithoutValidation("X-Presence-Client", "launcher");
             req.Headers.TryAddWithoutValidation("X-Client", "LegendBornLauncher");
             req.Headers.TryAddWithoutValidation("X-Client-Version", (LauncherIdentity.InformationalVersion ?? "").Trim());
+        }
+        catch { /* ignore */ }
+    }
+
+    private static void TryAttachDeviceId(HttpRequestMessage req, string? deviceId)
+    {
+        try
+        {
+            deviceId = (deviceId ?? "").Trim();
+            if (deviceId.Length == 0) return;
+
+            // сервер у тебя читает x-device-id
+            req.Headers.Remove("X-Device-Id");
+            req.Headers.TryAddWithoutValidation("X-Device-Id", deviceId);
         }
         catch { /* ignore */ }
     }
@@ -380,6 +392,10 @@ public sealed class SiteAuthService
     private static T? TryDeserialize<T>(string json)
     {
         if (string.IsNullOrWhiteSpace(json)) return default;
+
+        // если внезапно HTML — не пытаемся десериализовать
+        if (LooksLikeHtml(json)) return default;
+
         try { return JsonSerializer.Deserialize<T>(json, JsonOptions); }
         catch { return default; }
     }
@@ -388,6 +404,9 @@ public sealed class SiteAuthService
     {
         try
         {
+            if (LooksLikeHtml(json))
+                return "Сервер вернул HTML вместо JSON.";
+
             using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
             var root = doc.RootElement;
 
@@ -429,6 +448,13 @@ public sealed class SiteAuthService
     private static StringContent JsonBody(object model)
         => new StringContent(JsonSerializer.Serialize(model, JsonOptions), Utf8NoBom, "application/json");
 
+    private static string BuildApiPath(string relative)
+    {
+        relative = (relative ?? "").Trim();
+        if (relative.Length == 0) return relative;
+        return relative.StartsWith("/") ? relative[1..] : relative;
+    }
+
     // =========================
     // Auth / Profile / Economy
     // =========================
@@ -437,7 +463,7 @@ public sealed class SiteAuthService
     public async Task<(string DeviceId, string ConnectUrl, long ExpiresAtUnix)> StartLauncherLoginAsync(CancellationToken ct)
     {
         using var resp = await SendAsyncWithRetry(
-            factory: () => new HttpRequestMessage(HttpMethod.Post, "api/launcher/login"),
+            factory: () => new HttpRequestMessage(HttpMethod.Post, BuildApiPath("api/launcher/login")),
             ct: ct,
             attempts: DefaultAttempts,
             perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
@@ -450,7 +476,7 @@ public sealed class SiteAuthService
         var root = doc.RootElement;
         var deviceId = TryGetString(root, "deviceId");
         var connectUrl = TryGetString(root, "connectUrl");
-        var expiresAtUnix = TryGetInt64(root, "expiresAtUnix");
+        var expiresAtUnix = NormalizeUnixSeconds(TryGetInt64(root, "expiresAtUnix"));
 
         if (string.IsNullOrWhiteSpace(deviceId) || string.IsNullOrWhiteSpace(connectUrl))
             throw new InvalidOperationException("Сайт не вернул deviceId/connectUrl.");
@@ -468,7 +494,7 @@ public sealed class SiteAuthService
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
-                var url = $"api/launcher/login?deviceId={Uri.EscapeDataString(deviceId)}";
+                var url = BuildApiPath($"api/launcher/login?deviceId={Uri.EscapeDataString(deviceId)}");
                 return new HttpRequestMessage(HttpMethod.Get, url);
             },
             ct: ct,
@@ -488,7 +514,7 @@ public sealed class SiteAuthService
             return null;
 
         var accessToken = NormalizeToken(TryGetString(root, "accessToken"));
-        var expiresAtUnix = TryGetInt64(root, "expiresAtUnix");
+        var expiresAtUnix = NormalizeUnixSeconds(TryGetInt64(root, "expiresAtUnix"));
 
         if (string.IsNullOrWhiteSpace(accessToken))
             return null;
@@ -502,7 +528,7 @@ public sealed class SiteAuthService
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Get, "api/launcher/me");
+                var req = new HttpRequestMessage(HttpMethod.Get, BuildApiPath("api/launcher/me"));
                 EnsureBearer(req, accessToken);
                 return req;
             },
@@ -527,7 +553,7 @@ public sealed class SiteAuthService
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Get, "api/launcher/economy/balance");
+                var req = new HttpRequestMessage(HttpMethod.Get, BuildApiPath("api/launcher/economy/balance"));
                 EnsureBearer(req, accessToken);
                 return req;
             },
@@ -569,7 +595,7 @@ public sealed class SiteAuthService
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/events");
+                var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath("api/launcher/events"));
                 EnsureBearer(req, accessToken);
                 req.Content = new StringContent(JsonSerializer.Serialize(reqModel, JsonOptions), Utf8NoBom, "application/json");
                 return req;
@@ -588,6 +614,9 @@ public sealed class SiteAuthService
 
         try
         {
+            if (LooksLikeHtml(respJson))
+                return new LauncherEventResponse { Ok = false, Rewarded = false, Balance = 0, Message = "Сервер вернул HTML вместо JSON." };
+
             using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(respJson) ? "{}" : respJson);
             var root = doc.RootElement;
 
@@ -627,17 +656,12 @@ public sealed class SiteAuthService
     // Presence API (Launcher)
     // =========================
 
-    /// <summary>
-    /// ✅ Heartbeat "я онлайн в лаунчере".
-    /// Сервер должен сохранять launcherLastSeenUtc = now и возвращать ok.
-    /// </summary>
     public async Task<OkResponse> SendLauncherHeartbeatAsync(string accessToken, CancellationToken ct)
     {
-        // body можно расширять, сервер может игнорировать
         var bodyModel = new
         {
             state = "online",
-            client = "LegendBornLauncher",
+            client = "launcher",
             version = (LauncherIdentity.InformationalVersion ?? "").Trim(),
             sentAtUtc = DateTimeOffset.UtcNow
         };
@@ -645,7 +669,7 @@ public sealed class SiteAuthService
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/presence/launcher");
+                var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath(PresenceHeartbeatPath));
                 EnsureBearer(req, accessToken);
                 req.Content = JsonBody(bodyModel);
                 return req;
@@ -663,15 +687,12 @@ public sealed class SiteAuthService
         return dto;
     }
 
-    /// <summary>
-    /// Опционально: при закрытии лаунчера (можно не делать — TTL тоже решает).
-    /// </summary>
     public async Task<OkResponse> SendLauncherOfflineAsync(string accessToken, CancellationToken ct)
     {
         var bodyModel = new
         {
             state = "offline",
-            client = "LegendBornLauncher",
+            client = "launcher",
             version = (LauncherIdentity.InformationalVersion ?? "").Trim(),
             sentAtUtc = DateTimeOffset.UtcNow
         };
@@ -679,7 +700,7 @@ public sealed class SiteAuthService
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/presence/launcher/offline");
+                var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath(PresenceHeartbeatPath));
                 EnsureBearer(req, accessToken);
                 req.Content = JsonBody(bodyModel);
                 return req;
@@ -701,13 +722,12 @@ public sealed class SiteAuthService
     // Friends API
     // =========================
 
-    // GET /api/launcher/friends -> { ok, friends:[...] }
     public async Task<FriendsListResponse> GetFriendsAsync(string accessToken, CancellationToken ct)
     {
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Get, "api/launcher/friends");
+                var req = new HttpRequestMessage(HttpMethod.Get, BuildApiPath("api/launcher/friends"));
                 EnsureBearer(req, accessToken);
                 return req;
             },
@@ -727,13 +747,12 @@ public sealed class SiteAuthService
         return dto;
     }
 
-    // GET /api/launcher/friends/requests -> { ok, incoming:[...], outgoing:[...] }
     public async Task<FriendRequestsResponse> GetFriendRequestsAsync(string accessToken, CancellationToken ct)
     {
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Get, "api/launcher/friends/requests");
+                var req = new HttpRequestMessage(HttpMethod.Get, BuildApiPath("api/launcher/friends/requests"));
                 EnsureBearer(req, accessToken);
                 return req;
             },
@@ -754,7 +773,6 @@ public sealed class SiteAuthService
         return dto;
     }
 
-    // POST /api/launcher/friends/request body { query }
     public async Task<OkResponse> SendFriendRequestAsync(string accessToken, string query, CancellationToken ct)
     {
         query = (query ?? "").Trim();
@@ -764,7 +782,7 @@ public sealed class SiteAuthService
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/friends/request");
+                var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath("api/launcher/friends/request"));
                 EnsureBearer(req, accessToken);
                 req.Content = JsonBody(new { query });
                 return req;
@@ -783,7 +801,6 @@ public sealed class SiteAuthService
         return dto;
     }
 
-    // POST /api/launcher/friends/accept body { fromUserId } (и на всякий продублируем ключи)
     public async Task<OkResponse> AcceptFriendRequestAsync(string accessToken, string fromUserId, CancellationToken ct)
     {
         fromUserId = (fromUserId ?? "").Trim();
@@ -793,10 +810,8 @@ public sealed class SiteAuthService
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/friends/accept");
+                var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath("api/launcher/friends/accept"));
                 EnsureBearer(req, accessToken);
-
-                // ✅ совместимость: сервер может ждать fromUserId или id
                 req.Content = JsonBody(new { fromUserId, id = fromUserId, userId = fromUserId });
                 return req;
             },
@@ -814,7 +829,6 @@ public sealed class SiteAuthService
         return dto;
     }
 
-    // POST /api/launcher/friends/decline body { fromUserId } (и на всякий продублируем ключи)
     public async Task<OkResponse> DeclineFriendRequestAsync(string accessToken, string fromUserId, CancellationToken ct)
     {
         fromUserId = (fromUserId ?? "").Trim();
@@ -824,10 +838,8 @@ public sealed class SiteAuthService
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/friends/decline");
+                var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath("api/launcher/friends/decline"));
                 EnsureBearer(req, accessToken);
-
-                // ✅ совместимость: сервер может ждать fromUserId или id
                 req.Content = JsonBody(new { fromUserId, id = fromUserId, userId = fromUserId });
                 return req;
             },
@@ -845,7 +857,6 @@ public sealed class SiteAuthService
         return dto;
     }
 
-    // POST /api/launcher/friends/remove body { userId } (и на всякий продублируем ключи)
     public async Task<OkResponse> RemoveFriendAsync(string accessToken, string userId, CancellationToken ct)
     {
         userId = (userId ?? "").Trim();
@@ -855,10 +866,8 @@ public sealed class SiteAuthService
         using var resp = await SendAsyncWithRetry(
             factory: () =>
             {
-                var req = new HttpRequestMessage(HttpMethod.Post, "api/launcher/friends/remove");
+                var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath("api/launcher/friends/remove"));
                 EnsureBearer(req, accessToken);
-
-                // ✅ совместимость: сервер может ждать userId или id
                 req.Content = JsonBody(new { userId, id = userId });
                 return req;
             },
@@ -873,6 +882,146 @@ public sealed class SiteAuthService
         var dto = TryDeserialize<OkResponse>(body) ?? new OkResponse();
         NormalizeOkFromHttp(dto, resp, body);
 
+        return dto;
+    }
+
+    // =========================
+    // ✅ Minecraft API (Launcher)
+    // =========================
+
+    public sealed class MinecraftLinkResponse : OkResponse
+    {
+        [JsonPropertyName("legendUuid")]
+        public string? LegendUuid { get; set; }
+
+        [JsonPropertyName("minecraft")]
+        public MinecraftInfo? Minecraft { get; set; }
+
+        public sealed class MinecraftInfo
+        {
+            [JsonPropertyName("uuid")]
+            public string? Uuid { get; set; }
+
+            [JsonPropertyName("username")]
+            public string? Username { get; set; }
+
+            [JsonPropertyName("selectedSkinKey")]
+            public string? SelectedSkinKey { get; set; }
+
+            [JsonPropertyName("skinUrl")]
+            public string? SkinUrl { get; set; }
+
+            [JsonPropertyName("isLinked")]
+            public bool? IsLinked { get; set; }
+        }
+    }
+
+    /// <summary>
+    /// POST /api/minecraft/link
+    /// Authorization: Bearer &lt;launcherAccessToken&gt;
+    /// body: { username: "Player" }
+    /// </summary>
+    public async Task<MinecraftLinkResponse> LinkMinecraftAsync(
+        string accessToken,
+        string username,
+        CancellationToken ct,
+        string? deviceId = null)
+    {
+        username = (username ?? "").Trim();
+
+        using var resp = await SendAsyncWithRetry(
+            factory: () =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath("api/minecraft/link"));
+                EnsureBearer(req, accessToken);
+                TryAttachDeviceId(req, deviceId);
+                req.Content = JsonBody(new { username });
+                return req;
+            },
+            ct: ct,
+            attempts: DefaultAttempts,
+            perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
+
+        if (IsAuthError(resp.StatusCode))
+            return new MinecraftLinkResponse { Ok = false, Error = "Требуется авторизация." };
+
+        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
+        var dto = TryDeserialize<MinecraftLinkResponse>(body) ?? new MinecraftLinkResponse();
+        NormalizeOkFromHttp(dto, resp, body);
+        return dto;
+    }
+
+    public sealed class MinecraftJoinTicketResponse : OkResponse
+    {
+        [JsonPropertyName("serverId")]
+        public string? ServerId { get; set; }
+
+        [JsonPropertyName("ticket")]
+        public string? Ticket { get; set; }
+
+        [JsonPropertyName("expiresAtUnix")]
+        public long ExpiresAtUnix { get; set; }
+
+        [JsonPropertyName("legendUuid")]
+        public string? LegendUuid { get; set; }
+
+        [JsonPropertyName("minecraft")]
+        public MinecraftInfo? Minecraft { get; set; }
+
+        public sealed class MinecraftInfo
+        {
+            [JsonPropertyName("uuid")]
+            public string? Uuid { get; set; }
+
+            [JsonPropertyName("username")]
+            public string? Username { get; set; }
+
+            [JsonPropertyName("selectedSkinKey")]
+            public string? SelectedSkinKey { get; set; }
+
+            [JsonPropertyName("skinUrl")]
+            public string? SkinUrl { get; set; }
+        }
+    }
+
+    /// <summary>
+    /// POST /api/minecraft/join-ticket
+    /// Authorization: Bearer &lt;launcherAccessToken&gt;
+    /// body: { serverId: "...", mcName?: "Player" }
+    /// </summary>
+    public async Task<MinecraftJoinTicketResponse> CreateMinecraftJoinTicketAsync(
+        string accessToken,
+        string serverId,
+        string? mcName,
+        CancellationToken ct,
+        string? deviceId = null)
+    {
+        serverId = (serverId ?? "").Trim();
+        mcName = string.IsNullOrWhiteSpace(mcName) ? null : mcName.Trim();
+
+        using var resp = await SendAsyncWithRetry(
+            factory: () =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath("api/minecraft/join-ticket"));
+                EnsureBearer(req, accessToken);
+                TryAttachDeviceId(req, deviceId);
+                req.Content = JsonBody(new { serverId, mcName });
+                return req;
+            },
+            ct: ct,
+            attempts: DefaultAttempts,
+            perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
+
+        if (IsAuthError(resp.StatusCode))
+            return new MinecraftJoinTicketResponse { Ok = false, Error = "Требуется авторизация." };
+
+        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
+        var dto = TryDeserialize<MinecraftJoinTicketResponse>(body) ?? new MinecraftJoinTicketResponse();
+
+        // если сервер прислал ms — нормализуем (чтобы дальше было удобно)
+        dto.ExpiresAtUnix = NormalizeUnixSeconds(dto.ExpiresAtUnix);
+
+        NormalizeOkFromHttp(dto, resp, body);
         return dto;
     }
 }

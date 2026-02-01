@@ -1,9 +1,11 @@
+// File: Mvvm/AsyncRelayCommand.cs
 using System;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Threading;
 
 namespace LegendBorn.Mvvm;
 
@@ -13,8 +15,12 @@ public sealed class AsyncRelayCommand : ICommand
     private readonly Func<bool>? _canExecute;
     private readonly Action<Exception>? _onError;
 
+    // IMPORTANT: в WPF изменения CanExecute/PropertyChanged должны триггериться с UI
+    private readonly Dispatcher? _dispatcher;
+
     private CancellationTokenSource? _cts;
     private int _isRunning; // 0/1 (Interlocked)
+    private int _raiseScheduled; // коалесцируем частые RaiseCanExecuteChanged
 
     public AsyncRelayCommand(
         Func<Task> execute,
@@ -33,20 +39,34 @@ public sealed class AsyncRelayCommand : ICommand
         _execute = execute ?? throw new ArgumentNullException(nameof(execute));
         _canExecute = canExecute;
         _onError = onError;
+
+        try { _dispatcher = Application.Current?.Dispatcher; }
+        catch { _dispatcher = null; }
     }
 
     public event EventHandler? CanExecuteChanged;
 
     public bool IsRunning => Volatile.Read(ref _isRunning) == 1;
 
-    public bool CanCancel => _cts is not null && !_cts.IsCancellationRequested;
+    public bool CanCancel
+    {
+        get
+        {
+            var cts = Volatile.Read(ref _cts);
+            return cts is not null && !cts.IsCancellationRequested;
+        }
+    }
 
     public bool CanExecute(object? parameter)
         => !IsRunning && (_canExecute?.Invoke() ?? true);
 
     public async void Execute(object? parameter)
-        => await ExecuteAsync().ConfigureAwait(false);
+        => await ExecuteAsync().ConfigureAwait(true);
 
+    /// <summary>
+    /// Выполняет команду. ВАЖНО: не используем ConfigureAwait(false),
+    /// чтобы продолжения по умолчанию возвращались на UI-поток (WPF).
+    /// </summary>
     public async Task ExecuteAsync(CancellationToken externalToken = default)
     {
         if (!TryBeginExecute())
@@ -57,7 +77,8 @@ public sealed class AsyncRelayCommand : ICommand
 
         try
         {
-            await _execute(linked.Token).ConfigureAwait(false);
+            // ВАЖНО: без ConfigureAwait(false) — чтобы VM после await продолжала на UI.
+            await _execute(linked.Token).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (linked.IsCancellationRequested)
         {
@@ -83,53 +104,63 @@ public sealed class AsyncRelayCommand : ICommand
 
     public void Cancel()
     {
-        try { _cts?.Cancel(); } catch { }
+        try { Volatile.Read(ref _cts)?.Cancel(); } catch { /* ignore */ }
         RaiseCanExecuteChanged();
     }
 
     public void RaiseCanExecuteChanged()
-        => RaiseCanExecuteChangedOnUi();
+        => RaiseCanExecuteChangedOnUiCoalesced();
 
     private bool TryBeginExecute()
     {
         if (Interlocked.CompareExchange(ref _isRunning, 1, 0) != 0)
             return false;
 
-        _cts?.Dispose();
-        _cts = new CancellationTokenSource();
+        var newCts = new CancellationTokenSource();
+        var prev = Interlocked.Exchange(ref _cts, newCts);
+        try { prev?.Dispose(); } catch { /* ignore */ }
+
         return true;
     }
 
     private void EndExecute()
     {
-        try { _cts?.Dispose(); } catch { }
-        _cts = null;
+        var prev = Interlocked.Exchange(ref _cts, null);
+        try { prev?.Dispose(); } catch { /* ignore */ }
+
         Interlocked.Exchange(ref _isRunning, 0);
     }
 
     private CancellationTokenSource CreateLinkedCts(CancellationToken externalToken)
     {
-        if (!externalToken.CanBeCanceled)
-            return CancellationTokenSource.CreateLinkedTokenSource(_cts!.Token);
+        var local = Volatile.Read(ref _cts) ?? throw new InvalidOperationException("Command CTS not initialized.");
 
-        return CancellationTokenSource.CreateLinkedTokenSource(_cts!.Token, externalToken);
+        if (!externalToken.CanBeCanceled)
+            return CancellationTokenSource.CreateLinkedTokenSource(local.Token);
+
+        return CancellationTokenSource.CreateLinkedTokenSource(local.Token, externalToken);
     }
 
-    private void RaiseCanExecuteChangedOnUi()
+    private void RaiseCanExecuteChangedOnUiCoalesced()
     {
         var handler = CanExecuteChanged;
         if (handler is null) return;
 
-        var dispatcher = Application.Current?.Dispatcher;
-        if (dispatcher is null || dispatcher.CheckAccess())
+        // если диспетчера нет или мы уже в UI — поднимаем сразу
+        if (_dispatcher is null || _dispatcher.CheckAccess())
         {
             handler(this, EventArgs.Empty);
             TryInvalidateRequerySuggested();
             return;
         }
 
-        dispatcher.BeginInvoke(new Action(() =>
+        // коалесцируем частые вызовы
+        if (Interlocked.Exchange(ref _raiseScheduled, 1) == 1)
+            return;
+
+        _dispatcher.BeginInvoke(DispatcherPriority.DataBind, new Action(() =>
         {
+            Interlocked.Exchange(ref _raiseScheduled, 0);
             handler(this, EventArgs.Empty);
             TryInvalidateRequerySuggested();
         }));
@@ -147,8 +178,11 @@ public sealed class AsyncRelayCommand<T> : ICommand
     private readonly Func<T?, bool>? _canExecute;
     private readonly Action<Exception>? _onError;
 
+    private readonly Dispatcher? _dispatcher;
+
     private CancellationTokenSource? _cts;
     private int _isRunning;
+    private int _raiseScheduled;
 
     public AsyncRelayCommand(
         Func<T?, Task> execute,
@@ -167,11 +201,23 @@ public sealed class AsyncRelayCommand<T> : ICommand
         _execute = execute ?? throw new ArgumentNullException(nameof(execute));
         _canExecute = canExecute;
         _onError = onError;
+
+        try { _dispatcher = Application.Current?.Dispatcher; }
+        catch { _dispatcher = null; }
     }
 
     public event EventHandler? CanExecuteChanged;
 
     public bool IsRunning => Volatile.Read(ref _isRunning) == 1;
+
+    public bool CanCancel
+    {
+        get
+        {
+            var cts = Volatile.Read(ref _cts);
+            return cts is not null && !cts.IsCancellationRequested;
+        }
+    }
 
     public bool CanExecute(object? parameter)
     {
@@ -184,7 +230,7 @@ public sealed class AsyncRelayCommand<T> : ICommand
     public async void Execute(object? parameter)
     {
         var p = parameter is T t ? t : default;
-        await ExecuteAsync(p).ConfigureAwait(false);
+        await ExecuteAsync(p).ConfigureAwait(true);
     }
 
     public async Task ExecuteAsync(T? parameter, CancellationToken externalToken = default)
@@ -197,7 +243,8 @@ public sealed class AsyncRelayCommand<T> : ICommand
 
         try
         {
-            await _execute(parameter, linked.Token).ConfigureAwait(false);
+            // без ConfigureAwait(false) — чтобы возвращаться на UI
+            await _execute(parameter, linked.Token).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (linked.IsCancellationRequested)
         {
@@ -206,7 +253,7 @@ public sealed class AsyncRelayCommand<T> : ICommand
         {
             if (_onError is not null)
             {
-                try { _onError(ex); } catch { }
+                try { _onError(ex); } catch { /* ignore */ }
             }
             else
             {
@@ -222,53 +269,61 @@ public sealed class AsyncRelayCommand<T> : ICommand
 
     public void Cancel()
     {
-        try { _cts?.Cancel(); } catch { }
+        try { Volatile.Read(ref _cts)?.Cancel(); } catch { /* ignore */ }
         RaiseCanExecuteChanged();
     }
 
     public void RaiseCanExecuteChanged()
-        => RaiseCanExecuteChangedOnUi();
+        => RaiseCanExecuteChangedOnUiCoalesced();
 
     private bool TryBeginExecute()
     {
         if (Interlocked.CompareExchange(ref _isRunning, 1, 0) != 0)
             return false;
 
-        _cts?.Dispose();
-        _cts = new CancellationTokenSource();
+        var newCts = new CancellationTokenSource();
+        var prev = Interlocked.Exchange(ref _cts, newCts);
+        try { prev?.Dispose(); } catch { /* ignore */ }
+
         return true;
     }
 
     private void EndExecute()
     {
-        try { _cts?.Dispose(); } catch { }
-        _cts = null;
+        var prev = Interlocked.Exchange(ref _cts, null);
+        try { prev?.Dispose(); } catch { /* ignore */ }
+
         Interlocked.Exchange(ref _isRunning, 0);
     }
 
     private CancellationTokenSource CreateLinkedCts(CancellationToken externalToken)
     {
-        if (!externalToken.CanBeCanceled)
-            return CancellationTokenSource.CreateLinkedTokenSource(_cts!.Token);
+        var local = Volatile.Read(ref _cts) ?? throw new InvalidOperationException("Command CTS not initialized.");
 
-        return CancellationTokenSource.CreateLinkedTokenSource(_cts!.Token, externalToken);
+        if (!externalToken.CanBeCanceled)
+            return CancellationTokenSource.CreateLinkedTokenSource(local.Token);
+
+        return CancellationTokenSource.CreateLinkedTokenSource(local.Token, externalToken);
     }
 
-    private void RaiseCanExecuteChangedOnUi()
+    private void RaiseCanExecuteChangedOnUiCoalesced()
     {
         var handler = CanExecuteChanged;
         if (handler is null) return;
 
-        var dispatcher = Application.Current?.Dispatcher;
-        if (dispatcher is null || dispatcher.CheckAccess())
+        if (_dispatcher is null || _dispatcher.CheckAccess())
         {
             handler(this, EventArgs.Empty);
             TryInvalidateRequerySuggested();
             return;
         }
 
-        dispatcher.BeginInvoke(new Action(() =>
+        if (Interlocked.Exchange(ref _raiseScheduled, 1) == 1)
+            return;
+
+        _dispatcher.BeginInvoke(DispatcherPriority.DataBind, new Action(() =>
         {
+            Interlocked.Exchange(ref _raiseScheduled, 0);
             handler(this, EventArgs.Empty);
             TryInvalidateRequerySuggested();
         }));
@@ -276,6 +331,6 @@ public sealed class AsyncRelayCommand<T> : ICommand
 
     private static void TryInvalidateRequerySuggested()
     {
-        try { CommandManager.InvalidateRequerySuggested(); } catch { }
+        try { CommandManager.InvalidateRequerySuggested(); } catch { /* ignore */ }
     }
 }

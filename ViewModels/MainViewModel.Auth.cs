@@ -38,6 +38,7 @@ public sealed partial class MainViewModel
 
     private static string BuildConnectUrl(string deviceId, string connectUrl)
     {
+        // если сервер вернул относительный путь — соберём с базой.
         var path = string.IsNullOrWhiteSpace(connectUrl) ? "/launcher/connect" : connectUrl.Trim();
 
         var fullUrl = path.StartsWith("http", StringComparison.OrdinalIgnoreCase)
@@ -140,7 +141,7 @@ public sealed partial class MainViewModel
         SiteUserName = string.IsNullOrWhiteSpace(me.UserName) ? "Пользователь" : me.UserName;
         IsLoggedIn = true;
 
-        // ✅ ник с сайта только при ПЕРВОЙ авторизации (когда в конфиге нет ника).
+        // ✅ Ник с сайта берём только если в конфиге нет нормального ника.
         if (HasConfigUsername(out var local))
         {
             if (!string.Equals(Username, local, StringComparison.Ordinal))
@@ -276,10 +277,11 @@ public sealed partial class MainViewModel
             LoginUrl = fullUrl;
             AppendLog($"Ссылка для входа: {fullUrl}");
 
+            // ✅ БОЛЬШЕ НЕ ИСПОЛЬЗУЕМ СТАРУЮ ФРАЗУ
             if (!TryOpenUrlInBrowser(fullUrl, out var openError))
             {
                 AppendLog(openError);
-                StatusText = "Сайт не открылся. Нажми «Скопировать ссылку» и открой вручную.";
+                StatusText = "Не удалось открыть браузер автоматически. Скопируй ссылку и открой вручную.";
             }
             else
             {
@@ -310,8 +312,29 @@ public sealed partial class MainViewModel
                     continue;
                 }
 
+                // ✅ Сохраняем токен сразу
                 _tokenStore.Save(tokens);
-                await ApplySuccessfulLoginAsync(tokens, _loginCts.Token);
+
+                // ✅ Улучшение: если /me упал (сайт/сеть), не считаем это провалом входа
+                try
+                {
+                    await ApplySuccessfulLoginAsync(tokens, _loginCts.Token);
+                }
+                catch (Exception ex)
+                {
+                    if (LooksLikeUnauthorized(ex))
+                    {
+                        _tokenStore.Clear();
+                        ApplyLoggedOutUiState("Требуется вход.");
+                        AppendLog("Сайт: токен не принят (401/403).");
+                    }
+                    else
+                    {
+                        ApplyOfflineAuthenticatedUiState(tokens, "Вход подтверждён (нет связи с сайтом).");
+                        AppendLog("Вход подтверждён, но профиль недоступен — сайт/сеть недоступны.");
+                    }
+                }
+
                 return;
             }
         }

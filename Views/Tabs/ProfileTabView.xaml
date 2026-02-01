@@ -4,6 +4,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:local="clr-namespace:LegendBorn.Views.Tabs"
              mc:Ignorable="d"
              d:DesignHeight="640"
              d:DesignWidth="980"
@@ -11,10 +12,12 @@
 
     <UserControl.Resources>
 
-        <!-- ===== PRESENCE =====
-             Точка статуса: Серый=оффлайн, Зеленый=онлайн (сайт), Фиолетовый=онлайн (лаунчер)
-             Если захочешь — можно заменить цвета на ресурсы темы.
-        -->
+        <!-- ✅ Converter: делает человеческую строку присутствия -->
+        <local:FriendPresenceLineConverter x:Key="FriendPresenceLineConverter"/>
+
+        <!-- ===== PRESENCE ===== -->
+
+        <!-- Точка на аватарке друзей -->
         <Style x:Key="OnlineDotStyle" TargetType="Ellipse">
             <Setter Property="Width" Value="9"/>
             <Setter Property="Height" Value="9"/>
@@ -26,12 +29,10 @@
             <Setter Property="Fill" Value="#6B7280"/> <!-- offline -->
             <Style.Triggers>
 
-                <!-- онлайн на сайте -->
                 <DataTrigger Binding="{Binding OnlinePlace}" Value="Site">
                     <Setter Property="Fill" Value="#34D399"/>
                 </DataTrigger>
 
-                <!-- онлайн в лаунчере -->
                 <DataTrigger Binding="{Binding OnlinePlace}" Value="Launcher">
                     <Setter Property="Fill" Value="#A78BFA"/>
                 </DataTrigger>
@@ -39,33 +40,46 @@
             </Style.Triggers>
         </Style>
 
-        <!-- Плашка справа: НЕ В СЕТИ / НА САЙТЕ / В ЛАУНЧЕРЕ -->
+        <!-- ✅ Точка рядом с ником в шапке (текущий пользователь)
+             OnlinePlace у MainViewModel НЕТ → показываем точку по IsLoggedIn -->
+        <Style x:Key="HeaderOnlineDotStyle" TargetType="Ellipse">
+            <Setter Property="Width" Value="9"/>
+            <Setter Property="Height" Value="9"/>
+            <Setter Property="Stroke" Value="#0E0E10"/>
+            <Setter Property="StrokeThickness" Value="1"/>
+            <Setter Property="Fill" Value="#34D399"/>
+            <Setter Property="Margin" Value="10,0,0,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Visibility" Value="Collapsed"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsLoggedIn}" Value="True">
+                    <Setter Property="Visibility" Value="Visible"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- ✅ Пилюля справа: ONLINE/OFFLINE (не “где”) -->
         <Style x:Key="PresencePillStyle" TargetType="Border">
             <Setter Property="CornerRadius" Value="999"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="10,4"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="HorizontalAlignment" Value="Right"/>
+            <Setter Property="Opacity" Value="0.95"/>
+
+            <!-- default = OFFLINE -->
             <Setter Property="Background" Value="#10131F"/>
             <Setter Property="BorderBrush" Value="#2A2F49"/>
-            <Setter Property="Opacity" Value="0.95"/>
+
             <Style.Triggers>
-
-                <DataTrigger Binding="{Binding OnlinePlace}" Value="Offline">
-                    <Setter Property="Background" Value="#10131F"/>
-                    <Setter Property="BorderBrush" Value="#2A2F49"/>
-                </DataTrigger>
-
                 <DataTrigger Binding="{Binding OnlinePlace}" Value="Site">
                     <Setter Property="Background" Value="#0F1E18"/>
                     <Setter Property="BorderBrush" Value="#2D6A57"/>
                 </DataTrigger>
-
                 <DataTrigger Binding="{Binding OnlinePlace}" Value="Launcher">
-                    <Setter Property="Background" Value="#1A1226"/>
-                    <Setter Property="BorderBrush" Value="#6D28D9"/>
+                    <Setter Property="Background" Value="#0F1E18"/>
+                    <Setter Property="BorderBrush" Value="#2D6A57"/>
                 </DataTrigger>
-
             </Style.Triggers>
         </Style>
 
@@ -75,19 +89,16 @@
             <Setter Property="TextOptions.TextFormattingMode" Value="Display"/>
             <Setter Property="TextOptions.TextRenderingMode" Value="ClearType"/>
             <Setter Property="Foreground" Value="{StaticResource TextDimLocal}"/>
-            <Setter Property="Text" Value="НЕ В СЕТИ"/>
+            <Setter Property="Text" Value="ОФФЛАЙН"/>
             <Style.Triggers>
-
                 <DataTrigger Binding="{Binding OnlinePlace}" Value="Site">
                     <Setter Property="Foreground" Value="#86EFAC"/>
-                    <Setter Property="Text" Value="НА САЙТЕ"/>
+                    <Setter Property="Text" Value="ОНЛАЙН"/>
                 </DataTrigger>
-
                 <DataTrigger Binding="{Binding OnlinePlace}" Value="Launcher">
-                    <Setter Property="Foreground" Value="#E9D5FF"/>
-                    <Setter Property="Text" Value="В ЛАУНЧЕРЕ"/>
+                    <Setter Property="Foreground" Value="#86EFAC"/>
+                    <Setter Property="Text" Value="ОНЛАЙН"/>
                 </DataTrigger>
-
             </Style.Triggers>
         </Style>
 
@@ -154,7 +165,8 @@
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="0"/>
-            <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Disabled"/>
+
+            <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Hidden"/>
             <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
         </Style>
 
@@ -198,11 +210,29 @@
                                FontSize="13"
                                TextTrimming="CharacterEllipsis"/>
 
+                    <!-- ✅ Под ником: используем PresenceText, но убираем “Не в сети”, чтобы не дублировать пилюлю -->
                     <TextBlock Margin="0,4,0,0"
-                               Text="{Binding PresenceLine}"
+                               Text="{Binding PresenceText}"
                                Foreground="{StaticResource TextDimLocal}"
                                FontSize="11"
-                               TextTrimming="CharacterEllipsis"/>
+                               TextTrimming="CharacterEllipsis">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Visible"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding PresenceText}" Value="Не в сети">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding PresenceText}" Value="НЕ В СЕТИ">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding PresenceText}" Value="">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
                 </StackPanel>
 
                 <!-- Presence pill справа -->
@@ -210,9 +240,9 @@
                     <TextBlock Style="{StaticResource PresencePillTextStyle}"/>
                 </Border>
 
-                <!-- Контекстное меню: привязываем к item (FriendEntry), а не к Grid -->
+                <!-- Контекстное меню: ContextMenu не наследует DataContext -->
                 <Grid.ContextMenu>
-                    <ContextMenu DataContext="{Binding}">
+                    <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
                         <MenuItem Header="Открыть профиль" Click="OpenFriendProfile_OnClick"/>
                         <MenuItem Header="Скопировать ID" Click="CopyFriendId_OnClick"/>
                     </ContextMenu>
@@ -263,11 +293,17 @@
                     </Border>
 
                     <StackPanel Grid.Column="2" VerticalAlignment="Center">
-                        <TextBlock Text="{Binding SiteUserName}"
-                                   Foreground="{StaticResource TextStrongLocal}"
-                                   FontSize="20"
-                                   FontWeight="Bold"
-                                   TextTrimming="CharacterEllipsis"/>
+
+                        <!-- Ник + точка -->
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding SiteUserName}"
+                                       Foreground="{StaticResource TextStrongLocal}"
+                                       FontSize="20"
+                                       FontWeight="Bold"
+                                       TextTrimming="CharacterEllipsis"/>
+
+                            <Ellipse Style="{StaticResource HeaderOnlineDotStyle}"/>
+                        </StackPanel>
 
                         <StackPanel Margin="0,6,0,0">
                             <StackPanel Orientation="Horizontal">

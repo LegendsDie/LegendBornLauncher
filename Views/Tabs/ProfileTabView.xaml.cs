@@ -1,9 +1,11 @@
 // File: Views/Tabs/ProfileTabView.xaml.cs
 using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 
 namespace LegendBorn.Views.Tabs;
@@ -24,36 +26,46 @@ public partial class ProfileTabView : UserControl
 
     private void ProfileTabView_Loaded(object sender, RoutedEventArgs e)
     {
-        // ✅ При входе на вкладку:
-        // 1) запускаем presence (чтобы лаунчер-онлайн точно фиксировался)
-        // 2) обновляем список друзей (через дебаунс, если есть)
         try
         {
             var vm = GetHostDataContext();
             if (vm is null) return;
 
-            // presence
-            TryExecuteMethod(vm, "StartOnlinePresence");
+            var hasToken = TryGetBoolProperty(vm, "HasSiteToken") ?? false;
 
-            // refresh friends
-            if (!TryExecuteMethod(vm, "ScheduleFriendsRefresh"))
-                TryExecuteCommand(vm, "RefreshFriendsCommand");
+            if (hasToken)
+            {
+                TryExecuteMethod(vm, "StartOnlinePresence");
+
+                if (!TryExecuteMethod(vm, "ScheduleFriendsRefresh"))
+                    TryExecuteCommand(vm, "RefreshFriendsCommand");
+            }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            DebugLog(ex, "ProfileTabView_Loaded");
+        }
     }
 
     private void ProfileTabView_Unloaded(object sender, RoutedEventArgs e)
     {
-        // ✅ При уходе с вкладки можно остановить loops (чтобы не гонять сеть, если вкладка не активна)
-        // Если ты хочешь, чтобы presence работал всегда, просто убери эту строку.
         try
         {
             var vm = GetHostDataContext();
             if (vm is null) return;
 
-            TryExecuteMethod(vm, "StopOnlinePresence");
+            // ✅ FIX: Unloaded бывает при простом переключении табов.
+            // Не гасим presence, если пользователь всё ещё залогинен.
+            var isLoggedIn = TryGetBoolProperty(vm, "IsLoggedIn") ?? false;
+            var hasToken = TryGetBoolProperty(vm, "HasSiteToken") ?? false;
+
+            if (!isLoggedIn || !hasToken)
+                TryExecuteMethod(vm, "StopOnlinePresence");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            DebugLog(ex, "ProfileTabView_Unloaded");
+        }
     }
 
     private void OpenSite_OnClick(object sender, RoutedEventArgs e)
@@ -67,7 +79,10 @@ public partial class ProfileTabView : UserControl
 
             TryOpenUrl(SiteUrlPrimary);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            DebugLog(ex, "OpenSite_OnClick");
+        }
     }
 
     private void Logout_OnClick(object sender, RoutedEventArgs e)
@@ -79,7 +94,10 @@ public partial class ProfileTabView : UserControl
 
             TryExecuteCommand(vm, "SiteLogoutCommand");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            DebugLog(ex, "Logout_OnClick");
+        }
     }
 
     private void OpenStart_OnClick(object sender, RoutedEventArgs e)
@@ -94,18 +112,32 @@ public partial class ProfileTabView : UserControl
 
             TrySetIntProperty(vm, "SelectedMenuIndex", StartTabIndex);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            DebugLog(ex, "OpenStart_OnClick");
+        }
     }
 
-    // ===== Двойной клик по другу => открыть профиль =====
+    // ===== Двойной клик по другу => открыть профиль (ТОЛЬКО по айтему) =====
     private void FriendsList_OnMouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
         try
         {
-            if (sender is not ListBox lb || lb.SelectedItem is null) return;
-            TryOpenProfileFromItem(lb.SelectedItem);
+            if (e.ChangedButton != MouseButton.Left) return;
+            if (sender is not ListBox lb) return;
+
+            var dep = e.OriginalSource as DependencyObject;
+            if (dep is null) return;
+
+            var container = ItemsControl.ContainerFromElement(lb, dep) as ListBoxItem;
+            if (container?.DataContext is null) return;
+
+            TryOpenProfileFromItem(container.DataContext);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            DebugLog(ex, "FriendsList_OnMouseDoubleClick");
+        }
     }
 
     // Контекстное меню
@@ -119,7 +151,10 @@ public partial class ProfileTabView : UserControl
 
             TryOpenProfileFromItem(item);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            DebugLog(ex, "OpenFriendProfile_OnClick");
+        }
     }
 
     private void CopyFriendId_OnClick(object sender, RoutedEventArgs e)
@@ -130,25 +165,67 @@ public partial class ProfileTabView : UserControl
             var item = mi.DataContext;
             if (item is null) return;
 
-            // копируем Id (fallback PublicId)
-            var id = TryGetStringProperty(item, "Id") ?? TryGetStringProperty(item, "PublicId");
-            id = (id ?? "").Trim();
-
-            if (id.Length == 0) return;
+            var id = GetBestProfileId(item);
+            if (string.IsNullOrWhiteSpace(id)) return;
 
             Clipboard.SetText(id);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            DebugLog(ex, "CopyFriendId_OnClick");
+        }
     }
 
     private static void TryOpenProfileFromItem(object item)
     {
-        // Приоритет: Id (то, что понимает /profile/{id}), fallback PublicId
-        var id = TryGetStringProperty(item, "Id") ?? TryGetStringProperty(item, "PublicId");
-        id = (id ?? "").Trim();
-        if (id.Length == 0) return;
+        var id = GetBestProfileId(item);
+        if (string.IsNullOrWhiteSpace(id)) return;
+
+        if (id.StartsWith("mock-", StringComparison.OrdinalIgnoreCase))
+            return;
 
         TryOpenProfile(id);
+    }
+
+    /// <summary>
+    /// ✅ Фикс "рандомных айди":
+    /// 1) PublicId (если > 0)
+    /// 2) Id
+    /// 3) UserId (fallback)
+    /// </summary>
+    private static string? GetBestProfileId(object item)
+    {
+        // 1) PublicId
+        var publicIdRaw =
+            TryGetStringProperty(item, "PublicId") ??
+            TryGetStringProperty(item, "publicId");
+
+        if (!string.IsNullOrWhiteSpace(publicIdRaw) &&
+            int.TryParse(publicIdRaw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var pid) &&
+            pid > 0)
+        {
+            return pid.ToString(CultureInfo.InvariantCulture);
+        }
+
+        // 2) Id
+        var id =
+            TryGetStringProperty(item, "Id") ??
+            TryGetStringProperty(item, "id");
+
+        id = (id ?? "").Trim();
+        if (!string.IsNullOrWhiteSpace(id))
+            return id;
+
+        // 3) UserId fallback
+        var userId =
+            TryGetStringProperty(item, "UserId") ??
+            TryGetStringProperty(item, "userId");
+
+        userId = (userId ?? "").Trim();
+        if (!string.IsNullOrWhiteSpace(userId))
+            return userId;
+
+        return null;
     }
 
     private static void TryOpenProfile(string id)
@@ -239,6 +316,31 @@ public partial class ProfileTabView : UserControl
         }
     }
 
+    private static bool? TryGetBoolProperty(object obj, string propertyName)
+    {
+        try
+        {
+            var p = obj.GetType().GetProperty(propertyName,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+            if (p is null) return null;
+
+            var vObj = p.GetValue(obj);
+            if (vObj is null) return null;
+
+            if (vObj is bool b) return b;
+
+            if (vObj is string s && bool.TryParse(s, out var parsed)) return parsed;
+            if (vObj is int i) return i != 0;
+
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static string? TryGetStringProperty(object obj, string propertyName)
     {
         try
@@ -264,20 +366,118 @@ public partial class ProfileTabView : UserControl
             url = (url ?? "").Trim();
             if (url.Length == 0) return false;
 
-            if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
-                !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+                return false;
+
+            if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
                 return false;
 
             Process.Start(new ProcessStartInfo
             {
-                FileName = url,
+                FileName = uri.AbsoluteUri,
                 UseShellExecute = true
             });
+
             return true;
         }
         catch
         {
             return false;
         }
+    }
+
+    [Conditional("DEBUG")]
+    private static void DebugLog(Exception ex, string where)
+    {
+        try
+        {
+            Debug.WriteLine($"[{where}] {ex}");
+        }
+        catch { }
+    }
+}
+
+/// <summary>
+/// ✅ Формирует строку: онлайн/офлайн + где/когда был.
+/// values:
+/// [0] OnlinePlace (Site/Launcher/Offline)
+/// [1] LastSeenAt (DateTime / string / null)
+/// [2] LastSeenSource (Site/Launcher / null)
+/// [3] PresenceLine fallback (string)
+/// </summary>
+public sealed class FriendPresenceLineConverter : IMultiValueConverter
+{
+    public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture)
+    {
+        var onlinePlace = SafeStr(values, 0);
+        var lastSeenAt = values.Length > 1 ? values[1] : null;
+        var lastSeenSource = SafeStr(values, 2);
+        var fallback = SafeStr(values, 3);
+
+        var place = (onlinePlace ?? "").Trim();
+
+        // Онлайн
+        if (IsPlace(place, "Site"))
+            return "онлайн • на сайте";
+
+        if (IsPlace(place, "Launcher"))
+            return "онлайн • в лаунчере";
+
+        // Офлайн: попробуем собрать "был в ... dd.MM HH:mm"
+        var dt = TryParseDate(lastSeenAt);
+        var src = (lastSeenSource ?? "").Trim();
+
+        if (dt.HasValue)
+        {
+            var when = dt.Value.ToLocalTime().ToString("dd.MM HH:mm", CultureInfo.GetCultureInfo("ru-RU"));
+            if (IsPlace(src, "Launcher")) return $"был в лаунчере {when}";
+            if (IsPlace(src, "Site")) return $"был на сайте {when}";
+            return $"был {when}";
+        }
+
+        // fallback: если у тебя раньше приходила строка
+        if (!string.IsNullOrWhiteSpace(fallback))
+        {
+            var f = fallback.Trim();
+            if (!f.Equals("НЕ В СЕТИ", StringComparison.OrdinalIgnoreCase) &&
+                !f.Equals("Не в сети", StringComparison.OrdinalIgnoreCase))
+                return f;
+
+            return "оффлайн";
+        }
+
+        return "оффлайн";
+    }
+
+    public object[] ConvertBack(object value, Type[] targetTypes, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+
+    private static bool IsPlace(string? v, string expected)
+        => string.Equals((v ?? "").Trim(), expected, StringComparison.OrdinalIgnoreCase);
+
+    private static string? SafeStr(object[] values, int i)
+    {
+        if (values == null || i < 0 || i >= values.Length) return null;
+        var v = values[i];
+        if (v == null || v == DependencyProperty.UnsetValue) return null;
+        return v.ToString();
+    }
+
+    private static DateTime? TryParseDate(object? v)
+    {
+        if (v == null || v == DependencyProperty.UnsetValue) return null;
+
+        if (v is DateTime dt) return dt;
+
+        var s = v.ToString();
+        if (string.IsNullOrWhiteSpace(s)) return null;
+
+        if (DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed))
+            return parsed;
+
+        if (DateTime.TryParse(s, CultureInfo.GetCultureInfo("ru-RU"), DateTimeStyles.None, out parsed))
+            return parsed;
+
+        return null;
     }
 }

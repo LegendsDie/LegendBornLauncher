@@ -71,6 +71,125 @@ public sealed class MinecraftService
         "shaderpacks/",
     };
 
+    // Эти папки ВСЕГДА считаем user-mutable и никогда не трогаем
+    private static readonly string[] AlwaysProtectedMutablePrefixes =
+    {
+        "resourcepacks/",
+        "shaderpacks/",
+    };
+
+    // Эти папки ставим из манифеста ТОЛЬКО при первичной установке packId,
+    // затем больше вообще не трогаем
+    private static readonly string[] OneTimeBootstrapPrefixes =
+    {
+        "config/",
+        "defaultconfigs/",
+    };
+
+    // Авто-prune (даже если manifest.prune пустой)
+    private static readonly string[] DefaultAutoPrunePrefixes =
+    {
+        "mods/",
+        "kubejs/",
+    };
+
+    // =========================
+    // ✅ LegendCore session (.legendcore/session.json)
+    // =========================
+
+    /// <summary>
+    /// Данные, которые лаунчер пишет в .legendcore/session.json перед запуском игры.
+    /// Клиентский мод читает это и делает join/auth handshake с сервером.
+    /// </summary>
+    public sealed record LegendCoreSession(
+        string ServerId,
+        string Ticket,
+        long ExpiresAtUnix,
+        string? LegendUuid = null,
+        string? MinecraftUuid = null,
+        string? MinecraftUsername = null,
+        string? SkinUrl = null,
+        string? LauncherVersion = null);
+
+    private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
+    private static readonly JsonSerializerOptions LegendCoreSessionJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        WriteIndented = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+
+    /// <summary>Геймдир (корень инстанса), куда ставится сборка.</summary>
+    public string GameDir => _path.BasePath;
+
+    /// <summary>Полный путь к файлу .legendcore/session.json.</summary>
+    public string LegendCoreSessionPath =>
+        Path.Combine(_path.BasePath, ".legendcore", "session.json");
+
+    /// <summary>
+    /// Записать .legendcore/session.json атомарно (tmp -> replace).
+    /// </summary>
+    public void WriteLegendCoreSession(LegendCoreSession session)
+    {
+        if (session is null)
+            throw new ArgumentNullException(nameof(session));
+
+        if (string.IsNullOrWhiteSpace(session.Ticket))
+            throw new ArgumentException("LegendCoreSession.Ticket is empty", nameof(session));
+
+        if (string.IsNullOrWhiteSpace(session.ServerId))
+            throw new ArgumentException("LegendCoreSession.ServerId is empty", nameof(session));
+
+        var dir = Path.GetDirectoryName(LegendCoreSessionPath)!;
+        Directory.CreateDirectory(dir);
+
+        var tmp = LegendCoreSessionPath + ".tmp";
+
+        // JSON структура максимально совместимая и читаемая
+        var payload = new
+        {
+            serverId = session.ServerId,
+            ticket = session.Ticket,
+            expiresAtUnix = session.ExpiresAtUnix,
+            legendUuid = session.LegendUuid,
+            minecraft = new
+            {
+                uuid = session.MinecraftUuid,
+                username = session.MinecraftUsername,
+                skinUrl = session.SkinUrl
+            },
+            launcher = new
+            {
+                version = (session.LauncherVersion ?? LauncherIdentity.InformationalVersion ?? "").Trim(),
+                writtenAtUtc = DateTimeOffset.UtcNow.ToString("O")
+            }
+        };
+
+        var json = JsonSerializer.Serialize(payload, LegendCoreSessionJsonOptions);
+        File.WriteAllText(tmp, json, Utf8NoBom);
+
+        ReplaceOrMoveAtomic(tmp, LegendCoreSessionPath);
+        TryDeleteQuiet(tmp);
+    }
+
+    /// <summary>Удалить session.json (и tmp/pending хвосты), чтобы не оставлять протухший тикет.</summary>
+    public void ClearLegendCoreSession()
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(LegendCoreSessionPath)!;
+            var tmp = LegendCoreSessionPath + ".tmp";
+
+            TryDeleteQuiet(LegendCoreSessionPath);
+            TryDeleteQuiet(tmp);
+
+            // директорию не удаляем: пусть существует
+            Directory.CreateDirectory(dir);
+        }
+        catch { }
+    }
+
     public event EventHandler<string>? Log;
     public event EventHandler<int>? ProgressPercent;
 
@@ -215,7 +334,25 @@ public sealed class MinecraftService
         finally { _exclusive.Release(); }
     }
 
-    public async Task<Process> BuildAndLaunchAsync(string version, string username, int ramMb, string? serverIp = null)
+    // =========================
+    // ✅ Launch
+    // =========================
+
+    /// <summary>
+    /// Старый API — без тикета. Сессию LegendCore не пишет.
+    /// </summary>
+    public Task<Process> BuildAndLaunchAsync(string version, string username, int ramMb, string? serverIp = null)
+        => BuildAndLaunchAsync(version, username, ramMb, serverIp, session: null);
+
+    /// <summary>
+    /// Новый API — можно передать LegendCoreSession, и лаунчер запишет .legendcore/session.json перед стартом игры.
+    /// </summary>
+    public async Task<Process> BuildAndLaunchAsync(
+        string version,
+        string username,
+        int ramMb,
+        string? serverIp = null,
+        LegendCoreSession? session = null)
     {
         if (string.IsNullOrWhiteSpace(version))
             throw new ArgumentException("version is empty", nameof(version));
@@ -224,6 +361,24 @@ public sealed class MinecraftService
             throw new ArgumentException("username is empty", nameof(username));
 
         ramMb = Math.Clamp(ramMb <= 0 ? MinRamMb : ramMb, MinRamMb, MaxRamMb);
+
+        // ✅ Всегда чистим, чтобы не оставлять протухшие тикеты
+        ClearLegendCoreSession();
+
+        // ✅ Если дали сессию — пишем файл до запуска игры
+        if (session is not null)
+        {
+            try
+            {
+                WriteLegendCoreSession(session);
+                Log?.Invoke(this, $"LegendCore: session.json written (serverId={session.ServerId}, exp={session.ExpiresAtUnix})");
+            }
+            catch (Exception ex)
+            {
+                Log?.Invoke(this, $"LegendCore: failed to write session.json: {ex}");
+                throw;
+            }
+        }
 
         var opt = new MLaunchOption
         {
@@ -239,6 +394,16 @@ public sealed class MinecraftService
         process.EnableRaisingEvents = true;
         if (!process.Start())
             throw new InvalidOperationException("Не удалось запустить процесс Minecraft.");
+
+        // ✅ При закрытии игры подчистим session.json, чтобы не лежал мёртвый тикет
+        try
+        {
+            process.Exited += (_, __) =>
+            {
+                try { ClearLegendCoreSession(); } catch { }
+            };
+        }
+        catch { /* ignore */ }
 
         return process;
     }
@@ -367,6 +532,22 @@ public sealed class MinecraftService
         var state = LoadPackState();
         var stateLock = new object();
 
+        // ======= ВАЖНО: логика "config/defaultconfigs ставим один раз" =======
+        var manifestPackId = (manifest.PackId ?? "").Trim();
+        var statePackId = (state.PackId ?? "").Trim();
+
+        // Первичная установка для packId: если state пустой ИЛИ packId другой
+        var isFirstInstallForThisPack =
+            string.IsNullOrWhiteSpace(statePackId) ||
+            (!string.IsNullOrWhiteSpace(manifestPackId) &&
+             !statePackId.Equals(manifestPackId, StringComparison.OrdinalIgnoreCase));
+
+        // После первичной установки (для этого packId) — защищаем config/defaultconfigs
+        var protectOneTimeMutable = !isFirstInstallForThisPack;
+
+        if (protectOneTimeMutable)
+            Log?.Invoke(this, "Сборка: config/defaultconfigs защищены (после первичной установки не трогаю).");
+
         var wanted = new HashSet<string>(normalizedMap.Keys, StringComparer.OrdinalIgnoreCase);
 
         long totalBytes = normalizedMap.Values.Sum(f => Math.Max(0, f.Size));
@@ -420,6 +601,7 @@ public sealed class MinecraftService
                         manifestMirrors: manifest.Mirrors,
                         rootMirrors: mirrors,
                         addBytes: AddBytes,
+                        protectOneTimeMutable: protectOneTimeMutable,
                         ct: token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -445,7 +627,7 @@ public sealed class MinecraftService
             }
         }
 
-        ApplyDeletesAndPrunes(manifest, wanted, state, stateLock);
+        ApplyDeletesAndPrunes(manifest, wanted, state, stateLock, protectOneTimeMutable);
 
         var hasPending = !pendings.IsEmpty;
 
@@ -481,11 +663,12 @@ public sealed class MinecraftService
         SaveMirrorStatsQuiet(force: true);
     }
 
-    private void ApplyDeletesAndPrunes(PackManifest manifest, HashSet<string> wanted, PackState state, object stateLock)
+    private void ApplyDeletesAndPrunes(PackManifest manifest, HashSet<string> wanted, PackState state, object stateLock, bool protectOneTimeMutable)
     {
         var deletes = (manifest.Delete is { Length: > 0 } ? manifest.Delete : null);
         var prunes = (manifest.Prune is { Length: > 0 } ? manifest.Prune : null);
 
+        // ===== delete (файлы/директории из manifest.delete) =====
         if (deletes is { Length: > 0 })
         {
             foreach (var raw in deletes)
@@ -493,11 +676,14 @@ public sealed class MinecraftService
                 var rel = NormalizeRelPath(raw);
                 if (string.IsNullOrWhiteSpace(rel)) continue;
 
-                if (raw.Trim().EndsWith("/") || raw.Trim().EndsWith("\\"))
-                    continue;
-
+                // пропускаем мусор
                 if (!IsAllowedDest(rel)) continue;
-                if (IsUserMutableDest(rel)) continue;
+
+                // НИКОГДА не трогаем всегда-защищённые (resourcepacks/shaderpacks)
+                if (IsAlwaysProtectedMutable(rel)) continue;
+
+                // после первичной установки не трогаем config/defaultconfigs
+                if (protectOneTimeMutable && IsOneTimeBootstrapMutable(rel)) continue;
 
                 var local = ToLocalPath(rel);
                 try
@@ -522,11 +708,21 @@ public sealed class MinecraftService
             }
         }
 
+        // ===== prune roots =====
         var rootsRaw = new List<string>();
 
+        // (1) авто-prune всегда для mods/kubejs
+        rootsRaw.AddRange(DefaultAutoPrunePrefixes);
+
+        // (2) первичная установка: можно привести config/defaultconfigs к манифесту
+        if (!protectOneTimeMutable)
+            rootsRaw.AddRange(OneTimeBootstrapPrefixes);
+
+        // (3) manifest.prune (если есть)
         if (prunes is { Length: > 0 })
             rootsRaw.AddRange(prunes);
 
+        // (4) delete: если там передали "папку/" — тоже prune
         if (deletes is { Length: > 0 })
         {
             foreach (var r in deletes)
@@ -543,7 +739,8 @@ public sealed class MinecraftService
             .Where(r =>
                 !string.IsNullOrWhiteSpace(r) &&
                 IsAllowedDest(r) &&
-                !IsUserMutableDest(r))
+                !IsAlwaysProtectedMutable(r) &&
+                !(protectOneTimeMutable && IsOneTimeBootstrapMutable(r)))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
@@ -554,17 +751,18 @@ public sealed class MinecraftService
     private enum DownloadApplyResult { Applied, SavedPending }
 
     private async Task ProcessOneFileAsync(
-        string destRel,
-        PackFile file,
-        ConcurrentQueue<Exception> errors,
-        ConcurrentQueue<string> pendings,
-        PackState state,
-        object stateLock,
-        string activeBaseUrl,
-        string[]? manifestMirrors,
-        string[] rootMirrors,
-        Action<long> addBytes,
-        CancellationToken ct)
+    string destRel,
+    PackFile file,
+    ConcurrentQueue<Exception> errors,
+    ConcurrentQueue<string> pendings,
+    PackState state,
+    object stateLock,
+    string activeBaseUrl,
+    string[]? manifestMirrors,
+    string[] rootMirrors,
+    Action<long> addBytes,
+    bool protectOneTimeMutable,
+    CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -590,8 +788,29 @@ public sealed class MinecraftService
             if (!IsUnderGameDir(localPath))
                 throw new InvalidOperationException($"Unsafe path in manifest: {file.Path}");
 
+            // ====== Защищённые user-mutable: НЕ ПЕРЕЗАТИРАЕМ, НО ВОССТАНАВЛИВАЕМ ЕСЛИ УДАЛЕНО ======
+            // resourcepacks/shaderpacks всегда защищены
+            // config/defaultconfigs защищены после первичной установки packId
+            var isProtected = IsProtectedUserMutable(destRel, protectOneTimeMutable);
+            if (isProtected)
+            {
+                // Если файл существует — НЕ трогаем (пользователь мог менять)
+                if (File.Exists(localPath))
+                {
+                    // просто считаем как "выполнено", чтобы прогресс не ломался
+                    addBytes(Math.Max(0, file.Size));
+                    return;
+                }
+
+                // Если файла нет — восстанавливаем (разрешаем pending/download ниже)
+                Log?.Invoke(this, $"Сборка: восстановление отсутствующего protected файла {destRel}");
+            }
+
+            var allowPending = true; // тут мы точно не в always-protected папках; а для config мы разрешаем pending только когда файла нет
+
             // 1) сначала пробуем применить pending (если он валиден)
-            var (pendingApplied, hasValidPendingButLocked) = await TryApplyPendingAsync(destRel, localPath, file.Sha256, ct).ConfigureAwait(false);
+            var (pendingApplied, hasValidPendingButLocked) =
+                await TryApplyPendingAsync(destRel, localPath, file.Sha256, allowPending, ct).ConfigureAwait(false);
 
             // Если pending валиден, но файл занят — НЕ качаем заново (экономим трафик), просто ждём следующего прогона
             if (!pendingApplied && hasValidPendingButLocked)
@@ -610,15 +829,7 @@ public sealed class MinecraftService
                 return;
             }
 
-            // 3) User-mutable: не перезаписываем если уже есть
-            if (IsUserMutableDest(destRel) && File.Exists(localPath))
-            {
-                Log?.Invoke(this, $"Сборка: {destRel} изменён/кастомный — оставляю как есть.");
-                addBytes(Math.Max(0, file.Size));
-                return;
-            }
-
-            // 4) Пустые файлы не качаем
+            // 3) Пустые файлы не качаем
             if (file.Size == 0 && IsEmptySha(file.Sha256))
             {
                 await EnsureEmptyFileAsync(localPath, destRel, ct).ConfigureAwait(false);
@@ -629,6 +840,7 @@ public sealed class MinecraftService
                 }
 
                 Log?.Invoke(this, $"Сборка: OK (empty) {destRel}");
+                addBytes(0);
                 return;
             }
 
@@ -643,7 +855,8 @@ public sealed class MinecraftService
                 manifestMirrors: manifestMirrors,
                 rootMirrors: rootMirrors,
                 ct: ct,
-                onBytes: bytes => addBytes(bytes)).ConfigureAwait(false);
+                onBytes: bytes => addBytes(bytes),
+                allowPending: allowPending).ConfigureAwait(false);
 
             if (outcome == DownloadApplyResult.Applied)
             {
@@ -1085,7 +1298,8 @@ public sealed class MinecraftService
         string[]? manifestMirrors,
         string[] rootMirrors,
         CancellationToken ct,
-        Action<long> onBytes)
+        Action<long> onBytes,
+        bool allowPending)
     {
         var mirrors = (manifestMirrors is { Length: > 0 } ? manifestMirrors : rootMirrors)
             .Select(NormalizeAbsoluteBaseUrl)
@@ -1165,7 +1379,7 @@ public sealed class MinecraftService
                     var sw = Stopwatch.StartNew();
                     try
                     {
-                        var outcome = await DownloadToFileAsync(url, localPath, file.Size, file.Sha256, destRel, ct, Counted).ConfigureAwait(false);
+                        var outcome = await DownloadToFileAsync(url, localPath, file.Size, file.Sha256, destRel, ct, Counted, allowPending).ConfigureAwait(false);
                         sw.Stop();
 
                         TouchMirrorOkBlob(baseUrl, NormalizeLatencyForSize(sw.Elapsed.TotalMilliseconds, file.Size));
@@ -1247,7 +1461,8 @@ public sealed class MinecraftService
         string expectedSha256,
         string destRel,
         CancellationToken ct,
-        Action<long> onBytes)
+        Action<long> onBytes,
+        bool allowPending)
     {
         var dir = Path.GetDirectoryName(localPath);
         if (!string.IsNullOrWhiteSpace(dir))
@@ -1334,8 +1549,8 @@ public sealed class MinecraftService
             return DownloadApplyResult.Applied;
         }
 
-        // pending имеет смысл только для НЕ user-mutable путей (иначе мы всё равно не перезаписываем)
-        if (IsPendingAllowedDest(destRel))
+        // pending имеет смысл только если разрешён
+        if (allowPending)
         {
             var pending = localPath + ".pending";
             var pendingOk = await TryMoveOrReplaceWithRetryAsync(tmp, pending, ct, attempts: 10, delayMs: 200).ConfigureAwait(false);
@@ -1438,8 +1653,11 @@ public sealed class MinecraftService
         throw new IOException($"Не удалось создать пустой файл: {destRel}");
     }
 
-    private async Task<(bool applied, bool validButLocked)> TryApplyPendingAsync(string destRel, string localPath, string expectedSha256, CancellationToken ct)
+    private async Task<(bool applied, bool validButLocked)> TryApplyPendingAsync(string destRel, string localPath, string expectedSha256, bool allowPending, CancellationToken ct)
     {
+        if (!allowPending)
+            return (false, false);
+
         var pending = localPath + ".pending";
         if (!File.Exists(pending))
             return (false, false);
@@ -1510,6 +1728,27 @@ public sealed class MinecraftService
                 if (string.IsNullOrWhiteSpace(rel))
                     continue;
 
+                // не убиваем валидный pending, если базовый файл нужен
+                if (rel.EndsWith(".pending", StringComparison.OrdinalIgnoreCase))
+                {
+                    var baseRel = rel[..^(".pending".Length)];
+                    if (wanted.Contains(baseRel))
+                        continue;
+                }
+
+                // мусорные временные файлы - можно вычищать
+                if (rel.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase) ||
+                    rel.EndsWith(".bak", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        File.Delete(f);
+                        Log?.Invoke(this, $"Сборка: удалён мусорный файл {rel}");
+                    }
+                    catch { }
+                    continue;
+                }
+
                 if (!wanted.Contains(rel))
                 {
                     try
@@ -1545,25 +1784,37 @@ public sealed class MinecraftService
         return false;
     }
 
-    private static bool IsPendingAllowedDest(string destRel)
+    private static bool IsAlwaysProtectedMutable(string destRel)
     {
         destRel = destRel.Replace('\\', '/');
-        if (!IsAllowedDest(destRel)) return false;
-
-        // pending НЕ нужен для user-mutable путей (мы их не перезаписываем)
-        return !IsUserMutableDest(destRel);
+        foreach (var p in AlwaysProtectedMutablePrefixes)
+        {
+            if (destRel.StartsWith(p, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 
-    private static bool IsUserMutableDest(string destRel)
+    private static bool IsOneTimeBootstrapMutable(string destRel)
     {
-        // По твоей просьбе: не трогаем config/defaultconfigs/resourcepacks/shaderpacks.
-        // kubejs НЕ добавляем.
         destRel = destRel.Replace('\\', '/');
+        foreach (var p in OneTimeBootstrapPrefixes)
+        {
+            if (destRel.StartsWith(p, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
 
-        return destRel.StartsWith("config/", StringComparison.OrdinalIgnoreCase)
-            || destRel.StartsWith("defaultconfigs/", StringComparison.OrdinalIgnoreCase)
-            || destRel.StartsWith("resourcepacks/", StringComparison.OrdinalIgnoreCase)
-            || destRel.StartsWith("shaderpacks/", StringComparison.OrdinalIgnoreCase);
+    private static bool IsProtectedUserMutable(string destRel, bool protectOneTimeMutable)
+    {
+        if (IsAlwaysProtectedMutable(destRel))
+            return true;
+
+        if (protectOneTimeMutable && IsOneTimeBootstrapMutable(destRel))
+            return true;
+
+        return false;
     }
 
     private static bool IsValidFileRelPath(string destRel)

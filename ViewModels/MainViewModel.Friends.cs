@@ -1,8 +1,8 @@
 // File: ViewModels/MainViewModel.Friends.cs
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.Linq;
 using System.Net.Http;
 using System.Reflection;
@@ -41,6 +41,7 @@ public sealed partial class MainViewModel
     private int _heartbeatFailLogged;
 
     private static readonly Random _previewRng = new();
+    private static readonly object _previewRngLock = new();
 
     public enum OnlinePlace
     {
@@ -51,18 +52,32 @@ public sealed partial class MainViewModel
 
     public sealed class FriendEntry
     {
+        /// <summary>Уникальный id для UI/SelectedFriend. (стабильный: userId -> id -> publicId)</summary>
         public string Id { get; init; } = "";
+
+        /// <summary>То, что реально надо для /profile/&lt;id&gt; на сайте (обычно PublicId).</summary>
+        public string ProfileId { get; init; } = "";
+
+        public int? PublicId { get; init; }
+        public string? UserId { get; init; }
+        public string? InternalId { get; init; }
+
         public string Name { get; init; } = "";
         public string? AvatarUrl { get; init; }
 
-        // Старые поля оставим, если где-то ещё используются
+        // Легаси (если где-то ещё используется)
         public string? Status { get; init; } // online/offline/null
         public string? Source { get; init; } // twitch/minecraft/telegram/site/null
 
-        // ✅ Новый источник онлайна (приоритет Launcher > Site > Offline)
+        // ✅ Источник онлайна (приоритет Launcher > Site > Offline)
         public OnlinePlace OnlinePlace { get; init; } = OnlinePlace.Offline;
-
         public bool IsOnline => OnlinePlace != OnlinePlace.Offline;
+
+        // ✅ Последний раз был онлайн (UTC)
+        public DateTimeOffset? LastSeenUtc { get; init; }
+
+        // ✅ Где последний раз был (Site/Launcher/Offline=unknown)
+        public OnlinePlace LastSeenPlace { get; init; } = OnlinePlace.Offline;
 
         public string Initial
         {
@@ -73,35 +88,54 @@ public sealed partial class MainViewModel
             }
         }
 
-        // ✅ Единственная строка под ником
-        public string PresenceText =>
-            OnlinePlace switch
+        /// <summary>
+        /// ЕДИНСТВЕННАЯ строка под ником:
+        /// - онлайн: "в сети • на сайте / в лаунчере"
+        /// - оффлайн: "был на сайте 31.01 18:40"
+        /// - если lastSeen нет: "" (пусто, чтобы не было дубля "оффлайн" под ником)
+        /// </summary>
+        public string PresenceText
+        {
+            get
             {
-                OnlinePlace.Launcher => "В сети • в лаунчере",
-                OnlinePlace.Site => "В сети • на сайте",
-                _ => "Не в сети"
-            };
+                if (OnlinePlace == OnlinePlace.Launcher) return "в сети • в лаунчере";
+                if (OnlinePlace == OnlinePlace.Site) return "в сети • на сайте";
 
-        // ✅ Единственная плашка справа
-        public string PresencePillText =>
-            OnlinePlace switch
-            {
-                OnlinePlace.Launcher => "В ЛАУНЧЕРЕ",
-                OnlinePlace.Site => "НА САЙТЕ",
-                _ => "НЕ В СЕТИ"
-            };
+                if (!LastSeenUtc.HasValue)
+                    return "";
+
+                var when = FormatWhenLocal(LastSeenUtc.Value);
+
+                if (LastSeenPlace == OnlinePlace.Launcher) return $"был в лаунчере {when}";
+                if (LastSeenPlace == OnlinePlace.Site) return $"был на сайте {when}";
+                return $"был {when}";
+            }
+        }
+
+        /// <summary>Пилюля справа: строго ОНЛАЙН/ОФФЛАЙН.</summary>
+        public string PresencePillText => IsOnline ? "ОНЛАЙН" : "ОФФЛАЙН";
 
         // Алиасы на случай старых биндингов
         public string PresenceLine => PresenceText;
         public string StatusLabel => PresencePillText;
 
         public override string ToString() => Name;
+
+        private static string FormatWhenLocal(DateTimeOffset utc)
+        {
+            try
+            {
+                var local = utc.ToLocalTime();
+                return local.ToString("dd.MM HH:mm", CultureInfo.GetCultureInfo("ru-RU"));
+            }
+            catch { return ""; }
+        }
     }
 
     // Полный список
     public ObservableCollection<FriendEntry> Friends { get; } = new();
 
-    // ✅ Витрина: максимум 2 (онлайн приоритет + рандом добивка)
+    // Витрина: максимум 2 (онлайн приоритет + рандом добивка)
     public ObservableCollection<FriendEntry> FriendsPreview { get; } = new();
 
     private FriendEntry? _selectedFriend;
@@ -119,15 +153,12 @@ public sealed partial class MainViewModel
     public int OnlineFriendsCount => Friends.Count(x => x.IsOnline);
     public int FriendsPreviewCount => FriendsPreview.Count;
 
-    // Алиас под разные XAML варианты
     public string FriendsSummaryText => FriendsPreviewSummaryText;
 
     public string FriendsPreviewSummaryText
         => $"Онлайн: {OnlineFriendsCount} • Показано: {FriendsPreviewCount}/{FriendsPreviewMax}";
 
-    /// <summary>
-    /// Только факт наличия токена.
-    /// </summary>
+    /// <summary>Только факт наличия токена.</summary>
     public bool HasSiteToken => !_isClosing && TryGetAccessToken(out _);
 
     public bool CanRefreshFriends => !_isClosing && !IsBusy && HasSiteToken;
@@ -142,11 +173,11 @@ public sealed partial class MainViewModel
             () => CanRefreshFriends);
     }
 
-    // ===== legacy wrappers (чтобы MainViewModel.cs не ругался на старые имена) =====
+    // legacy wrappers (чтобы MainViewModel.cs не ругался на старые имена)
     private void ScheduleSocialRefresh() => ScheduleFriendsRefresh();
     private void ClearSocialUi() => ClearFriendsUi();
 
-    // ===== ONLINE presence control (вызывается из MainViewModel.cs) =====
+    // ONLINE presence control (вызывается из MainViewModel.cs)
     private void StartOnlinePresence()
     {
         if (_isClosing) return;
@@ -158,7 +189,7 @@ public sealed partial class MainViewModel
 
     private void StopOnlinePresence()
     {
-        // При остановке можно мягко отправить offline (не обязаловка, TTL тоже решает)
+        // При остановке можно мягко отправить offline (TTL тоже решает)
         try
         {
             _ = Task.Run(async () =>
@@ -168,15 +199,8 @@ public sealed partial class MainViewModel
                     if (_isClosing) return;
                     if (!TryGetAccessToken(out var token)) return;
 
-                    // Если метод есть в SiteAuthService — отлично.
-                    // Если нет — просто молча игнорируем.
-                    var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-                    var m = _site.GetType().GetMethod("SendLauncherOfflineAsync", flags);
-                    if (m != null)
-                    {
-                        var res = m.Invoke(_site, new object?[] { token, CancellationToken.None });
-                        if (res is Task task) await task.ConfigureAwait(false);
-                    }
+                    // В актуальном SiteAuthService метод есть
+                    await _site.SendLauncherOfflineAsync(token, CancellationToken.None).ConfigureAwait(false);
                 }
                 catch { /* ignore */ }
             });
@@ -224,11 +248,11 @@ public sealed partial class MainViewModel
                     {
                         await Task.Delay(LauncherHeartbeatInterval, cts.Token).ConfigureAwait(false);
                     }
-                    catch { }
+                    catch { /* ignore */ }
                 }
             }, cts.Token);
         }
-        catch { }
+        catch { /* ignore */ }
     }
 
     private void StartFriendsPollingLoop()
@@ -247,32 +271,26 @@ public sealed partial class MainViewModel
             _ = Task.Run(async () =>
             {
                 // сразу один рефреш
-                try { await RefreshFriendsAsync().ConfigureAwait(false); } catch { }
+                try { await RefreshFriendsAsync().ConfigureAwait(false); } catch { /* ignore */ }
 
                 while (!cts.IsCancellationRequested && !_isClosing && IsLoggedIn)
                 {
-                    try
-                    {
-                        await Task.Delay(FriendsPollingInterval, cts.Token).ConfigureAwait(false);
-                    }
-                    catch { }
+                    try { await Task.Delay(FriendsPollingInterval, cts.Token).ConfigureAwait(false); }
+                    catch { /* ignore */ }
 
                     if (cts.IsCancellationRequested || _isClosing || !IsLoggedIn) break;
 
-                    try { await RefreshFriendsAsync().ConfigureAwait(false); } catch { }
+                    try { await RefreshFriendsAsync().ConfigureAwait(false); } catch { /* ignore */ }
                 }
             }, cts.Token);
         }
-        catch { }
+        catch { /* ignore */ }
     }
 
     private async Task TrySendLauncherHeartbeatAsync(string token, CancellationToken ct)
     {
-        // ✅ У тебя в SiteAuthService ЕСТЬ SendLauncherHeartbeatAsync — вызываем напрямую.
-        // Без reflection: меньше шансов “не нашли метод => ничего не отправили”.
         try
         {
-            // _site у тебя уже используется как SiteAuthService (GetFriendsAsync и т.д.)
             var resp = await _site.SendLauncherHeartbeatAsync(token, ct).ConfigureAwait(false);
 
             if (resp is not null && resp.Ok)
@@ -282,7 +300,6 @@ public sealed partial class MainViewModel
             }
             else
             {
-                // логируем 1 раз, чтобы не спамить
                 if (Interlocked.CompareExchange(ref _heartbeatFailLogged, 1, 0) == 0)
                 {
                     var err = resp?.Error ?? resp?.Message ?? "unknown";
@@ -330,7 +347,7 @@ public sealed partial class MainViewModel
 
             _ = ScheduleFriendsRefreshAsync(cts.Token);
         }
-        catch { }
+        catch { /* ignore */ }
     }
 
     private async Task ScheduleFriendsRefreshAsync(CancellationToken ct)
@@ -386,10 +403,7 @@ public sealed partial class MainViewModel
             s = (s ?? "").Trim();
             return string.IsNullOrWhiteSpace(s) ? null : s;
         }
-        catch
-        {
-            return null;
-        }
+        catch { return null; }
     }
 
     private static bool? TryGetDtoBool(object dto, string propName)
@@ -404,8 +418,7 @@ public sealed partial class MainViewModel
 
             if (v is bool b) return b;
 
-            var s = v.ToString();
-            s = (s ?? "").Trim();
+            var s = (v.ToString() ?? "").Trim();
 
             if (string.Equals(s, "true", StringComparison.OrdinalIgnoreCase)) return true;
             if (string.Equals(s, "false", StringComparison.OrdinalIgnoreCase)) return false;
@@ -418,10 +431,7 @@ public sealed partial class MainViewModel
 
             return null;
         }
-        catch
-        {
-            return null;
-        }
+        catch { return null; }
     }
 
     private static DateTimeOffset? TryGetDtoDateTimeOffset(object dto, string propName)
@@ -443,8 +453,7 @@ public sealed partial class MainViewModel
                 return new DateTimeOffset(dt.ToUniversalTime());
             }
 
-            var s = v.ToString();
-            s = (s ?? "").Trim();
+            var s = (v.ToString() ?? "").Trim();
             if (string.IsNullOrWhiteSpace(s)) return null;
 
             if (DateTimeOffset.TryParse(s, out var parsed))
@@ -452,10 +461,7 @@ public sealed partial class MainViewModel
 
             return null;
         }
-        catch
-        {
-            return null;
-        }
+        catch { return null; }
     }
 
     private static bool IsRecent(DateTimeOffset tsUtc, TimeSpan maxAge)
@@ -466,10 +472,7 @@ public sealed partial class MainViewModel
             if (tsUtc > now) return true; // чуть-чуть "в будущем" — считаем живым
             return (now - tsUtc) <= maxAge;
         }
-        catch
-        {
-            return false;
-        }
+        catch { return false; }
     }
 
     private static bool IsLauncherString(string? s)
@@ -488,7 +491,7 @@ public sealed partial class MainViewModel
 
     private static OnlinePlace ResolveOnlinePlace(FriendDto dto, string? normalizedStatus)
     {
-        // ✅ 0) Лучший вариант — server computed onlinePlace
+        // 0) server computed onlinePlace
         var place = (dto.OnlinePlace ?? "").Trim();
         if (!string.IsNullOrWhiteSpace(place))
         {
@@ -497,11 +500,11 @@ public sealed partial class MainViewModel
             if (place.Equals("offline", StringComparison.OrdinalIgnoreCase)) return OnlinePlace.Offline;
         }
 
-        // ✅ 1) Явные флаги
+        // 1) Явные флаги
         bool launcherOnline = dto.LauncherOnline == true;
         bool siteOnline = dto.SiteOnline == true;
 
-        // ✅ 1.1) На всякий — поддержка потенциальных будущих/легаси имён через reflection
+        // 1.1) легаси через reflection
         launcherOnline |=
             (TryGetDtoBool(dto, "IsLauncherOnline") ?? false) ||
             (TryGetDtoBool(dto, "OnlineLauncher") ?? false) ||
@@ -512,7 +515,7 @@ public sealed partial class MainViewModel
             (TryGetDtoBool(dto, "Online") ?? false) ||
             (TryGetDtoBool(dto, "IsSiteOnline") ?? false);
 
-        // ✅ 2) lastSeen timestamps (сервер может отдавать UTC)
+        // 2) lastSeen timestamps
         var launcherLast = dto.LauncherLastSeenUtc
                            ?? TryGetDtoDateTimeOffset(dto, "LauncherLastSeenUtc")
                            ?? TryGetDtoDateTimeOffset(dto, "LauncherLastSeen")
@@ -532,20 +535,151 @@ public sealed partial class MainViewModel
         if (siteLast.HasValue && IsRecent(siteLast.Value.ToUniversalTime(), SiteOnlineMaxAge))
             siteOnline = true;
 
-        // ✅ 3) Старый Status=online (если сервер не дал place) — считаем "site"
+        // 3) Старый Status=online -> считаем site
         if (string.Equals(normalizedStatus, "online", StringComparison.OrdinalIgnoreCase))
             siteOnline = true;
 
-        // ✅ Приоритет: Launcher > Site > Offline
+        // Приоритет: Launcher > Site > Offline
         if (launcherOnline) return OnlinePlace.Launcher;
         if (siteOnline) return OnlinePlace.Site;
         return OnlinePlace.Offline;
     }
 
+    private static (DateTimeOffset? tsUtc, OnlinePlace place) ResolveLastSeen(FriendDto dto)
+    {
+        // явные поля
+        var launcherLast = dto.LauncherLastSeenUtc
+                           ?? TryGetDtoDateTimeOffset(dto, "LauncherLastSeenUtc")
+                           ?? TryGetDtoDateTimeOffset(dto, "LauncherLastSeen")
+                           ?? TryGetDtoDateTimeOffset(dto, "LastSeenLauncherUtc");
+
+        var siteLast = dto.SiteLastSeenUtc
+                       ?? dto.LastActivityUtc
+                       ?? TryGetDtoDateTimeOffset(dto, "SiteLastSeenUtc")
+                       ?? TryGetDtoDateTimeOffset(dto, "LastActivityUtc");
+
+        // общий lastSeen (может быть без места)
+        var anyLast = dto.LastSeenUtc
+                      ?? TryGetDtoDateTimeOffset(dto, "LastSeenUtc")
+                      ?? TryGetDtoDateTimeOffset(dto, "LastSeen");
+
+        DateTimeOffset? best = null;
+        OnlinePlace bestPlace = OnlinePlace.Offline;
+
+        void Consider(DateTimeOffset? ts, OnlinePlace p)
+        {
+            if (!ts.HasValue) return;
+            var u = ts.Value.ToUniversalTime();
+            if (!best.HasValue || u > best.Value)
+            {
+                best = u;
+                bestPlace = p;
+            }
+        }
+
+        Consider(anyLast, OnlinePlace.Offline);     // неизвестно где
+        Consider(siteLast, OnlinePlace.Site);
+        Consider(launcherLast, OnlinePlace.Launcher);
+
+        return (best, bestPlace);
+    }
+
+    private static int? TryGetPublicId(FriendDto dto)
+    {
+        // ✅ В твоём FriendDto publicId = int? (см. SiteAuthService.cs).
+        // Главное: НЕ делать pattern matching "long" по переменной типа int? (это и давало CS8121).
+        try
+        {
+            if (dto.PublicId is int pid && pid > 0)
+                return pid;
+        }
+        catch { /* ignore */ }
+
+        // На всякий: легаси/будущие поля через reflection (object => можно int/long/string)
+        foreach (var name in new[] { "PublicId", "publicId", "ProfileId", "profileId", "ProfilePublicId", "PublicID", "publicID" })
+        {
+            try
+            {
+                var p = dto.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public);
+                var raw = p?.GetValue(dto);
+                if (raw is null) continue;
+
+                if (raw is int i && i > 0) return i;
+                if (raw is long l && l > 0 && l <= int.MaxValue) return (int)l;
+
+                var s = raw.ToString();
+                if (!string.IsNullOrWhiteSpace(s) &&
+                    int.TryParse(s.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) &&
+                    parsed > 0)
+                    return parsed;
+            }
+            catch { /* ignore */ }
+        }
+
+        return null;
+    }
+
+    private static string ResolveProfileId(FriendDto dto, int? publicId, string? dtoId, string? userId)
+    {
+        // 1) publicId — обычно то, что нужно сайту
+        if (publicId.HasValue && publicId.Value > 0)
+            return publicId.Value.ToString(CultureInfo.InvariantCulture);
+
+        // 2) отдельные поля профиля (если сервер вдруг начнёт отдавать)
+        var profileId =
+            TryGetDtoString(dto, "ProfileId") ??
+            TryGetDtoString(dto, "ProfileUserId") ??
+            TryGetDtoString(dto, "ProfileSlug");
+
+        profileId = (profileId ?? "").Trim();
+        if (!string.IsNullOrWhiteSpace(profileId))
+            return profileId;
+
+        // 3) dto.Id как число
+        var id = (dtoId ?? "").Trim();
+        if (!string.IsNullOrWhiteSpace(id) &&
+            int.TryParse(id, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) &&
+            n > 0)
+            return n.ToString(CultureInfo.InvariantCulture);
+
+        // 4) fallback на userId/cuid (если сайт это умеет)
+        userId = (userId ?? "").Trim();
+        if (!string.IsNullOrWhiteSpace(userId))
+            return userId;
+
+        // 5) крайний fallback
+        if (!string.IsNullOrWhiteSpace(id))
+            return id;
+
+        return "";
+    }
+
+    private static string GetDedupKey(FriendEntry x)
+    {
+        // ✅ Чтобы не было повторов, если API иногда возвращает разные поля (id/userId/publicId)
+        var uid = (x.UserId ?? "").Trim();
+        if (!string.IsNullOrWhiteSpace(uid)) return "u:" + uid;
+
+        if (x.PublicId.HasValue && x.PublicId.Value > 0) return "p:" + x.PublicId.Value.ToString(CultureInfo.InvariantCulture);
+
+        var iid = (x.InternalId ?? "").Trim();
+        if (!string.IsNullOrWhiteSpace(iid)) return "i:" + iid;
+
+        var id = (x.Id ?? "").Trim();
+        return string.IsNullOrWhiteSpace(id) ? "" : "id:" + id;
+    }
+
     private static FriendEntry ToFriendEntry(FriendDto dto)
     {
-        // максимально устойчиво: Id / UserId / PublicId
-        var id = (dto.Id ?? dto.UserId ?? (dto.PublicId?.ToString() ?? "")).Trim();
+        var dtoId = (dto.Id ?? "").Trim();
+        var userId = (dto.UserId ?? "").Trim();
+        var publicId = TryGetPublicId(dto);
+
+        // ✅ стабильный Id для UI: userId -> dtoId -> publicId
+        var stableId =
+            !string.IsNullOrWhiteSpace(userId) ? userId :
+            !string.IsNullOrWhiteSpace(dtoId) ? dtoId :
+            publicId?.ToString(CultureInfo.InvariantCulture) ?? "";
 
         var name = (dto.Name ?? "").Trim();
         if (string.IsNullOrWhiteSpace(name))
@@ -554,21 +688,49 @@ public sealed partial class MainViewModel
         var status = NormalizeStatus(dto.Status);
         var onlinePlace = ResolveOnlinePlace(dto, status);
 
-        // source оставим, но он про "платформу друга", а не про presence
+        var (lastSeenUtc, lastSeenPlace) = ResolveLastSeen(dto);
+
         var source = (dto.Source ?? TryGetDtoString(dto, "Platform") ?? TryGetDtoString(dto, "Provider"))?.Trim();
         if (string.IsNullOrWhiteSpace(source)) source = null;
 
+        var profileId = ResolveProfileId(dto, publicId, dtoId, userId);
+
         return new FriendEntry
         {
-            Id = id,
+            Id = stableId,
+            ProfileId = profileId,
+
+            PublicId = publicId,
+            UserId = string.IsNullOrWhiteSpace(userId) ? null : userId,
+            InternalId = string.IsNullOrWhiteSpace(dtoId) ? null : dtoId,
+
             Name = name,
             AvatarUrl = NormalizePublicUrl(dto.Image),
 
             Status = status,
             Source = source,
 
-            OnlinePlace = onlinePlace
+            OnlinePlace = onlinePlace,
+            LastSeenUtc = lastSeenUtc,
+            LastSeenPlace = lastSeenPlace
         };
+    }
+
+    private static List<FriendEntry> Deduplicate(List<FriendEntry> list)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<FriendEntry>(list.Count);
+
+        foreach (var item in list)
+        {
+            var key = GetDedupKey(item);
+            if (string.IsNullOrWhiteSpace(key)) continue;
+
+            if (seen.Add(key))
+                result.Add(item);
+        }
+
+        return result;
     }
 
     private static List<FriendEntry> BuildPreview(List<FriendEntry> all)
@@ -584,16 +746,19 @@ public sealed partial class MainViewModel
 
         result.AddRange(online);
 
-        // 2) добивка рандомом из остальных (по Id, чтобы не словить дубль)
+        // 2) добивка рандомом из остальных (по dedupKey, чтобы не словить дубль)
         if (result.Count < FriendsPreviewMax)
         {
-            var used = new HashSet<string>(result.Select(x => x.Id), StringComparer.OrdinalIgnoreCase);
-            var rest = all.Where(x => !used.Contains(x.Id)).ToList();
+            var used = new HashSet<string>(result.Select(GetDedupKey), StringComparer.OrdinalIgnoreCase);
+            var rest = all.Where(x => !used.Contains(GetDedupKey(x))).ToList();
 
-            for (int i = rest.Count - 1; i > 0; i--)
+            lock (_previewRngLock)
             {
-                int j = _previewRng.Next(i + 1);
-                (rest[i], rest[j]) = (rest[j], rest[i]);
+                for (int i = rest.Count - 1; i > 0; i--)
+                {
+                    int j = _previewRng.Next(i + 1);
+                    (rest[i], rest[j]) = (rest[j], rest[i]);
+                }
             }
 
             foreach (var f in rest)
@@ -601,21 +766,6 @@ public sealed partial class MainViewModel
                 result.Add(f);
                 if (result.Count == FriendsPreviewMax) break;
             }
-        }
-
-        return result;
-    }
-
-    private static List<FriendEntry> DeduplicateById(List<FriendEntry> list)
-    {
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var result = new List<FriendEntry>(list.Count);
-
-        foreach (var item in list)
-        {
-            var id = (item.Id ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(id)) continue;
-            if (seen.Add(id)) result.Add(item);
         }
 
         return result;
@@ -644,23 +794,26 @@ public sealed partial class MainViewModel
             var all = resp!.Friends!
                 .Select(ToFriendEntry)
                 .Where(x => !string.IsNullOrWhiteSpace(x.Id))
-                .OrderByDescending(x => (int)x.OnlinePlace) // ✅ Launcher > Site > Offline
-                .ThenBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase)
                 .ToList();
 
-            all = DeduplicateById(all);
+            // ✅ убираем повторы по userId/publicId/id
+            all = Deduplicate(all);
+
+            // ✅ сортировка: Launcher > Site > Offline, затем имя
+            all = all
+                .OrderByDescending(x => (int)x.OnlinePlace)
+                .ThenBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
 
             var preview = BuildPreview(all);
 
             PostToUi(() =>
             {
                 Friends.Clear();
-                foreach (var f in all)
-                    Friends.Add(f);
+                foreach (var f in all) Friends.Add(f);
 
                 FriendsPreview.Clear();
-                foreach (var f in preview)
-                    FriendsPreview.Add(f);
+                foreach (var f in preview) FriendsPreview.Add(f);
 
                 Raise(nameof(FriendsCount));
                 Raise(nameof(OnlineFriendsCount));
@@ -714,14 +867,14 @@ public sealed partial class MainViewModel
             if (TryReadTokenFromObject(tokensObj, out token))
                 return true;
         }
-        catch { }
+        catch { /* ignore */ }
 
         try
         {
             if (TryReadTokenFromObject(_tokenStore, out token))
                 return true;
         }
-        catch { }
+        catch { /* ignore */ }
 
         token = "";
         return false;
@@ -760,7 +913,7 @@ public sealed partial class MainViewModel
                     return true;
                 }
             }
-            catch { }
+            catch { /* ignore */ }
         }
 
         var pAccess = type.GetProperty("AccessToken", flags);
@@ -777,7 +930,7 @@ public sealed partial class MainViewModel
                     return true;
                 }
             }
-            catch { }
+            catch { /* ignore */ }
         }
 
         foreach (var name in new[] { "Current", "Value", "Token", "Tokens" })
@@ -791,7 +944,7 @@ public sealed partial class MainViewModel
                 if (TryReadTokenFromObject(inner, out token))
                     return true;
             }
-            catch { }
+            catch { /* ignore */ }
         }
 
         return false;

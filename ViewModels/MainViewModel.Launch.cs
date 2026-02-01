@@ -1,7 +1,9 @@
 // File: ViewModels/MainViewModel.Launch.cs
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using LegendBorn.Launching;
@@ -11,6 +13,12 @@ namespace LegendBorn.ViewModels;
 public sealed partial class MainViewModel
 {
     private const string DefaultPackBaseUrl = "https://legendborn.ru/launcher/pack/";
+
+    // Папка/файлы, которые читает "мод авторизации/скина" внутри игры.
+    // ВАЖНО: это лежит в _gameDir (папка клиента), чтобы мод гарантированно нашёл.
+    private const string AuthTicketDirName = "legendborn";
+    private const string AuthTicketJsonName = "auth.json";
+    private const string AuthTicketTokenName = "auth.token";
 
     private static readonly string[] SourceForgePackMirrors =
     {
@@ -71,11 +79,145 @@ public sealed partial class MainViewModel
             .ToArray();
     }
 
+    // =========================
+    // AUTH TICKET (для мода)
+    // =========================
+
+    private string GetAuthTicketDir()
+        => Path.Combine(_gameDir, AuthTicketDirName);
+
+    private string GetAuthTicketJsonPath()
+        => Path.Combine(GetAuthTicketDir(), AuthTicketJsonName);
+
+    private string GetAuthTicketTokenPath()
+        => Path.Combine(GetAuthTicketDir(), AuthTicketTokenName);
+
+    private sealed class AuthTicket
+    {
+        public string v { get; set; } = "1";
+        public string createdUtc { get; set; } = "";
+        public string username { get; set; } = "";
+        public string siteUserName { get; set; } = "";
+        public string? avatarUrl { get; set; }
+        public long rezonite { get; set; }
+
+        public string serverId { get; set; } = "";
+        public string? serverAddress { get; set; }
+        public string build { get; set; } = "";
+
+        // Токен в JSON — удобно модам, но параллельно пишем и auth.token (на всякий).
+        public string accessToken { get; set; } = "";
+    }
+
+    private static void WriteAllTextAtomic(string path, string content)
+    {
+        var dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(dir))
+            Directory.CreateDirectory(dir);
+
+        var tmp = path + ".tmp";
+
+        File.WriteAllText(tmp, content);
+
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch { /* ignore */ }
+
+        File.Move(tmp, path);
+    }
+
+    private bool TryWriteAuthTicketForGame(
+        string accessToken,
+        string username,
+        ServerEntry server,
+        string? serverIpForConnect,
+        out string error)
+    {
+        error = "";
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(accessToken))
+            {
+                error = "AuthTicket: пустой accessToken.";
+                return false;
+            }
+
+            var dir = GetAuthTicketDir();
+            Directory.CreateDirectory(dir);
+
+            // 1) auth.token (простое чтение модом)
+            // НЕ логируем токен никогда.
+            WriteAllTextAtomic(GetAuthTicketTokenPath(), accessToken.Trim());
+
+            // 2) auth.json (богатые данные — для скина/аватара/отображения)
+            var ticket = new AuthTicket
+            {
+                createdUtc = DateTimeOffset.UtcNow.ToString("O"),
+                username = username,
+                siteUserName = (SiteUserName ?? "").Trim(),
+                avatarUrl = AvatarUrl,
+                rezonite = Rezonite,
+
+                serverId = (server.Id ?? "").Trim(),
+                serverAddress = string.IsNullOrWhiteSpace(serverIpForConnect) ? null : serverIpForConnect.Trim(),
+                build = (BuildDisplayName ?? "").Trim(),
+
+                accessToken = accessToken.Trim(),
+            };
+
+            var json = JsonSerializer.Serialize(ticket, new JsonSerializerOptions
+            {
+                WriteIndented = true
+            });
+
+            WriteAllTextAtomic(GetAuthTicketJsonPath(), json);
+
+            // По желанию можно скрыть (на Windows). Не критично — игнорим ошибки.
+            try
+            {
+                File.SetAttributes(GetAuthTicketTokenPath(), FileAttributes.Hidden);
+                File.SetAttributes(GetAuthTicketJsonPath(), FileAttributes.Hidden);
+            }
+            catch { /* ignore */ }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = "AuthTicket: не удалось записать файлы авторизации: " + ex.Message;
+            return false;
+        }
+    }
+
+    private void CleanupAuthTicketFiles()
+    {
+        try
+        {
+            var tokenPath = GetAuthTicketTokenPath();
+            var jsonPath = GetAuthTicketJsonPath();
+
+            try { if (File.Exists(tokenPath)) File.Delete(tokenPath); } catch { /* ignore */ }
+            try { if (File.Exists(jsonPath)) File.Delete(jsonPath); } catch { /* ignore */ }
+
+            // папку не удаляем намеренно: она может содержать другие файлы мода
+        }
+        catch { /* ignore */ }
+    }
+
+    // =========================
+    // Pack / Launch
+    // =========================
+
     private async Task CheckPackAsync()
     {
         if (_isClosing) return;
 
-        if (SelectedServer is null)
+        var s = SelectedServer;
+        if (s is null)
         {
             StatusText = "Сервер не выбран.";
             return;
@@ -87,9 +229,9 @@ public sealed partial class MainViewModel
             StatusText = "Проверка обновлений сборки...";
             ProgressPercent = 0;
 
-            var mirrors = BuildPackMirrors(SelectedServer);
+            var mirrors = BuildPackMirrors(s);
 
-            if (SelectedServer.SyncPack)
+            if (s.SyncPack)
                 await _mc.SyncPackAsync(mirrors, _lifetimeCts.Token);
 
             StatusText = "Сборка актуальна.";
@@ -114,7 +256,8 @@ public sealed partial class MainViewModel
     {
         if (_isClosing) return;
 
-        if (SelectedServer is null)
+        var s = SelectedServer;
+        if (s is null)
         {
             StatusText = "Сервер не выбран.";
             return;
@@ -125,25 +268,49 @@ public sealed partial class MainViewModel
 
         try
         {
+            // ник
             var username = (Username ?? "Player").Trim();
             if (string.IsNullOrWhiteSpace(username)) username = "Player";
             username = MakeValidMcName(username);
 
+            // RAM
             var ram = NormalizeRamMb(RamMb);
-            if (ram < 4096) ram = 4096; // ✅ ТЗ: минимум 4GB
+            if (ram < 4096) ram = 4096; // ТЗ: минимум 4GB
+
+            // IP
+            var ip = (ServerIp ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(ip))
+                ip = (s.Address ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(ip))
+                ip = null;
+
+            // ✅ Мод авторизации: достаём accessToken и пишем auth ticket в gameDir
+            if (!TryGetAccessToken(out var token) || string.IsNullOrWhiteSpace(token))
+            {
+                StatusText = "Требуется авторизация.";
+                AppendLog("Запуск: нет access token (похоже, вы не вошли).");
+                return;
+            }
+
+            if (!TryWriteAuthTicketForGame(token, username, s, ip, out var authErr))
+            {
+                StatusText = "Ошибка подготовки авторизации.";
+                AppendLog(authErr);
+                return;
+            }
 
             IsBusy = true;
             StatusText = $"Подготовка {BuildDisplayName}...";
             ProgressPercent = 0;
 
-            var mirrors = BuildPackMirrors(SelectedServer);
-            var loader = CreateLoaderSpecFromServer(SelectedServer);
+            var mirrors = BuildPackMirrors(s);
+            var loader = CreateLoaderSpecFromServer(s);
 
             var launchVersionId = await _mc.PrepareAsync(
-                minecraftVersion: SelectedServer.MinecraftVersion,
+                minecraftVersion: s.MinecraftVersion,
                 loader: loader,
                 packMirrors: mirrors,
-                syncPack: SelectedServer.SyncPack,
+                syncPack: s.SyncPack,
                 ct: _lifetimeCts.Token);
 
             InvokeOnUi(() =>
@@ -156,11 +323,11 @@ public sealed partial class MainViewModel
             try
             {
                 _config.Current.RamMb = ram;
-                _config.Current.LastServerId = SelectedServer.Id;
+                _config.Current.LastServerId = s.Id;
 
                 var ipToSave = (ServerIp ?? "").Trim();
                 if (string.IsNullOrWhiteSpace(ipToSave))
-                    ipToSave = (SelectedServer.Address ?? "").Trim();
+                    ipToSave = (s.Address ?? "").Trim();
 
                 _config.Current.LastServerIp = ipToSave;
                 ScheduleConfigSave();
@@ -168,13 +335,6 @@ public sealed partial class MainViewModel
             catch { /* ignore */ }
 
             StatusText = "Запуск игры...";
-
-            var ip = (ServerIp ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(ip))
-                ip = (SelectedServer.Address ?? "").Trim();
-
-            if (string.IsNullOrWhiteSpace(ip))
-                ip = null;
 
             _runningProcess = await _mc.BuildAndLaunchAsync(
                 version: launchVersionId,
@@ -224,6 +384,9 @@ public sealed partial class MainViewModel
                     AppendLog("Игра закрыта.");
                     _runningProcess = null;
 
+                    // ✅ чистим ticket после выхода игры (чтобы токен не лежал лишний раз)
+                    CleanupAuthTicketFiles();
+
                     Raise(nameof(CanStop));
                     StopGameCommand.RaiseCanExecuteChanged();
                     RefreshCanStates();
@@ -245,8 +408,6 @@ public sealed partial class MainViewModel
         if (string.IsNullOrWhiteSpace(loaderVer))
             throw new InvalidOperationException($"Loader '{loaderType}' требует версию (loader.version).");
 
-        // Для forge/neoforge можем собрать дефолтный installerUrl.
-        // Для остальных (fabric/quilt и т.п.) — ожидаем, что серверный конфиг отдаст installerUrl.
         if (string.IsNullOrWhiteSpace(installerUrl))
         {
             if (loaderType == "neoforge")
@@ -297,6 +458,9 @@ public sealed partial class MainViewModel
         finally
         {
             _runningProcess = null;
+
+            // ✅ чистим ticket если игру стопнули руками
+            CleanupAuthTicketFiles();
 
             Raise(nameof(CanStop));
             StopGameCommand.RaiseCanExecuteChanged();
