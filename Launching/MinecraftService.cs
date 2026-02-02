@@ -3,6 +3,7 @@ using CmlLib.Core.Auth;
 using CmlLib.Core.ProcessBuilder;
 using LegendBorn.Services;
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -26,7 +27,8 @@ public sealed class MinecraftService
     private readonly MinecraftLauncher _launcher;
     private readonly LoaderInstaller _loaderInstaller;
 
-    private static readonly HttpClient _http = CreateHttp();
+    // ✅ style: private static readonly fields -> PascalCase
+    private static readonly HttpClient Http = CreateHttp();
 
     // ====== защита от параллельных Prepare/Sync ======
     private readonly SemaphoreSlim _exclusive = new(1, 1);
@@ -146,13 +148,20 @@ public sealed class MinecraftService
 
         var tmp = LegendCoreSessionPath + ".tmp";
 
+        // ✅ NRT-safe: без лишних ??, но надёжно
+        string? version = session.LauncherVersion;
+        if (string.IsNullOrWhiteSpace(version))
+            version = LauncherIdentity.InformationalVersion;
+
+        version = (version ?? string.Empty).Trim();
+
         // JSON структура максимально совместимая и читаемая
         var payload = new
         {
             serverId = session.ServerId,
             ticket = session.Ticket,
             expiresAtUnix = session.ExpiresAtUnix,
-            legendUuid = session.LegendUuid,
+            legendUuid = session.LegendUuid, // ✅ fixed (убран session.Leg)
             minecraft = new
             {
                 uuid = session.MinecraftUuid,
@@ -161,7 +170,7 @@ public sealed class MinecraftService
             },
             launcher = new
             {
-                version = (session.LauncherVersion ?? LauncherIdentity.InformationalVersion ?? "").Trim(),
+                version,
                 writtenAtUtc = DateTimeOffset.UtcNow.ToString("O")
             }
         };
@@ -173,7 +182,7 @@ public sealed class MinecraftService
         TryDeleteQuiet(tmp);
     }
 
-    /// <summary>Удалить session.json (и tmp/pending хвосты), чтобы не оставлять протухший тикет.</summary>
+    /// <summary>Удалить session.json (и tmp хвосты), чтобы не оставлять протухший тикет.</summary>
     public void ClearLegendCoreSession()
     {
         try
@@ -193,11 +202,49 @@ public sealed class MinecraftService
     public event EventHandler<string>? Log;
     public event EventHandler<int>? ProgressPercent;
 
+    // ======= троттлинг прогресса =======
+    private const int ProgressEmitMinIntervalMs = 125;
+    private long _progressLastEmitUnixMs;
+    private int _progressLastEmitPercent = -1;
+
+    private void EmitProgress(int percent)
+    {
+        percent = Math.Clamp(percent, 0, 100);
+
+        var lastPercent = Volatile.Read(ref _progressLastEmitPercent);
+        if (percent == 100 && lastPercent != 100)
+        {
+            Interlocked.Exchange(ref _progressLastEmitPercent, 100);
+            Interlocked.Exchange(ref _progressLastEmitUnixMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            ProgressPercent?.Invoke(this, 100);
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var lastMs = Interlocked.Read(ref _progressLastEmitUnixMs);
+
+        if (percent == lastPercent)
+        {
+            if (now - lastMs < ProgressEmitMinIntervalMs) return;
+            return;
+        }
+
+        if (now - lastMs < ProgressEmitMinIntervalMs)
+            return;
+
+        Interlocked.Exchange(ref _progressLastEmitPercent, percent);
+        Interlocked.Exchange(ref _progressLastEmitUnixMs, now);
+        ProgressPercent?.Invoke(this, percent);
+    }
+
     private readonly object _mirrorStatsLock = new();
     private MirrorStatsRoot _mirrorStats = new();
 
     private readonly object _mirrorStatsIoLock = new();
     private readonly object _packStateIoLock = new();
+
+    // dirty flag для mirror_stats
+    private int _mirrorStatsDirty; // 0/1
 
     private static readonly JsonSerializerOptions MirrorStatsJsonOptions = new()
     {
@@ -216,6 +263,9 @@ public sealed class MinecraftService
 
     private string MirrorStatsPath => Path.Combine(_path.BasePath, "launcher", "mirror_stats.json");
 
+    // настраиваемый параллелизм
+    public int MaxParallelDownloads { get; set; } = PackMaxParallelDownloads;
+
     public MinecraftService(string gameDir)
     {
         _path = new MinecraftPath(gameDir);
@@ -227,7 +277,7 @@ public sealed class MinecraftService
 
         _loaderInstaller = new LoaderInstaller(
             _path,
-            _http,
+            Http,
             log: msg => Log?.Invoke(this, msg));
 
         _launcher.FileProgressChanged += (_, args) =>
@@ -236,7 +286,7 @@ public sealed class MinecraftService
                 ? (int)Math.Round(args.ProgressedTasks * 100.0 / args.TotalTasks)
                 : 0;
 
-            ProgressPercent?.Invoke(this, Math.Clamp(percent, 0, 100));
+            EmitProgress(percent);
             Log?.Invoke(this, $"{args.EventType}: {args.Name} ({args.ProgressedTasks}/{args.TotalTasks})");
         };
 
@@ -244,7 +294,7 @@ public sealed class MinecraftService
         {
             if (args.TotalBytes <= 0) return;
             var percent = (int)Math.Round(args.ProgressedBytes * 100.0 / args.TotalBytes);
-            ProgressPercent?.Invoke(this, Math.Clamp(percent, 0, 100));
+            EmitProgress(percent);
         };
     }
 
@@ -315,7 +365,7 @@ public sealed class MinecraftService
             ct.ThrowIfCancellationRequested();
         }
 
-        ProgressPercent?.Invoke(this, 100);
+        EmitProgress(100);
         Log?.Invoke(this, "Подготовка завершена.");
         return launchVersionId;
     }
@@ -529,6 +579,15 @@ public sealed class MinecraftService
             return;
         }
 
+        var rootMirrorsNormalized = mirrors
+            .Where(m => !string.IsNullOrWhiteSpace(m))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var manifestMirrorsNormalized = manifest.Mirrors is { Length: > 0 }
+            ? manifest.Mirrors.Where(m => !string.IsNullOrWhiteSpace(m)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
+            : null;
+
         var state = LoadPackState();
         var stateLock = new object();
 
@@ -573,7 +632,7 @@ public sealed class MinecraftService
             if (p == prev) return;
 
             if (Interlocked.CompareExchange(ref lastPercent, p, prev) == prev)
-                ProgressPercent?.Invoke(this, p);
+                EmitProgress(p);
         }
 
         var errors = new ConcurrentQueue<Exception>();
@@ -583,7 +642,7 @@ public sealed class MinecraftService
             normalizedMap,
             new ParallelOptions
             {
-                MaxDegreeOfParallelism = PackMaxParallelDownloads,
+                MaxDegreeOfParallelism = Math.Clamp(MaxParallelDownloads, 1, 32),
                 CancellationToken = ct
             },
             async (kv, token) =>
@@ -598,8 +657,8 @@ public sealed class MinecraftService
                         state: state,
                         stateLock: stateLock,
                         activeBaseUrl: activeBaseUrl,
-                        manifestMirrors: manifest.Mirrors,
-                        rootMirrors: mirrors,
+                        manifestMirrors: manifestMirrorsNormalized,
+                        rootMirrors: rootMirrorsNormalized,
                         addBytes: AddBytes,
                         protectOneTimeMutable: protectOneTimeMutable,
                         ct: token).ConfigureAwait(false);
@@ -659,7 +718,7 @@ public sealed class MinecraftService
             Log?.Invoke(this, $"Сборка: актуальна ({GetManifestDisplayVersion(manifest)}).");
         }
 
-        ProgressPercent?.Invoke(this, 100);
+        EmitProgress(100);
         SaveMirrorStatsQuiet(force: true);
     }
 
@@ -697,6 +756,13 @@ public sealed class MinecraftService
                     {
                         Directory.Delete(local, recursive: true);
                         Log?.Invoke(this, $"Сборка: delete удалена директория {rel}");
+                    }
+
+                    // если удаляем pending — прибьём и мету
+                    if (File.Exists(local + ".pending"))
+                    {
+                        TryDeleteQuiet(local + ".pending");
+                        TryDeleteQuiet((local + ".pending") + PendingMetaSuffix);
                     }
 
                     lock (stateLock)
@@ -751,18 +817,18 @@ public sealed class MinecraftService
     private enum DownloadApplyResult { Applied, SavedPending }
 
     private async Task ProcessOneFileAsync(
-    string destRel,
-    PackFile file,
-    ConcurrentQueue<Exception> errors,
-    ConcurrentQueue<string> pendings,
-    PackState state,
-    object stateLock,
-    string activeBaseUrl,
-    string[]? manifestMirrors,
-    string[] rootMirrors,
-    Action<long> addBytes,
-    bool protectOneTimeMutable,
-    CancellationToken ct)
+        string destRel,
+        PackFile file,
+        ConcurrentQueue<Exception> errors,
+        ConcurrentQueue<string> pendings,
+        PackState state,
+        object stateLock,
+        string activeBaseUrl,
+        string[]? manifestMirrors,
+        string[] rootMirrors,
+        Action<long> addBytes,
+        bool protectOneTimeMutable,
+        CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -789,30 +855,25 @@ public sealed class MinecraftService
                 throw new InvalidOperationException($"Unsafe path in manifest: {file.Path}");
 
             // ====== Защищённые user-mutable: НЕ ПЕРЕЗАТИРАЕМ, НО ВОССТАНАВЛИВАЕМ ЕСЛИ УДАЛЕНО ======
-            // resourcepacks/shaderpacks всегда защищены
-            // config/defaultconfigs защищены после первичной установки packId
             var isProtected = IsProtectedUserMutable(destRel, protectOneTimeMutable);
             if (isProtected)
             {
-                // Если файл существует — НЕ трогаем (пользователь мог менять)
                 if (File.Exists(localPath))
                 {
-                    // просто считаем как "выполнено", чтобы прогресс не ломался
                     addBytes(Math.Max(0, file.Size));
                     return;
                 }
 
-                // Если файла нет — восстанавливаем (разрешаем pending/download ниже)
                 Log?.Invoke(this, $"Сборка: восстановление отсутствующего protected файла {destRel}");
             }
 
-            var allowPending = true; // тут мы точно не в always-protected папках; а для config мы разрешаем pending только когда файла нет
+            var allowPending = true;
 
             // 1) сначала пробуем применить pending (если он валиден)
             var (pendingApplied, hasValidPendingButLocked) =
                 await TryApplyPendingAsync(destRel, localPath, file.Sha256, allowPending, ct).ConfigureAwait(false);
 
-            // Если pending валиден, но файл занят — НЕ качаем заново (экономим трафик), просто ждём следующего прогона
+            // Если pending валиден, но файл занят — НЕ качаем заново
             if (!pendingApplied && hasValidPendingButLocked)
             {
                 pendings.Enqueue(destRel);
@@ -869,7 +930,6 @@ public sealed class MinecraftService
             }
             else
             {
-                // pending сохранён, но state НЕ обновляем (иначе будет ложный Match)
                 pendings.Enqueue(destRel);
                 Log?.Invoke(this, $"Сборка: PENDING {destRel} (файл занят, применю позже)");
             }
@@ -880,7 +940,6 @@ public sealed class MinecraftService
         }
         catch (Exception ex)
         {
-            // делаем ошибку информативнее
             errors.Enqueue(new InvalidOperationException($"Ошибка обработки файла {destRel}: {ex.Message}", ex));
         }
     }
@@ -901,15 +960,17 @@ public sealed class MinecraftService
         try
         {
             var info = new FileInfo(localPath);
+            var len = info.Length;
+            var ticks = info.LastWriteTimeUtc.Ticks;
 
-            if (file.Size > 0 && info.Length != file.Size)
+            if (file.Size > 0 && len != file.Size)
                 return FileCheckResult.MissingOrDifferent;
 
             lock (stateLock)
             {
                 if (state.Files.TryGetValue(rel, out var cached) &&
-                    cached.Size == info.Length &&
-                    cached.LastWriteUtcTicks == info.LastWriteTimeUtc.Ticks &&
+                    cached.Size == len &&
+                    cached.LastWriteUtcTicks == ticks &&
                     cached.Sha256.Equals(file.Sha256, StringComparison.OrdinalIgnoreCase))
                 {
                     return FileCheckResult.Match;
@@ -918,11 +979,11 @@ public sealed class MinecraftService
 
             if (file.Size == 0 && IsEmptySha(file.Sha256))
             {
-                if (info.Length == 0)
+                if (len == 0)
                 {
                     lock (stateLock)
                     {
-                        UpdatePackStateEntry(state, rel, localPath, file.Sha256);
+                        UpdatePackStateEntry(state, rel, localPath, file.Sha256, len, ticks);
                     }
                     return FileCheckResult.Match;
                 }
@@ -936,7 +997,7 @@ public sealed class MinecraftService
 
             lock (stateLock)
             {
-                UpdatePackStateEntry(state, rel, localPath, file.Sha256);
+                UpdatePackStateEntry(state, rel, localPath, file.Sha256, len, ticks);
             }
 
             return FileCheckResult.Match;
@@ -952,11 +1013,20 @@ public sealed class MinecraftService
         try
         {
             var info = new FileInfo(localPath);
+            UpdatePackStateEntry(state, rel, localPath, sha256, info.Length, info.LastWriteTimeUtc.Ticks);
+        }
+        catch { }
+    }
+
+    private void UpdatePackStateEntry(PackState state, string rel, string localPath, string sha256, long len, long ticks)
+    {
+        try
+        {
             state.Files[rel] = new PackStateEntry
             {
-                Size = info.Length,
+                Size = len,
                 Sha256 = (sha256 ?? "").Trim().ToLowerInvariant(),
-                LastWriteUtcTicks = info.LastWriteTimeUtc.Ticks
+                LastWriteUtcTicks = ticks
             };
         }
         catch { }
@@ -1052,7 +1122,6 @@ public sealed class MinecraftService
             throw new InvalidOperationException("Mirrors list is empty");
 
         var list = mirrors
-            .Select(NormalizeAbsoluteBaseUrl)
             .Where(u => !string.IsNullOrWhiteSpace(u))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -1077,7 +1146,6 @@ public sealed class MinecraftService
             if (IsSfOrSelectel(primaryRes.Value.activeBaseUrl))
                 _fastCdnFallbackThisRun = primaryRes.Value.activeBaseUrl;
 
-            SaveMirrorStatsQuiet(force: true);
             return primaryRes.Value;
         }
 
@@ -1099,7 +1167,6 @@ public sealed class MinecraftService
             if (cdnRes is not null)
             {
                 _fastCdnFallbackThisRun = cdnRes.Value.activeBaseUrl;
-                SaveMirrorStatsQuiet(force: true);
                 return cdnRes.Value;
             }
         }
@@ -1116,7 +1183,6 @@ public sealed class MinecraftService
             if (IsSfOrSelectel(otherRes.Value.activeBaseUrl))
                 _fastCdnFallbackThisRun = otherRes.Value.activeBaseUrl;
 
-            SaveMirrorStatsQuiet(force: true);
             return otherRes.Value;
         }
 
@@ -1180,7 +1246,7 @@ public sealed class MinecraftService
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
 
-            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token).ConfigureAwait(false);
+            using var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token).ConfigureAwait(false);
 
             if (!resp.IsSuccessStatusCode)
             {
@@ -1302,12 +1368,11 @@ public sealed class MinecraftService
         bool allowPending)
     {
         var mirrors = (manifestMirrors is { Length: > 0 } ? manifestMirrors : rootMirrors)
-            .Select(NormalizeAbsoluteBaseUrl)
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        var ordered = new List<string>();
+        var ordered = new List<string>(mirrors.Length + 3);
 
         var primary = NormalizeAbsoluteBaseUrl(_primaryBaseUrlThisRun);
         var active = NormalizeAbsoluteBaseUrl(activeBaseUrl);
@@ -1321,7 +1386,7 @@ public sealed class MinecraftService
         if (!string.IsNullOrWhiteSpace(fastCdn))
             ordered.Add(fastCdn);
 
-        // 3) primary: если отработал по manifest — ставим наверх, иначе оставим в хвосте (но НЕ исключаем полностью)
+        // 3) primary: если отработал по manifest — ставим наверх, иначе оставим в хвосте
         if (!string.IsNullOrWhiteSpace(primary))
         {
             if (_primaryOkThisRun)
@@ -1347,7 +1412,6 @@ public sealed class MinecraftService
         ordered.AddRange(restOther);
 
         ordered = ordered
-            .Select(NormalizeAbsoluteBaseUrl)
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -1454,6 +1518,22 @@ public sealed class MinecraftService
         return tol;
     }
 
+    // динамический таймаут скачивания по размеру
+    private static TimeSpan GetPerFileDownloadTimeout(long expectedSizeBytes)
+    {
+        const int baseMin = 10;
+        const int maxMin = 60;
+
+        if (expectedSizeBytes <= 0)
+            return TimeSpan.FromMinutes(baseMin);
+
+        var extra = (int)Math.Ceiling(expectedSizeBytes / (200.0 * 1024 * 1024));
+        var total = Math.Clamp(baseMin + extra, baseMin, maxMin);
+        return TimeSpan.FromMinutes(total);
+    }
+
+    private const string PendingMetaSuffix = ".sha256";
+
     private async Task<DownloadApplyResult> DownloadToFileAsync(
         string url,
         string localPath,
@@ -1472,12 +1552,12 @@ public sealed class MinecraftService
         TryDeleteQuiet(tmp);
 
         using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        reqCts.CancelAfter(TimeSpan.FromMinutes(10));
+        reqCts.CancelAfter(GetPerFileDownloadTimeout(expectedSize));
 
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
 
-        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token).ConfigureAwait(false);
+        using var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token).ConfigureAwait(false);
 
         if (!resp.IsSuccessStatusCode)
             throw new DownloadHttpException(resp.StatusCode, url, $"HTTP {(int)resp.StatusCode} {resp.ReasonPhrase} ({url})");
@@ -1502,10 +1582,11 @@ public sealed class MinecraftService
         }
 
         using var sha = SHA256.Create();
-        var buffer = new byte[128 * 1024];
 
+        byte[]? buffer = null;
         try
         {
+            buffer = ArrayPool<byte>.Shared.Rent(128 * 1024);
             await Provisioning(resp, reqCts.Token, tmp, buffer, sha, onBytes, expectedSize, tol).ConfigureAwait(false);
         }
         catch
@@ -1513,8 +1594,12 @@ public sealed class MinecraftService
             TryDeleteQuiet(tmp);
             throw;
         }
+        finally
+        {
+            if (buffer is not null)
+                ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
+        }
 
-        // если size задан — дополнительно проверим фактический размер tmp
         if (expectedSize > 0)
         {
             try
@@ -1549,7 +1634,6 @@ public sealed class MinecraftService
             return DownloadApplyResult.Applied;
         }
 
-        // pending имеет смысл только если разрешён
         if (allowPending)
         {
             var pending = localPath + ".pending";
@@ -1557,6 +1641,7 @@ public sealed class MinecraftService
             if (pendingOk)
             {
                 TryDeleteQuiet(tmp);
+                TryWriteTextQuiet(pending + PendingMetaSuffix, (expectedSha256 ?? "").Trim().ToLowerInvariant());
                 Log?.Invoke(this, $"Сборка: файл занят, сохранил pending: {destRel}");
                 return DownloadApplyResult.SavedPending;
             }
@@ -1595,7 +1680,6 @@ public sealed class MinecraftService
         {
             if (expectedSize > 0)
             {
-                // если сервер льёт больше ожидаемого — останавливаем (DoS/битое зеркало)
                 if (downloaded + read > expectedSize + tolerance)
                     throw new InvalidOperationException($"Ответ слишком большой: > {expectedSize}+{tolerance} байт");
             }
@@ -1653,40 +1737,68 @@ public sealed class MinecraftService
         throw new IOException($"Не удалось создать пустой файл: {destRel}");
     }
 
-    private async Task<(bool applied, bool validButLocked)> TryApplyPendingAsync(string destRel, string localPath, string expectedSha256, bool allowPending, CancellationToken ct)
+    private async Task<(bool applied, bool validButLocked)> TryApplyPendingAsync(
+        string destRel,
+        string localPath,
+        string expectedSha256,
+        bool allowPending,
+        CancellationToken ct)
     {
         if (!allowPending)
             return (false, false);
 
         var pending = localPath + ".pending";
-        if (!File.Exists(pending))
-            return (false, false);
+        var meta = pending + PendingMetaSuffix;
 
-        // проверяем валидность pending
+        if (!File.Exists(pending))
+        {
+            TryDeleteQuiet(meta);
+            return (false, false);
+        }
+
+        var expected = (expectedSha256 ?? "").Trim().ToLowerInvariant();
+
+        var metaOk = false;
         try
         {
-            var sha = await ComputeSha256Async(pending, ct).ConfigureAwait(false);
-            if (!sha.Equals(expectedSha256, StringComparison.OrdinalIgnoreCase))
+            if (File.Exists(meta))
             {
-                TryDeleteQuiet(pending);
+                var m = File.ReadAllText(meta, Encoding.UTF8).Trim().ToLowerInvariant();
+                if (!string.IsNullOrWhiteSpace(m) && m.Equals(expected, StringComparison.OrdinalIgnoreCase))
+                    metaOk = true;
+            }
+        }
+        catch { }
+
+        if (!metaOk)
+        {
+            try
+            {
+                var sha = await ComputeSha256Async(pending, ct).ConfigureAwait(false);
+                if (!sha.Equals(expected, StringComparison.OrdinalIgnoreCase))
+                {
+                    TryDeleteQuiet(pending);
+                    TryDeleteQuiet(meta);
+                    return (false, false);
+                }
+
+                TryWriteTextQuiet(meta, expected);
+            }
+            catch
+            {
                 return (false, false);
             }
         }
-        catch
-        {
-            return (false, false);
-        }
 
-        // пытаемся применить
         var ok = await TryMoveOrReplaceWithRetryAsync(pending, localPath, ct, attempts: 10, delayMs: 200).ConfigureAwait(false);
         if (ok)
         {
             TryDeleteQuiet(pending);
+            TryDeleteQuiet(meta);
             Log?.Invoke(this, $"Сборка: применил pending для {destRel}");
             return (true, false);
         }
 
-        // pending валиден, но файл занят
         return (false, true);
     }
 
@@ -1714,21 +1826,39 @@ public sealed class MinecraftService
         return false;
     }
 
+    // ускорение prune: быстрее относительный путь + удаление директорий по глубине
     private void PruneExtras(string[] roots, HashSet<string> wanted)
     {
+        var baseFull = Path.GetFullPath(_path.BasePath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+
         foreach (var root in roots)
         {
             var localRoot = ToLocalPath(root.TrimEnd('/') + "/");
             if (!Directory.Exists(localRoot))
                 continue;
 
-            foreach (var f in Directory.EnumerateFiles(localRoot, "*", SearchOption.AllDirectories))
+            var localRootFull = Path.GetFullPath(localRoot);
+
+            foreach (var f in Directory.EnumerateFiles(localRootFull, "*", SearchOption.AllDirectories))
             {
-                var rel = NormalizeRelPath(Path.GetRelativePath(_path.BasePath, f).Replace('\\', '/'));
+                string rel;
+                try
+                {
+                    if (f.StartsWith(baseFull, StringComparison.OrdinalIgnoreCase))
+                        rel = f.Substring(baseFull.Length).Replace('\\', '/');
+                    else
+                        rel = Path.GetRelativePath(_path.BasePath, f).Replace('\\', '/');
+
+                    rel = NormalizeRelPath(rel);
+                }
+                catch
+                {
+                    continue;
+                }
+
                 if (string.IsNullOrWhiteSpace(rel))
                     continue;
 
-                // не убиваем валидный pending, если базовый файл нужен
                 if (rel.EndsWith(".pending", StringComparison.OrdinalIgnoreCase))
                 {
                     var baseRel = rel[..^(".pending".Length)];
@@ -1736,7 +1866,6 @@ public sealed class MinecraftService
                         continue;
                 }
 
-                // мусорные временные файлы - можно вычищать
                 if (rel.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase) ||
                     rel.EndsWith(".bak", StringComparison.OrdinalIgnoreCase))
                 {
@@ -1754,6 +1883,12 @@ public sealed class MinecraftService
                     try
                     {
                         File.Delete(f);
+
+                        if (rel.EndsWith(".pending", StringComparison.OrdinalIgnoreCase))
+                        {
+                            TryDeleteQuiet(f + PendingMetaSuffix);
+                        }
+
                         Log?.Invoke(this, $"Сборка: удалён лишний файл {rel}");
                     }
                     catch { }
@@ -1762,11 +1897,25 @@ public sealed class MinecraftService
 
             try
             {
-                foreach (var d in Directory.EnumerateDirectories(localRoot, "*", SearchOption.AllDirectories)
-                             .OrderByDescending(x => x.Length))
+                static int Depth(string p)
                 {
-                    if (!Directory.EnumerateFileSystemEntries(d).Any())
-                        Directory.Delete(d, recursive: false);
+                    int d = 0;
+                    for (int i = 0; i < p.Length; i++)
+                        if (p[i] == Path.DirectorySeparatorChar || p[i] == Path.AltDirectorySeparatorChar) d++;
+                    return d;
+                }
+
+                var dirs = Directory.EnumerateDirectories(localRootFull, "*", SearchOption.AllDirectories).ToList();
+                dirs.Sort((a, b) => Depth(b).CompareTo(Depth(a)));
+
+                foreach (var d in dirs)
+                {
+                    try
+                    {
+                        if (!Directory.EnumerateFileSystemEntries(d).Any())
+                            Directory.Delete(d, recursive: false);
+                    }
+                    catch { }
                 }
             }
             catch { }
@@ -2016,6 +2165,19 @@ public sealed class MinecraftService
         try { if (File.Exists(path)) File.Delete(path); } catch { }
     }
 
+    private static void TryWriteTextQuiet(string path, string text)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(dir))
+                Directory.CreateDirectory(dir);
+
+            File.WriteAllText(path, text ?? "", Encoding.UTF8);
+        }
+        catch { }
+    }
+
     private static void ReplaceOrMoveAtomic(string sourceTmp, string destPath)
     {
         if (OperatingSystem.IsWindows() && File.Exists(destPath))
@@ -2121,6 +2283,9 @@ public sealed class MinecraftService
     {
         try
         {
+            if (!force && Volatile.Read(ref _mirrorStatsDirty) == 0)
+                return;
+
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
             if (!force)
@@ -2182,6 +2347,8 @@ public sealed class MinecraftService
                 ReplaceOrMoveAtomic(tmp, MirrorStatsPath);
                 TryDeleteQuiet(tmp);
             }
+
+            Interlocked.Exchange(ref _mirrorStatsDirty, 0);
         }
         catch { }
     }
@@ -2212,6 +2379,7 @@ public sealed class MinecraftService
             s.ManifestLastOkUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         }
 
+        Interlocked.Exchange(ref _mirrorStatsDirty, 1);
         SaveMirrorStatsQuiet();
     }
 
@@ -2226,6 +2394,7 @@ public sealed class MinecraftService
             s.ManifestFail++;
         }
 
+        Interlocked.Exchange(ref _mirrorStatsDirty, 1);
         SaveMirrorStatsQuiet();
     }
 
@@ -2242,6 +2411,7 @@ public sealed class MinecraftService
             s.BlobLastOkUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         }
 
+        Interlocked.Exchange(ref _mirrorStatsDirty, 1);
         SaveMirrorStatsQuiet();
     }
 
@@ -2256,6 +2426,7 @@ public sealed class MinecraftService
             s.BlobFail++;
         }
 
+        Interlocked.Exchange(ref _mirrorStatsDirty, 1);
         SaveMirrorStatsQuiet();
     }
 

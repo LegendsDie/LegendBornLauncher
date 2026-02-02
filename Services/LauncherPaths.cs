@@ -1,3 +1,4 @@
+// File: Services/LauncherPaths.cs
 using System;
 using System.IO;
 
@@ -5,7 +6,11 @@ namespace LegendBorn.Services;
 
 public static class LauncherPaths
 {
-    public static string AppName => "LegendBorn";
+    public const string AppName = "LegendBorn";
+
+    // Сравнение путей: Windows case-insensitive, Linux/macOS case-sensitive
+    private static StringComparison PathComparison =>
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
     public static string AppDir => CombineSafe(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -16,16 +21,17 @@ public static class LauncherPaths
         AppName);
 
     // ===== Core dirs =====
-    public static string LogsDir  => Path.Combine(AppDir, "logs");
-    public static string CrashDir => Path.Combine(AppDir, "crash");
+    // Логи/краши разумнее хранить в Local (не роумить). Если хочешь как было — верни AppDir.
+    public static string LogsDir  => Path.Combine(LocalDir, "logs");
+    public static string CrashDir => Path.Combine(LocalDir, "crash");
     public static string CacheDir => Path.Combine(LocalDir, "cache");
 
     // ===== Core files =====
     public static string ConfigFile => Path.Combine(AppDir, "launcher.config.json");
-    public static string TokenFile  => Path.Combine(AppDir, "launcher.tokens.dat");
+    public static string TokenFile  => Path.Combine(LocalDir, "launcher.tokens.dat"); // токены лучше в Local
 
     // (опционально, но полезно для релиза) - файл лок-метки процесса
-    public static string ProcessLockFile => Path.Combine(AppDir, "launcher.lock");
+    public static string ProcessLockFile => Path.Combine(LocalDir, "launcher.lock");
 
     public static string DefaultGameDir => Path.Combine(LocalDir, "game");
 
@@ -42,6 +48,7 @@ public static class LauncherPaths
         EnsureParentDirForFile(ConfigFile);
         EnsureParentDirForFile(TokenFile);
         EnsureParentDirForFile(LauncherLogFile);
+        EnsureParentDirForFile(ProcessLockFile);
     }
 
     public static string EnsureDir(string path)
@@ -59,6 +66,9 @@ public static class LauncherPaths
     {
         try
         {
+            if (string.IsNullOrWhiteSpace(filePath))
+                return filePath;
+
             var dir = Path.GetDirectoryName(filePath);
             if (!string.IsNullOrWhiteSpace(dir))
                 Directory.CreateDirectory(dir);
@@ -70,25 +80,39 @@ public static class LauncherPaths
     /// <summary>
     /// Нормализует путь (делает абсолютным). Если пустой/битый — отдаёт fallback.
     /// Если путь относительный — разворачивает его относительно AppDir.
-    /// Если получился путь вне диска/битый — fallback.
+    /// ВАЖНО: относительный путь НЕ может "выйти" наружу AppDir через ".." — иначе fallback.
     /// </summary>
     public static string NormalizePathOr(string? path, string fallback)
     {
         try
         {
-            var p = (path ?? "").Trim();
+            var p = (path ?? "").Trim().Trim('"');
             if (string.IsNullOrWhiteSpace(p))
                 return fallback;
 
-            // не допускаем "C:\.." в виде относительного грязного ввода
-            if (!Path.IsPathRooted(p))
+            var wasRelative = !Path.IsPathRooted(p);
+
+            // относительные разворачиваем от AppDir
+            if (wasRelative)
                 p = Path.Combine(AppDir, p);
 
             p = Path.GetFullPath(p);
 
-            // доп. защита: пустота -> fallback
             if (string.IsNullOrWhiteSpace(p))
                 return fallback;
+
+            // защита: если ввод был относительный — не даём выйти за AppDir
+            if (wasRelative)
+            {
+                var appRoot = Path.GetFullPath(AppDir).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+
+                // Нормализуем разделители для стабильности сравнения
+                appRoot = appRoot.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+                p = p.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+
+                if (!p.StartsWith(appRoot, PathComparison))
+                    return fallback;
+            }
 
             return p;
         }
@@ -106,12 +130,16 @@ public static class LauncherPaths
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(fullPath)) return null;
+            if (string.IsNullOrWhiteSpace(fullPath))
+                return null;
 
             var root = Path.GetFullPath(AppDir).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
             var fp = Path.GetFullPath(fullPath);
 
-            if (!fp.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            root = root.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+            fp = fp.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+
+            if (!fp.StartsWith(root, PathComparison))
                 return null;
 
             return Path.GetRelativePath(root, fp);
@@ -130,13 +158,13 @@ public static class LauncherPaths
                 baseDir = Path.GetTempPath();
 
             if (string.IsNullOrWhiteSpace(name))
-                name = "App";
+                name = AppName;
 
             return Path.Combine(baseDir, name);
         }
         catch
         {
-            return Path.Combine(Path.GetTempPath(), "LegendBorn");
+            return Path.Combine(Path.GetTempPath(), AppName);
         }
     }
 }

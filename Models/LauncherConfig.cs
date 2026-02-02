@@ -1,3 +1,4 @@
+// File: Models/LauncherConfig.cs
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -6,7 +7,7 @@ namespace LegendBorn.Models;
 
 public sealed class LauncherConfig
 {
-    // ✅ bump schema (добавили RamGb и улучшили авто-алгоритм/кроссплатформ)
+    // ✅ bump schema (миграции RAM, кэш физ.памяти, более предсказуемая нормализация)
     public const string CurrentSchemaVersion = "0.2.8";
 
     public string ConfigSchemaVersion { get; set; } = CurrentSchemaVersion;
@@ -29,7 +30,7 @@ public sealed class LauncherConfig
 
     /// <summary>
     /// Устаревшее поле (старые конфиги могли хранить GB).
-    /// Если задано (4..16), будет мигрировано в RamMb при Normalize().
+    /// Если задано (1..128), будет мигрировано в RamMb при Normalize().
     /// </summary>
     public int? RamGb { get; set; }
 
@@ -48,7 +49,7 @@ public sealed class LauncherConfig
     public string? LastLauncherVersion { get; set; }
 
     // ✅ ТЗ: ручной диапазон RAM
-    public const int RamMinMb = 4096;   // 4GB
+    public const int RamMinMb = 4096;   // 4GB (минималка фикс)
     public const int RamMaxMb = 16384;  // 16GB
 
     // сколько оставить ОС минимум (2GB)
@@ -57,9 +58,16 @@ public sealed class LauncherConfig
     // шаг округления RAM
     private const int RamStepMb = 256;
 
+    // ✅ кэш физической памяти (чтобы не дёргать /proc/meminfo или WinAPI слишком часто)
+    private static readonly object _memCacheLock = new();
+    private static int _cachedTotalPhysicalMb;
+    private static long _cachedTotalPhysicalAtTicks; // Environment.TickCount64
+    private const int MemCacheTtlMs = 30_000; // 30 секунд
+
     public void Normalize()
     {
-        ConfigSchemaVersion = NormalizeRequired(ConfigSchemaVersion, "0.0.0");
+        var oldSchema = NormalizeRequired(ConfigSchemaVersion, "0.0.0");
+        ConfigSchemaVersion = oldSchema;
 
         LastServerId = NormalizeOptional(LastServerId);
         LastServerIp = NormalizeOptional(LastServerIp);
@@ -71,14 +79,26 @@ public sealed class LauncherConfig
         LastMenuIndex = Clamp(LastMenuIndex, min: 0, max: 50);
 
         // ✅ миграция старого поля RamGb -> RamMb
+        // Важно: не перетирать ручной RamMb=4096, если конфиг уже новый.
         if (RamGb is int gb && gb is >= 1 and <= 128)
         {
-            // если в старом конфиге RamMb пустое/авто — берём gb
-            if (RamMb == 0 || RamMb == RamMinMb) // RamMinMb был дефолтом, но миграцию делаем осторожно
+            var isOldConfig = CompareSemVer(oldSchema, "0.2.8") < 0;
+
+            // мигрируем только если RamMb = AUTO/пусто или конфиг реально старый и RamMb выглядит дефолтом
+            if (RamMb <= 0 || (isOldConfig && RamMb == RamMinMb))
             {
                 RamMb = gb * 1024;
             }
+
             RamGb = null; // убираем, чтобы дальше не мешало
+        }
+
+        // ✅ защита от старого UI/конфигов, где могли писать "16" и подразумевать GB:
+        // делаем это как миграцию только для СТАРЫХ схем.
+        if (CompareSemVer(oldSchema, "0.2.8") < 0)
+        {
+            if (RamMb is >= 4 and <= 64)
+                RamMb *= 1024;
         }
 
         RamMb = NormalizeRamMb(RamMb);
@@ -93,6 +113,9 @@ public sealed class LauncherConfig
         LastSuccessfulLoginUtc = NormalizeUtc(LastSuccessfulLoginUtc);
         LastLauncherStartUtc = NormalizeUtc(LastLauncherStartUtc);
         LastUpdateCheckUtc = NormalizeUtc(LastUpdateCheckUtc);
+
+        // ✅ после нормализации считаем, что конфиг уже на текущей схеме
+        ConfigSchemaVersion = CurrentSchemaVersion;
     }
 
     public bool HasServerIpOverride => !string.IsNullOrWhiteSpace(LastServerIp);
@@ -117,7 +140,7 @@ public sealed class LauncherConfig
         if (!IsRamAuto)
             return NormalizeRamMb(RamMb);
 
-        var total = TryGetTotalPhysicalMemoryMb();
+        var total = TryGetTotalPhysicalMemoryMbCached();
         if (total <= 0)
             return RamMinMb;
 
@@ -125,7 +148,7 @@ public sealed class LauncherConfig
         // - берём 50% от физической RAM
         // - оставляем системе минимум 2GB
         // - жёсткие рамки 4..16GB
-        // - округление до 256MB
+        // - округление вниз до 256MB
         var rec = (int)Math.Round(total * 0.50);
 
         var maxByReserve = Math.Max(RamMinMb, total - OsReserveMb);
@@ -143,14 +166,12 @@ public sealed class LauncherConfig
         if (mb <= 0)
             return 0;
 
-        // защита от “вбили 4..16 и подразумевали GB”
-        // если указали маленькое число 4..64 — вероятнее всего это GB, а не MB
-        if (mb is >= 4 and <= 64)
-            mb *= 1024;
+        // ❗️Важно: тут больше НЕ угадываем "это GB".
+        // Все эвристики/миграции делаем в Normalize() по версии схемы.
 
         mb = Clamp(mb, RamMinMb, RamMaxMb);
 
-        var total = TryGetTotalPhysicalMemoryMb();
+        var total = TryGetTotalPhysicalMemoryMbCached();
         if (total > 0)
         {
             // запас минимум 2GB
@@ -215,11 +236,11 @@ public sealed class LauncherConfig
             var p = (path ?? "").Trim().Trim('"');
             if (string.IsNullOrWhiteSpace(p)) return null;
 
-            // не делаем Path.GetFullPath если это может взорваться на кривом вводе — но попробуем безопасно
             p = p.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
 
-            // убираем завершающие слеши (кроме корня)
-            while (p.Length > 3 && (p.EndsWith("\\") || p.EndsWith("/")))
+            // убираем завершающие слеши (кроме "корня")
+            // Windows: "C:\" (len=3) оставляем; Linux: "/" (len=1) оставляем
+            while (p.Length > 3 && (p.EndsWith("\\", StringComparison.Ordinal) || p.EndsWith("/", StringComparison.Ordinal)))
                 p = p[..^1];
 
             return string.IsNullOrWhiteSpace(p) ? null : p;
@@ -230,7 +251,48 @@ public sealed class LauncherConfig
         }
     }
 
-    private static int TryGetTotalPhysicalMemoryMb()
+    // =========================
+    // Physical memory (cached)
+    // =========================
+
+    private static int TryGetTotalPhysicalMemoryMbCached()
+    {
+        try
+        {
+            var now = Environment.TickCount64;
+
+            lock (_memCacheLock)
+            {
+                if (_cachedTotalPhysicalMb > 0 &&
+                    (now - _cachedTotalPhysicalAtTicks) >= 0 &&
+                    (now - _cachedTotalPhysicalAtTicks) < MemCacheTtlMs)
+                {
+                    return _cachedTotalPhysicalMb;
+                }
+
+                var mb = TryGetTotalPhysicalMemoryMb_NoCache();
+                if (mb > 0)
+                {
+                    _cachedTotalPhysicalMb = mb;
+                    _cachedTotalPhysicalAtTicks = now;
+                }
+                else
+                {
+                    // если не смогли определить — не кэшируем надолго (чтобы можно было попытаться снова)
+                    _cachedTotalPhysicalMb = 0;
+                    _cachedTotalPhysicalAtTicks = now;
+                }
+
+                return mb;
+            }
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static int TryGetTotalPhysicalMemoryMb_NoCache()
     {
         // ✅ кроссплатформ: Windows через GlobalMemoryStatusEx, Linux через /proc/meminfo
         try
@@ -264,10 +326,16 @@ public sealed class LauncherConfig
                 if (!line.StartsWith("MemTotal:", StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length < 2) return 0;
+                // минимальные аллокации: всё равно ок, но без Split массивов
+                // найдём первое число в строке
+                int i = 0;
+                while (i < line.Length && (line[i] < '0' || line[i] > '9')) i++;
+                if (i >= line.Length) return 0;
 
-                if (!long.TryParse(parts[1], out var kb) || kb <= 0)
+                int j = i;
+                while (j < line.Length && (line[j] >= '0' && line[j] <= '9')) j++;
+
+                if (!long.TryParse(line.AsSpan(i, j - i), out var kb) || kb <= 0)
                     return 0;
 
                 var mb = kb / 1024;
@@ -308,6 +376,53 @@ public sealed class LauncherConfig
             return 0;
         }
     }
+
+    // =========================
+    // SemVer-like compare (0.2.8)
+    // =========================
+
+    // Возвращает:
+    // <0 если a < b
+    //  0 если a == b
+    // >0 если a > b
+    private static int CompareSemVer(string? a, string? b)
+    {
+        var va = ParseSemVer(a);
+        var vb = ParseSemVer(b);
+
+        var c = va.Major.CompareTo(vb.Major);
+        if (c != 0) return c;
+
+        c = va.Minor.CompareTo(vb.Minor);
+        if (c != 0) return c;
+
+        return va.Patch.CompareTo(vb.Patch);
+    }
+
+    private static (int Major, int Minor, int Patch) ParseSemVer(string? v)
+    {
+        v = (v ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(v))
+            return (0, 0, 0);
+
+        // допускаем "0.2.8" / "0.2" / "0"
+        var parts = v.Split('.', StringSplitOptions.RemoveEmptyEntries);
+        int major = 0, minor = 0, patch = 0;
+
+        if (parts.Length >= 1) int.TryParse(parts[0], out major);
+        if (parts.Length >= 2) int.TryParse(parts[1], out minor);
+        if (parts.Length >= 3) int.TryParse(parts[2], out patch);
+
+        if (major < 0) major = 0;
+        if (minor < 0) minor = 0;
+        if (patch < 0) patch = 0;
+
+        return (major, minor, patch);
+    }
+
+    // =========================
+    // WinAPI structs
+    // =========================
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
     private struct MEMORYSTATUSEX

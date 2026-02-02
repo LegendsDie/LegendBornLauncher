@@ -2,6 +2,7 @@
 using CmlLib.Core;
 using LegendBorn.Services;
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -265,9 +266,6 @@ public sealed class LoaderInstaller
             if (string.IsNullOrWhiteSpace(loaderVersion))
                 return null;
 
-            // Для каждого зеркала проверяем два варианта:
-            // A) mirrorBase == releases-root
-            // B) mirrorBase == maven-root, тогда releasesRoot = mirrorBase + "releases/"
             var candidates = new List<(string MirrorBase, string ReleasesRoot)>();
 
             foreach (var b in _neoForgeMavenMirrors)
@@ -288,7 +286,6 @@ public sealed class LoaderInstaller
                 .Select(g => g.First())
                 .ToList();
 
-            // Пробуем по реальному URL installer.jar (самый честный probe)
             var probeTasks = candidates.Select(async c =>
             {
                 var testUrl = BuildInstallerUrlFromReleasesRoot(c.ReleasesRoot, loaderVersion);
@@ -600,21 +597,30 @@ public sealed class LoaderInstaller
 
     private static async Task CopyWithLimitAsync(Stream input, Stream output, long maxBytes, CancellationToken ct)
     {
-        var buffer = new byte[128 * 1024];
-        long total = 0;
-
-        while (true)
+        byte[]? buffer = null;
+        try
         {
-            ct.ThrowIfCancellationRequested();
+            buffer = ArrayPool<byte>.Shared.Rent(128 * 1024);
 
-            var read = await input.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false);
-            if (read <= 0) break;
+            long total = 0;
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
 
-            total += read;
-            if (total > maxBytes)
-                throw new InvalidOperationException($"Превышен лимит размера файла ({maxBytes} bytes).");
+                var read = await input.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false);
+                if (read <= 0) break;
 
-            await output.WriteAsync(buffer, 0, read, ct).ConfigureAwait(false);
+                total += read;
+                if (total > maxBytes)
+                    throw new InvalidOperationException($"Превышен лимит размера файла ({maxBytes} bytes).");
+
+                await output.WriteAsync(buffer, 0, read, ct).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            if (buffer is not null)
+                ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
         }
     }
 
@@ -624,7 +630,7 @@ public sealed class LoaderInstaller
         {
             if (!File.Exists(path)) return false;
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            if (fs.Length < 4) return false;
+            if (fs.Length < 2) return false;
 
             var b1 = fs.ReadByte();
             var b2 = fs.ReadByte();
@@ -641,19 +647,28 @@ public sealed class LoaderInstaller
         try
         {
             if (!File.Exists(path)) return false;
+
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             var len = (int)Math.Min(4096, fs.Length);
             if (len <= 0) return false;
 
-            var buf = new byte[len];
-            _ = fs.Read(buf, 0, len);
+            byte[]? buf = null;
+            try
+            {
+                buf = ArrayPool<byte>.Shared.Rent(len);
+                var read = fs.Read(buf, 0, len);
+                if (read <= 0) return false;
 
-            var head = Encoding.UTF8.GetString(buf);
-            head = head.TrimStart();
+                var head = Encoding.UTF8.GetString(buf, 0, read).TrimStart();
 
-            return head.StartsWith("<!doctype html", StringComparison.OrdinalIgnoreCase) ||
-                   head.StartsWith("<html", StringComparison.OrdinalIgnoreCase) ||
-                   head.Contains("<title>", StringComparison.OrdinalIgnoreCase);
+                return head.StartsWith("<!doctype html", StringComparison.OrdinalIgnoreCase) ||
+                       head.StartsWith("<html", StringComparison.OrdinalIgnoreCase) ||
+                       head.Contains("<title>", StringComparison.OrdinalIgnoreCase);
+            }
+            finally
+            {
+                if (buf is not null) ArrayPool<byte>.Shared.Return(buf, clearArray: false);
+            }
         }
         catch
         {
@@ -988,7 +1003,9 @@ public sealed class LoaderInstaller
                 {
                     var srcInfo = new FileInfo(installerPath);
                     var dstInfo = new FileInfo(patchedPath);
-                    if (dstInfo.Length > 0 && dstInfo.LastWriteTimeUtc >= srcInfo.LastWriteTimeUtc)
+                    if (dstInfo.Length > 0 &&
+                        dstInfo.LastWriteTimeUtc >= srcInfo.LastWriteTimeUtc &&
+                        LooksLikeJar(patchedPath))
                         return patchedPath;
                 }
             }
@@ -1000,6 +1017,9 @@ public sealed class LoaderInstaller
             TryDeleteQuiet(tmp);
 
             await CreateMirroredInstallerJarAsync(installerPath, tmp, mirrorBase, releasesRoot, ct).ConfigureAwait(false);
+
+            if (!LooksLikeJar(tmp))
+                throw new InvalidOperationException("Mirrored installer.jar получился невалидным (не ZIP/JAR).");
 
             var ok = await TryMoveOrReplaceWithRetryAsync(tmp, patchedPath, ct, attempts: 20, delayMs: 150)
                 .ConfigureAwait(false);
@@ -1078,7 +1098,8 @@ public sealed class LoaderInstaller
             if (e.FullName.EndsWith("/", StringComparison.Ordinal))
                 continue;
 
-            var dstEntry = dstZip.CreateEntry(e.FullName, CompressionLevel.Optimal);
+            // speed > size: это исполняемый jar, не архив для хранения
+            var dstEntry = dstZip.CreateEntry(e.FullName, CompressionLevel.Fastest);
             dstEntry.LastWriteTime = e.LastWriteTime;
 
             if (e.FullName.EndsWith(".json", StringComparison.OrdinalIgnoreCase) && e.Length > 0 && e.Length <= JarPatchMaxTextEntryBytes)
@@ -1173,11 +1194,11 @@ public sealed class LoaderInstaller
         var stderr = new StringBuilder();
         var sync = new object();
 
-        long lastOutputTicks = DateTime.UtcNow.Ticks;
+        long lastOutputMs = Environment.TickCount64;
 
-        void Touch() => Interlocked.Exchange(ref lastOutputTicks, DateTime.UtcNow.Ticks);
+        void Touch() => Interlocked.Exchange(ref lastOutputMs, Environment.TickCount64);
 
-        void AppendCapped(StringBuilder sb, string line)
+        static void AppendCapped(StringBuilder sb, string line)
         {
             if (sb.Length >= ProcessOutputCapChars)
                 return;
@@ -1233,9 +1254,7 @@ public sealed class LoaderInstaller
                     await Task.Delay(InstallerHeartbeatEvery, heartbeatCts.Token).ConfigureAwait(false);
                     if (p.HasExited) break;
 
-                    var last = new DateTime(Interlocked.Read(ref lastOutputTicks), DateTimeKind.Utc);
-                    var silentFor = DateTime.UtcNow - last;
-
+                    var silentFor = TimeSpan.FromMilliseconds(Environment.TickCount64 - Interlocked.Read(ref lastOutputMs));
                     if (silentFor >= InstallerHeartbeatEvery)
                         _log?.Invoke("NeoForge: installer всё ещё работает...");
                 }
@@ -1249,9 +1268,7 @@ public sealed class LoaderInstaller
             {
                 overallCts.Token.ThrowIfCancellationRequested();
 
-                var last = new DateTime(Interlocked.Read(ref lastOutputTicks), DateTimeKind.Utc);
-                var silentFor = DateTime.UtcNow - last;
-
+                var silentFor = TimeSpan.FromMilliseconds(Environment.TickCount64 - Interlocked.Read(ref lastOutputMs));
                 if (silentFor >= stallTimeout)
                 {
                     try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
@@ -1329,6 +1346,7 @@ public sealed class LoaderInstaller
             if (string.IsNullOrWhiteSpace(text))
                 return;
 
+            // важно: не парсим JSON вообще, если нет строки-мишени
             if (!text.Contains("maven.neoforged.net", StringComparison.OrdinalIgnoreCase))
                 return;
 

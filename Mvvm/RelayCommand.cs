@@ -1,5 +1,6 @@
 // File: Mvvm/RelayCommand.cs
 using System;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
@@ -14,6 +15,9 @@ public sealed class RelayCommand : ICommand
     // Фиксируем UI-диспетчер на момент создания (обычно команды создаются в UI потоке).
     // Но если Application.Current ещё не готов — доберёмся позже через Application.Current?.Dispatcher.
     private readonly Dispatcher? _uiDispatcher;
+
+    // Коалесцируем частые RaiseCanExecuteChanged
+    private int _raiseScheduled; // 0/1
 
     public RelayCommand(Action execute, Func<bool>? canExecute = null)
     {
@@ -51,47 +55,73 @@ public sealed class RelayCommand : ICommand
 
     public void Execute(object? parameter)
     {
-        _execute(parameter);
+        try
+        {
+            _execute(parameter);
+        }
+        catch (Exception ex)
+        {
+            // RelayCommand обычно не должен валить UI.
+            Debug.WriteLine(ex);
+        }
     }
 
     public void RaiseCanExecuteChanged()
     {
         var handler = CanExecuteChanged;
-        if (handler == null) return;
+        if (handler is null) return;
+
+        // если уже запланировано — выходим
+        if (System.Threading.Interlocked.Exchange(ref _raiseScheduled, 1) == 1)
+            return;
 
         try
         {
             var dispatcher = _uiDispatcher ?? Application.Current?.Dispatcher;
 
             // В тестах/консоли/ранней инициализации может быть null — вызываем напрямую.
-            if (dispatcher == null)
+            if (dispatcher is null)
             {
+                System.Threading.Interlocked.Exchange(ref _raiseScheduled, 0);
                 try { handler(this, EventArgs.Empty); } catch { /* ignore */ }
+                TryInvalidateRequerySuggested();
                 return;
             }
 
             // Если диспетчер уже завершает работу — не лезем в UI (иначе прилетит исключение).
             if (dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished)
-                return;
-
-            if (dispatcher.CheckAccess())
             {
-                try { handler(this, EventArgs.Empty); } catch { /* ignore */ }
+                System.Threading.Interlocked.Exchange(ref _raiseScheduled, 0);
                 return;
             }
 
-            // Всегда на UI поток (чтобы WPF не делал UpdateCanExecute на фоне)
+            if (dispatcher.CheckAccess())
+            {
+                System.Threading.Interlocked.Exchange(ref _raiseScheduled, 0);
+                try { handler(this, EventArgs.Empty); } catch { /* ignore */ }
+                TryInvalidateRequerySuggested();
+                return;
+            }
+
             dispatcher.BeginInvoke(
                 DispatcherPriority.DataBind,
                 new Action(() =>
                 {
+                    System.Threading.Interlocked.Exchange(ref _raiseScheduled, 0);
                     try { handler(this, EventArgs.Empty); }
                     catch { /* игнорируем, чтобы не рушить UI */ }
+                    TryInvalidateRequerySuggested();
                 }));
         }
         catch
         {
+            System.Threading.Interlocked.Exchange(ref _raiseScheduled, 0);
             // Ни при каких условиях не валим UI из RaiseCanExecuteChanged
         }
+    }
+
+    private static void TryInvalidateRequerySuggested()
+    {
+        try { CommandManager.InvalidateRequerySuggested(); } catch { /* ignore */ }
     }
 }

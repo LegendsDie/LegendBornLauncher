@@ -1,5 +1,6 @@
 // File: Services/SiteAuthService.cs
 using System;
+using System.Buffers;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -37,8 +38,6 @@ public sealed class SiteAuthService
         AllowTrailingCommas = true,
         ReadCommentHandling = JsonCommentHandling.Skip
     };
-
-    private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
     private static readonly HttpClient Http = CreateHttp();
 
@@ -217,31 +216,58 @@ public sealed class SiteAuthService
     private static bool IsAuthError(HttpStatusCode code)
         => code is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden;
 
+    // ✅ (1) Оптимизация: чтение UTF-8 лимитировано, без MemoryStream.ToArray() и с ArrayPool
     private static async Task<string> ReadBodyUtf8LimitedAsync(HttpResponseMessage resp, CancellationToken ct)
     {
+        // быстрый отсев по заголовку
+        var len = resp.Content.Headers.ContentLength;
+        if (len.HasValue && len.Value > MaxResponseBytes)
+            throw new InvalidOperationException("Ответ сервера слишком большой.");
+
         await using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
 
-        var buffer = new byte[16 * 1024];
-        var total = 0;
-
-        using var ms = new MemoryStream(capacity: Math.Min(64 * 1024, MaxResponseBytes));
-
-        while (true)
+        byte[]? rented = null;
+        try
         {
-            var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
-            if (read <= 0) break;
+            var cap = (int)Math.Min(64 * 1024, MaxResponseBytes);
+            rented = ArrayPool<byte>.Shared.Rent(cap);
 
-            total += read;
-            if (total > MaxResponseBytes)
-                throw new InvalidOperationException("Ответ сервера слишком большой.");
+            var total = 0;
 
-            ms.Write(buffer, 0, read);
+            while (true)
+            {
+                if (total == rented.Length)
+                {
+                    var newSizeLong = Math.Min((long)rented.Length * 2, (long)MaxResponseBytes);
+                    if (newSizeLong <= rented.Length)
+                        throw new InvalidOperationException("Ответ сервера слишком большой.");
+
+                    var newArr = ArrayPool<byte>.Shared.Rent((int)newSizeLong);
+                    Buffer.BlockCopy(rented, 0, newArr, 0, total);
+                    ArrayPool<byte>.Shared.Return(rented);
+                    rented = newArr;
+                }
+
+                var toRead = rented.Length - total;
+                var read = await stream.ReadAsync(rented, total, toRead, ct).ConfigureAwait(false);
+                if (read <= 0)
+                    break;
+
+                total += read;
+
+                if (total > MaxResponseBytes)
+                    throw new InvalidOperationException("Ответ сервера слишком большой.");
+            }
+
+            if (total <= 0) return "";
+
+            return Encoding.UTF8.GetString(rented, 0, total);
         }
-
-        if (ms.TryGetBuffer(out var seg) && seg.Array is not null)
-            return Encoding.UTF8.GetString(seg.Array, seg.Offset, seg.Count);
-
-        return Encoding.UTF8.GetString(ms.ToArray());
+        finally
+        {
+            if (rented is not null)
+                ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 
     private static bool LooksLikeHtml(string body)
@@ -333,7 +359,10 @@ public sealed class SiteAuthService
                     var delay = GetRetryDelay(resp, i);
                     resp.Dispose();
 
-                    await Task.Delay(delay, ct).ConfigureAwait(false);
+                    // ✅ не делаем лишний delay после последней попытки
+                    if (i < attempts)
+                        await Task.Delay(delay, ct).ConfigureAwait(false);
+
                     continue;
                 }
 
@@ -342,12 +371,14 @@ public sealed class SiteAuthService
             catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
             {
                 last = ex;
-                await Task.Delay(TimeSpan.FromMilliseconds(200 * i), ct).ConfigureAwait(false);
+                if (i < attempts)
+                    await Task.Delay(TimeSpan.FromMilliseconds(200 * i), ct).ConfigureAwait(false);
             }
             catch (HttpRequestException ex)
             {
                 last = ex;
-                await Task.Delay(TimeSpan.FromMilliseconds(200 * i), ct).ConfigureAwait(false);
+                if (i < attempts)
+                    await Task.Delay(TimeSpan.FromMilliseconds(200 * i), ct).ConfigureAwait(false);
             }
         }
 
@@ -445,14 +476,39 @@ public sealed class SiteAuthService
             dto.Ok = true;
     }
 
-    private static StringContent JsonBody(object model)
-        => new StringContent(JsonSerializer.Serialize(model, JsonOptions), Utf8NoBom, "application/json");
+    // ✅ (2) Оптимизация: JSON body без промежуточной строки
+    private static HttpContent JsonBody(object model)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(model, JsonOptions);
+        var content = new ByteArrayContent(bytes);
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+        return content;
+    }
 
     private static string BuildApiPath(string relative)
     {
         relative = (relative ?? "").Trim();
         if (relative.Length == 0) return relative;
         return relative.StartsWith("/") ? relative[1..] : relative;
+    }
+
+    // ✅ (5) Рефактор: общий helper для ответов OkResponse-типа (friends/presence/minecraft)
+    private static async Task<T> SendAndReadOkDtoAsync<T>(
+        Func<HttpRequestMessage> factory,
+        CancellationToken ct,
+        int attempts,
+        TimeSpan perTryTimeout)
+        where T : OkResponse, new()
+    {
+        using var resp = await SendAsyncWithRetry(factory, ct, attempts, perTryTimeout).ConfigureAwait(false);
+
+        if (IsAuthError(resp.StatusCode))
+            return new T { Ok = false, Error = "Требуется авторизация." };
+
+        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
+        var dto = TryDeserialize<T>(body) ?? new T();
+        NormalizeOkFromHttp(dto, resp, body);
+        return dto;
     }
 
     // =========================
@@ -597,7 +653,7 @@ public sealed class SiteAuthService
             {
                 var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath("api/launcher/events"));
                 EnsureBearer(req, accessToken);
-                req.Content = new StringContent(JsonSerializer.Serialize(reqModel, JsonOptions), Utf8NoBom, "application/json");
+                req.Content = JsonBody(reqModel);
                 return req;
             },
             ct: ct,
@@ -656,7 +712,7 @@ public sealed class SiteAuthService
     // Presence API (Launcher)
     // =========================
 
-    public async Task<OkResponse> SendLauncherHeartbeatAsync(string accessToken, CancellationToken ct)
+    public Task<OkResponse> SendLauncherHeartbeatAsync(string accessToken, CancellationToken ct)
     {
         var bodyModel = new
         {
@@ -666,7 +722,7 @@ public sealed class SiteAuthService
             sentAtUtc = DateTimeOffset.UtcNow
         };
 
-        using var resp = await SendAsyncWithRetry(
+        return SendAndReadOkDtoAsync<OkResponse>(
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath(PresenceHeartbeatPath));
@@ -676,18 +732,10 @@ public sealed class SiteAuthService
             },
             ct: ct,
             attempts: PresenceAttempts,
-            perTryTimeout: TimeSpan.FromSeconds(12)).ConfigureAwait(false);
-
-        if (IsAuthError(resp.StatusCode))
-            return new OkResponse { Ok = false, Error = "Требуется авторизация." };
-
-        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
-        var dto = TryDeserialize<OkResponse>(body) ?? new OkResponse();
-        NormalizeOkFromHttp(dto, resp, body);
-        return dto;
+            perTryTimeout: TimeSpan.FromSeconds(12));
     }
 
-    public async Task<OkResponse> SendLauncherOfflineAsync(string accessToken, CancellationToken ct)
+    public Task<OkResponse> SendLauncherOfflineAsync(string accessToken, CancellationToken ct)
     {
         var bodyModel = new
         {
@@ -697,7 +745,7 @@ public sealed class SiteAuthService
             sentAtUtc = DateTimeOffset.UtcNow
         };
 
-        using var resp = await SendAsyncWithRetry(
+        return SendAndReadOkDtoAsync<OkResponse>(
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath(PresenceHeartbeatPath));
@@ -707,15 +755,7 @@ public sealed class SiteAuthService
             },
             ct: ct,
             attempts: 1,
-            perTryTimeout: TimeSpan.FromSeconds(10)).ConfigureAwait(false);
-
-        if (IsAuthError(resp.StatusCode))
-            return new OkResponse { Ok = false, Error = "Требуется авторизация." };
-
-        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
-        var dto = TryDeserialize<OkResponse>(body) ?? new OkResponse();
-        NormalizeOkFromHttp(dto, resp, body);
-        return dto;
+            perTryTimeout: TimeSpan.FromSeconds(10));
     }
 
     // =========================
@@ -724,7 +764,7 @@ public sealed class SiteAuthService
 
     public async Task<FriendsListResponse> GetFriendsAsync(string accessToken, CancellationToken ct)
     {
-        using var resp = await SendAsyncWithRetry(
+        var dto = await SendAndReadOkDtoAsync<FriendsListResponse>(
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Get, BuildApiPath("api/launcher/friends"));
@@ -735,21 +775,13 @@ public sealed class SiteAuthService
             attempts: DefaultAttempts,
             perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
 
-        if (IsAuthError(resp.StatusCode))
-            return new FriendsListResponse { Ok = false, Error = "Требуется авторизация." };
-
-        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
-        var dto = TryDeserialize<FriendsListResponse>(body) ?? new FriendsListResponse();
-
         dto.Friends ??= Array.Empty<FriendDto>();
-        NormalizeOkFromHttp(dto, resp, body);
-
         return dto;
     }
 
     public async Task<FriendRequestsResponse> GetFriendRequestsAsync(string accessToken, CancellationToken ct)
     {
-        using var resp = await SendAsyncWithRetry(
+        var dto = await SendAndReadOkDtoAsync<FriendRequestsResponse>(
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Get, BuildApiPath("api/launcher/friends/requests"));
@@ -760,26 +792,18 @@ public sealed class SiteAuthService
             attempts: DefaultAttempts,
             perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
 
-        if (IsAuthError(resp.StatusCode))
-            return new FriendRequestsResponse { Ok = false, Error = "Требуется авторизация." };
-
-        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
-        var dto = TryDeserialize<FriendRequestsResponse>(body) ?? new FriendRequestsResponse();
-
         dto.Incoming ??= Array.Empty<FriendDto>();
         dto.Outgoing ??= Array.Empty<FriendDto>();
-        NormalizeOkFromHttp(dto, resp, body);
-
         return dto;
     }
 
-    public async Task<OkResponse> SendFriendRequestAsync(string accessToken, string query, CancellationToken ct)
+    public Task<OkResponse> SendFriendRequestAsync(string accessToken, string query, CancellationToken ct)
     {
         query = (query ?? "").Trim();
         if (string.IsNullOrWhiteSpace(query))
-            return new OkResponse { Ok = false, Error = "Пустой запрос." };
+            return Task.FromResult(new OkResponse { Ok = false, Error = "Пустой запрос." });
 
-        using var resp = await SendAsyncWithRetry(
+        return SendAndReadOkDtoAsync<OkResponse>(
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath("api/launcher/friends/request"));
@@ -789,25 +813,16 @@ public sealed class SiteAuthService
             },
             ct: ct,
             attempts: DefaultAttempts,
-            perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
-
-        if (IsAuthError(resp.StatusCode))
-            return new OkResponse { Ok = false, Error = "Требуется авторизация." };
-
-        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
-        var dto = TryDeserialize<OkResponse>(body) ?? new OkResponse();
-        NormalizeOkFromHttp(dto, resp, body);
-
-        return dto;
+            perTryTimeout: TimeSpan.FromSeconds(25));
     }
 
-    public async Task<OkResponse> AcceptFriendRequestAsync(string accessToken, string fromUserId, CancellationToken ct)
+    public Task<OkResponse> AcceptFriendRequestAsync(string accessToken, string fromUserId, CancellationToken ct)
     {
         fromUserId = (fromUserId ?? "").Trim();
         if (string.IsNullOrWhiteSpace(fromUserId))
-            return new OkResponse { Ok = false, Error = "Не указан отправитель." };
+            return Task.FromResult(new OkResponse { Ok = false, Error = "Не указан отправитель." });
 
-        using var resp = await SendAsyncWithRetry(
+        return SendAndReadOkDtoAsync<OkResponse>(
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath("api/launcher/friends/accept"));
@@ -817,25 +832,16 @@ public sealed class SiteAuthService
             },
             ct: ct,
             attempts: DefaultAttempts,
-            perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
-
-        if (IsAuthError(resp.StatusCode))
-            return new OkResponse { Ok = false, Error = "Требуется авторизация." };
-
-        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
-        var dto = TryDeserialize<OkResponse>(body) ?? new OkResponse();
-        NormalizeOkFromHttp(dto, resp, body);
-
-        return dto;
+            perTryTimeout: TimeSpan.FromSeconds(25));
     }
 
-    public async Task<OkResponse> DeclineFriendRequestAsync(string accessToken, string fromUserId, CancellationToken ct)
+    public Task<OkResponse> DeclineFriendRequestAsync(string accessToken, string fromUserId, CancellationToken ct)
     {
         fromUserId = (fromUserId ?? "").Trim();
         if (string.IsNullOrWhiteSpace(fromUserId))
-            return new OkResponse { Ok = false, Error = "Не указан отправитель." };
+            return Task.FromResult(new OkResponse { Ok = false, Error = "Не указан отправитель." });
 
-        using var resp = await SendAsyncWithRetry(
+        return SendAndReadOkDtoAsync<OkResponse>(
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath("api/launcher/friends/decline"));
@@ -845,25 +851,16 @@ public sealed class SiteAuthService
             },
             ct: ct,
             attempts: DefaultAttempts,
-            perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
-
-        if (IsAuthError(resp.StatusCode))
-            return new OkResponse { Ok = false, Error = "Требуется авторизация." };
-
-        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
-        var dto = TryDeserialize<OkResponse>(body) ?? new OkResponse();
-        NormalizeOkFromHttp(dto, resp, body);
-
-        return dto;
+            perTryTimeout: TimeSpan.FromSeconds(25));
     }
 
-    public async Task<OkResponse> RemoveFriendAsync(string accessToken, string userId, CancellationToken ct)
+    public Task<OkResponse> RemoveFriendAsync(string accessToken, string userId, CancellationToken ct)
     {
         userId = (userId ?? "").Trim();
         if (string.IsNullOrWhiteSpace(userId))
-            return new OkResponse { Ok = false, Error = "Не указан пользователь." };
+            return Task.FromResult(new OkResponse { Ok = false, Error = "Не указан пользователь." });
 
-        using var resp = await SendAsyncWithRetry(
+        return SendAndReadOkDtoAsync<OkResponse>(
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath("api/launcher/friends/remove"));
@@ -873,16 +870,7 @@ public sealed class SiteAuthService
             },
             ct: ct,
             attempts: DefaultAttempts,
-            perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
-
-        if (IsAuthError(resp.StatusCode))
-            return new OkResponse { Ok = false, Error = "Требуется авторизация." };
-
-        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
-        var dto = TryDeserialize<OkResponse>(body) ?? new OkResponse();
-        NormalizeOkFromHttp(dto, resp, body);
-
-        return dto;
+            perTryTimeout: TimeSpan.FromSeconds(25));
     }
 
     // =========================
@@ -921,7 +909,7 @@ public sealed class SiteAuthService
     /// Authorization: Bearer &lt;launcherAccessToken&gt;
     /// body: { username: "Player" }
     /// </summary>
-    public async Task<MinecraftLinkResponse> LinkMinecraftAsync(
+    public Task<MinecraftLinkResponse> LinkMinecraftAsync(
         string accessToken,
         string username,
         CancellationToken ct,
@@ -929,7 +917,7 @@ public sealed class SiteAuthService
     {
         username = (username ?? "").Trim();
 
-        using var resp = await SendAsyncWithRetry(
+        return SendAndReadOkDtoAsync<MinecraftLinkResponse>(
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath("api/minecraft/link"));
@@ -940,15 +928,7 @@ public sealed class SiteAuthService
             },
             ct: ct,
             attempts: DefaultAttempts,
-            perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
-
-        if (IsAuthError(resp.StatusCode))
-            return new MinecraftLinkResponse { Ok = false, Error = "Требуется авторизация." };
-
-        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
-        var dto = TryDeserialize<MinecraftLinkResponse>(body) ?? new MinecraftLinkResponse();
-        NormalizeOkFromHttp(dto, resp, body);
-        return dto;
+            perTryTimeout: TimeSpan.FromSeconds(25));
     }
 
     public sealed class MinecraftJoinTicketResponse : OkResponse
@@ -999,7 +979,7 @@ public sealed class SiteAuthService
         serverId = (serverId ?? "").Trim();
         mcName = string.IsNullOrWhiteSpace(mcName) ? null : mcName.Trim();
 
-        using var resp = await SendAsyncWithRetry(
+        var dto = await SendAndReadOkDtoAsync<MinecraftJoinTicketResponse>(
             factory: () =>
             {
                 var req = new HttpRequestMessage(HttpMethod.Post, BuildApiPath("api/minecraft/join-ticket"));
@@ -1012,16 +992,9 @@ public sealed class SiteAuthService
             attempts: DefaultAttempts,
             perTryTimeout: TimeSpan.FromSeconds(25)).ConfigureAwait(false);
 
-        if (IsAuthError(resp.StatusCode))
-            return new MinecraftJoinTicketResponse { Ok = false, Error = "Требуется авторизация." };
-
-        var body = await ReadBodyUtf8LimitedAsync(resp, ct).ConfigureAwait(false);
-        var dto = TryDeserialize<MinecraftJoinTicketResponse>(body) ?? new MinecraftJoinTicketResponse();
-
         // если сервер прислал ms — нормализуем (чтобы дальше было удобно)
         dto.ExpiresAtUnix = NormalizeUnixSeconds(dto.ExpiresAtUnix);
 
-        NormalizeOkFromHttp(dto, resp, body);
         return dto;
     }
 }

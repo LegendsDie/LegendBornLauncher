@@ -1,4 +1,6 @@
+// File: Services/ServerListService.cs
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -22,14 +24,7 @@ public sealed class ServerListService
     // CloudBucket (custom domain) — PRIMARY
     public const string CloudBucketLauncherBaseUrl = "https://pack.legendborn.ru/launcher/";
 
-    // Selectel S3 — FALLBACK (у нас он уже есть).
-    // Дефолт берём из панели "Основной домен" бакета + "/launcher/".
-    // Можно переопределить без пересборки:
-    // 1) ENV: LEGENDBORN_SELECTEL_LAUNCHER_BASE_URL
-    // 2) Файл: <CacheDir>/selectel_launcher_base.txt (одна строка - base url)
-    //
-    // Пример дефолта (как на твоём скрине):
-    // https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/
+    // Selectel S3 — FALLBACK
     public const string SelectelLauncherBaseUrlDefault =
         "https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/";
 
@@ -238,7 +233,6 @@ public sealed class ServerListService
                     {
                         Type = "neoforge",
                         Version = "21.1.216",
-                        // Официальная ссылка (LoaderInstaller дальше может переписать на зеркало)
                         InstallerUrl = "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.216/neoforge-21.1.216-installer.jar"
                     },
                     ClientVersionId = "LegendBorn",
@@ -271,7 +265,7 @@ public sealed class ServerListService
 
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/plain")); // некоторые CDN отдают без json-типа
+            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/plain"));
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
             req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
             TrySetUa(req);
@@ -313,7 +307,8 @@ public sealed class ServerListService
 
             await using var stream = await resp.Content.ReadAsStreamAsync(reqCts.Token).ConfigureAwait(false);
 
-            var json = await ReadUtf8LimitedAsync(stream, MaxServersJsonBytes, reqCts.Token).ConfigureAwait(false);
+            // ✅ читаем лимитировано, без ToArray(), без out-параметров
+            var json = await ReadUtf8LimitedToStringAsync(stream, MaxServersJsonBytes, reqCts.Token).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(json))
                 return null;
 
@@ -379,24 +374,66 @@ public sealed class ServerListService
         };
     }
 
-    private static async Task<string> ReadUtf8LimitedAsync(Stream stream, long maxBytes, CancellationToken ct)
+    /// <summary>
+    /// ✅ Лимитированно читает UTF-8 в строку, не допуская чтения > maxBytes.
+    /// ArrayPool + без MemoryStream.ToArray().
+    /// Возвращает null при ошибке/превышении лимита/пустом ответе.
+    /// </summary>
+    private static async Task<string?> ReadUtf8LimitedToStringAsync(
+        Stream stream,
+        long maxBytes,
+        CancellationToken ct)
     {
-        using var ms = new MemoryStream(capacity: (int)Math.Min(64 * 1024, maxBytes));
-        var buffer = new byte[32 * 1024];
+        if (maxBytes <= 0)
+            return null;
 
-        int read;
-        long total = 0;
+        byte[]? rented = null;
 
-        while ((read = await stream.ReadAsync(buffer, 0, buffer.Length, ct).ConfigureAwait(false)) > 0)
+        try
         {
-            total += read;
-            if (total > maxBytes)
-                return "";
+            var cap = (int)Math.Min(64 * 1024, maxBytes);
+            rented = ArrayPool<byte>.Shared.Rent(cap);
 
-            ms.Write(buffer, 0, read);
+            var total = 0;
+
+            while (true)
+            {
+                if (total == rented.Length)
+                {
+                    var newSizeLong = Math.Min((long)rented.Length * 2, maxBytes);
+                    if (newSizeLong <= rented.Length)
+                        return null;
+
+                    var newArr = ArrayPool<byte>.Shared.Rent((int)newSizeLong);
+                    Buffer.BlockCopy(rented, 0, newArr, 0, total);
+                    ArrayPool<byte>.Shared.Return(rented);
+                    rented = newArr;
+                }
+
+                var toRead = rented.Length - total;
+                var read = await stream.ReadAsync(rented, total, toRead, ct).ConfigureAwait(false);
+                if (read <= 0)
+                    break;
+
+                total += read;
+                if (total > maxBytes)
+                    return null;
+            }
+
+            if (total <= 0)
+                return null;
+
+            return Encoding.UTF8.GetString(rented, 0, total);
         }
-
-        return Encoding.UTF8.GetString(ms.ToArray());
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            if (rented is not null)
+                ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 
     // ==========================================================
@@ -444,7 +481,6 @@ public sealed class ServerListService
 
     private static string[] OrderFallbacks(string[] fallbacks)
     {
-        // Порядок тут вторичен (race по скорости), но сделаем детерминированно:
         // Selectel -> SourceForge CDN -> прочие.
         return fallbacks
             .Select(NormalizeAbsoluteUrl)
@@ -455,7 +491,7 @@ public sealed class ServerListService
                 if (LooksLikeSelectel(u)) return 0;
                 if (u.Contains("master.dl.sourceforge.net", StringComparison.OrdinalIgnoreCase)) return 1;
                 if (LooksLikeSourceForge(u)) return 2;
-                if (LooksLikeCloudBucket(u)) return 3; // на случай если CloudBucket попал в fallbacks
+                if (LooksLikeCloudBucket(u)) return 3;
                 return 4;
             })
             .ToArray();
@@ -539,7 +575,6 @@ public sealed class ServerListService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(u =>
             {
-                // Для pack: CloudBucket (primary) -> Selectel -> SourceForge -> остальное
                 if (LooksLikeCloudBucket(u)) return 0;
                 if (LooksLikeSelectel(u)) return 1;
                 if (u.Contains("master.dl.sourceforge.net", StringComparison.OrdinalIgnoreCase)) return 2;
@@ -670,7 +705,7 @@ public sealed class ServerListService
             if (!string.IsNullOrWhiteSpace(json))
             {
                 var tmp = CacheFilePath + ".tmp";
-                File.WriteAllText(tmp, json, Utf8NoBom);
+                WriteAllTextAtomic(tmp, json, Utf8NoBom);
                 ReplaceOrMoveAtomic(tmp, CacheFilePath);
                 TryDeleteQuiet(tmp);
             }
@@ -679,7 +714,7 @@ public sealed class ServerListService
             {
                 var metaJson = JsonSerializer.Serialize(meta, JsonOptions);
                 var tmpMeta = CacheMetaPath + ".tmp";
-                File.WriteAllText(tmpMeta, metaJson, Utf8NoBom);
+                WriteAllTextAtomic(tmpMeta, metaJson, Utf8NoBom);
                 ReplaceOrMoveAtomic(tmpMeta, CacheMetaPath);
                 TryDeleteQuiet(tmpMeta);
             }
@@ -817,6 +852,15 @@ public sealed class ServerListService
             }
             catch { }
         }
+    }
+
+    private static void WriteAllTextAtomic(string path, string text, Encoding enc)
+    {
+        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
+        using var sw = new StreamWriter(fs, enc);
+        sw.Write(text);
+        sw.Flush();
+        fs.Flush(flushToDisk: true);
     }
 
     private static void TryDeleteQuiet(string path)
