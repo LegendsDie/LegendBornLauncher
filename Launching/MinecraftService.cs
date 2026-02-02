@@ -385,78 +385,115 @@ public sealed class MinecraftService
     }
 
     // =========================
-    // ✅ Launch
-    // =========================
+// ✅ Launch
+// =========================
 
-    /// <summary>
-    /// Старый API — без тикета. Сессию LegendCore не пишет.
-    /// </summary>
-    public Task<Process> BuildAndLaunchAsync(string version, string username, int ramMb, string? serverIp = null)
-        => BuildAndLaunchAsync(version, username, ramMb, serverIp, session: null);
+/// <summary>
+/// Старый API — без тикета. Сессию LegendCore не пишет.
+/// </summary>
+public Task<Process> BuildAndLaunchAsync(string version, string username, int ramMb, string? serverIp = null)
+    => BuildAndLaunchAsync(version, username, ramMb, serverIp, session: null);
 
-    /// <summary>
-    /// Новый API — можно передать LegendCoreSession, и лаунчер запишет .legendcore/session.json перед стартом игры.
-    /// </summary>
-    public async Task<Process> BuildAndLaunchAsync(
-        string version,
-        string username,
-        int ramMb,
-        string? serverIp = null,
-        LegendCoreSession? session = null)
+/// <summary>
+/// Новый API — можно передать LegendCoreSession, и лаунчер запишет .legendcore/session.json перед стартом игры.
+/// </summary>
+public async Task<Process> BuildAndLaunchAsync(
+    string version,
+    string username,
+    int ramMb,
+    string? serverIp = null,
+    LegendCoreSession? session = null)
+{
+    if (string.IsNullOrWhiteSpace(version))
+        throw new ArgumentException("version is empty", nameof(version));
+
+    if (string.IsNullOrWhiteSpace(username))
+        throw new ArgumentException("username is empty", nameof(username));
+
+    ramMb = Math.Clamp(ramMb <= 0 ? MinRamMb : ramMb, MinRamMb, MaxRamMb);
+
+    // ✅ Всегда чистим, чтобы не оставлять протухшие тикеты
+    ClearLegendCoreSession();
+
+    // ✅ Если дали сессию — пишем файл до запуска игры
+    if (session is not null)
     {
-        if (string.IsNullOrWhiteSpace(version))
-            throw new ArgumentException("version is empty", nameof(version));
-
-        if (string.IsNullOrWhiteSpace(username))
-            throw new ArgumentException("username is empty", nameof(username));
-
-        ramMb = Math.Clamp(ramMb <= 0 ? MinRamMb : ramMb, MinRamMb, MaxRamMb);
-
-        // ✅ Всегда чистим, чтобы не оставлять протухшие тикеты
-        ClearLegendCoreSession();
-
-        // ✅ Если дали сессию — пишем файл до запуска игры
-        if (session is not null)
-        {
-            try
-            {
-                WriteLegendCoreSession(session);
-                Log?.Invoke(this, $"LegendCore: session.json written (serverId={session.ServerId}, exp={session.ExpiresAtUnix})");
-            }
-            catch (Exception ex)
-            {
-                Log?.Invoke(this, $"LegendCore: failed to write session.json: {ex}");
-                throw;
-            }
-        }
-
-        var opt = new MLaunchOption
-        {
-            Session = MSession.CreateOfflineSession(username.Trim()),
-            MaximumRamMb = ramMb
-        };
-
-        if (!string.IsNullOrWhiteSpace(serverIp))
-            opt.ServerIp = serverIp.Trim();
-
-        var process = await _launcher.BuildProcessAsync(version, opt).ConfigureAwait(false);
-
-        process.EnableRaisingEvents = true;
-        if (!process.Start())
-            throw new InvalidOperationException("Не удалось запустить процесс Minecraft.");
-
-        // ✅ При закрытии игры подчистим session.json, чтобы не лежал мёртвый тикет
         try
         {
-            process.Exited += (_, __) =>
-            {
-                try { ClearLegendCoreSession(); } catch { }
-            };
+            WriteLegendCoreSession(session);
+            Log?.Invoke(this, $"LegendCore: session.json written (serverId={session.ServerId}, exp={session.ExpiresAtUnix})");
         }
-        catch { /* ignore */ }
-
-        return process;
+        catch (Exception ex)
+        {
+            Log?.Invoke(this, $"LegendCore: failed to write session.json: {ex}");
+            throw;
+        }
     }
+
+    var opt = new MLaunchOption
+    {
+        Session = MSession.CreateOfflineSession(username.Trim()),
+        MaximumRamMb = ramMb
+    };
+
+    if (!string.IsNullOrWhiteSpace(serverIp))
+        opt.ServerIp = serverIp.Trim();
+
+    var process = await _launcher.BuildProcessAsync(version, opt).ConfigureAwait(false);
+
+    // ✅ КРИТИЧНО: чтобы Environment реально применился (и чтобы можно было убрать JAVA_TOOL_OPTIONS)
+    try
+    {
+        process.StartInfo.UseShellExecute = false;
+    }
+    catch { /* ignore */ }
+
+    // ✅ Убираем системные переменные, которые могут ПЕРЕБИТЬ -Xmx/-Xms
+    SanitizeJavaEnvironment(process);
+
+    process.EnableRaisingEvents = true;
+
+    if (!process.Start())
+        throw new InvalidOperationException("Не удалось запустить процесс Minecraft.");
+
+    // ✅ При закрытии игры подчистим session.json, чтобы не лежал мёртвый тикет
+    try
+    {
+        process.Exited += (_, __) =>
+        {
+            try { ClearLegendCoreSession(); } catch { }
+        };
+    }
+    catch { /* ignore */ }
+
+    return process;
+}
+
+private void SanitizeJavaEnvironment(Process process)
+{
+    try
+    {
+        var env = process.StartInfo.Environment;
+
+        // Если переменные были — залогируем (без значений)
+        bool hadAny =
+            env.ContainsKey("JAVA_TOOL_OPTIONS") ||
+            env.ContainsKey("_JAVA_OPTIONS") ||
+            env.ContainsKey("JDK_JAVA_OPTIONS");
+
+        env.Remove("JAVA_TOOL_OPTIONS");
+        env.Remove("_JAVA_OPTIONS");
+        env.Remove("JDK_JAVA_OPTIONS");
+
+        if (hadAny)
+            Log?.Invoke(this, "Java: удалены JAVA_TOOL_OPTIONS/_JAVA_OPTIONS/JDK_JAVA_OPTIONS (могли перебивать лимит RAM).");
+    }
+    catch
+    {
+        // ignore
+    }
+}
+
 
     // =========================
     // Mirrors: normalize + default ordering

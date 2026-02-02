@@ -16,21 +16,18 @@ public sealed partial class MainViewModel
 
     // ============================================================
     // ✅ КРИТИЧНО: автозаход на сервер
-    // Если true  -> Minecraft стартует и СРАЗУ коннектится к serverIp
-    // Если false -> Minecraft стартует в МЕНЮ (без подключения)
+    // false -> Minecraft стартует в меню (без подключения)
+    // true  -> Minecraft стартует и сразу коннектится к serverIp
     // ============================================================
-    private const bool AutoJoinServerOnLaunch = true;
+    private const bool AutoJoinServerOnLaunch = false;
 
     // ============================================================
     // ✅ Опционально: заранее получить join-ticket на сайте
-    // Если у тебя внутри игры мод сам ходит на сайт за тикетом — это может фризить.
-    // Включай true, если хочешь переносить эту работу в лаунчер (до запуска игры).
-    // Если сервер/сайт не требует тикета — можно выключить.
+    // Имеет смысл ТОЛЬКО когда AutoJoinServerOnLaunch=true.
     // ============================================================
     private const bool PreCreateJoinTicket = true;
 
     // Папка/файлы, которые читает "мод авторизации/скина" внутри игры.
-    // ВАЖНО: это лежит в _gameDir (папка клиента), чтобы мод гарантированно нашёл.
     private const string AuthTicketDirName = "legendborn";
     private const string AuthTicketJsonName = "auth.json";
     private const string AuthTicketTokenName = "auth.token";
@@ -118,13 +115,16 @@ public sealed partial class MainViewModel
         public long rezonite { get; set; }
 
         public string serverId { get; set; } = "";
+
+        // ✅ ВАЖНО: если заполнить serverAddress — мод может авто-коннектить.
+        // Поэтому пишем только при AutoJoinServerOnLaunch=true.
         public string? serverAddress { get; set; }
+
         public string build { get; set; } = "";
 
-        // Токен в JSON — удобно модам, но параллельно пишем и auth.token (на всякий).
         public string accessToken { get; set; } = "";
 
-        // ✅ Доп. поля (мод может игнорировать, если не поддерживает)
+        // ✅ Доп. поля (пишем только при автозаходе)
         public string? joinTicket { get; set; }
         public long joinTicketExpiresAtUnix { get; set; }
     }
@@ -152,7 +152,7 @@ public sealed partial class MainViewModel
         string accessToken,
         string username,
         ServerEntry server,
-        string? serverIpForConnect,
+        string? serverAddressForMod,      // ✅ ВОТ ЭТО: null = мод не сможет автоконнектить
         string? joinTicket,
         long joinTicketExpiresAtUnix,
         out string error)
@@ -171,7 +171,6 @@ public sealed partial class MainViewModel
             Directory.CreateDirectory(dir);
 
             // 1) auth.token (простое чтение модом)
-            // НЕ логируем токен никогда.
             WriteAllTextAtomic(GetAuthTicketTokenPath(), accessToken.Trim());
 
             // 2) auth.json
@@ -185,7 +184,7 @@ public sealed partial class MainViewModel
                 rezonite = Rezonite,
 
                 serverId = (server.Id ?? "").Trim(),
-                serverAddress = string.IsNullOrWhiteSpace(serverIpForConnect) ? null : serverIpForConnect.Trim(),
+                serverAddress = string.IsNullOrWhiteSpace(serverAddressForMod) ? null : serverAddressForMod.Trim(),
                 build = (BuildDisplayName ?? "").Trim(),
 
                 accessToken = accessToken.Trim(),
@@ -194,14 +193,9 @@ public sealed partial class MainViewModel
                 joinTicketExpiresAtUnix = joinTicketExpiresAtUnix > 0 ? joinTicketExpiresAtUnix : 0
             };
 
-            var json = JsonSerializer.Serialize(ticket, new JsonSerializerOptions
-            {
-                WriteIndented = true
-            });
-
+            var json = JsonSerializer.Serialize(ticket, new JsonSerializerOptions { WriteIndented = true });
             WriteAllTextAtomic(GetAuthTicketJsonPath(), json);
 
-            // По желанию можно скрыть (на Windows). Не критично — игнорим ошибки.
             try
             {
                 File.SetAttributes(GetAuthTicketTokenPath(), FileAttributes.Hidden);
@@ -227,8 +221,6 @@ public sealed partial class MainViewModel
 
             try { if (File.Exists(tokenPath)) File.Delete(tokenPath); } catch { /* ignore */ }
             try { if (File.Exists(jsonPath)) File.Delete(jsonPath); } catch { /* ignore */ }
-
-            // папку не удаляем намеренно: она может содержать другие файлы мода
         }
         catch { /* ignore */ }
     }
@@ -302,19 +294,22 @@ public sealed partial class MainViewModel
 
             // RAM
             var ram = NormalizeRamMb(RamMb);
-            if (ram < 4096) ram = 4096; // ТЗ: минимум 4GB
+            if (ram < 4096) ram = 4096;
 
-            // IP (то, куда будем автоконнектиться)
+            // IP сервера (из поля или из выбранного сервера)
             var ip = (ServerIp ?? "").Trim();
             if (string.IsNullOrWhiteSpace(ip))
                 ip = (s.Address ?? "").Trim();
             if (string.IsNullOrWhiteSpace(ip))
                 ip = null;
 
-            // ✅ если автозаход выключен — НЕ передаём serverIp в BuildAndLaunchAsync
+            // ✅ 1) Автозаход в Minecraft через аргументы
             var ipForAutoJoin = AutoJoinServerOnLaunch ? ip : null;
 
-            // accessToken обязателен (для мода/скина/сайта)
+            // ✅ 2) Автозаход через мод (auth.json serverAddress)
+            // Если автозаход выключен — НЕ пишем адрес в auth.json.
+            var serverAddressForMod = AutoJoinServerOnLaunch ? ip : null;
+
             if (!TryGetAccessToken(out var token) || string.IsNullOrWhiteSpace(token))
             {
                 StatusText = "Требуется авторизация.";
@@ -329,7 +324,6 @@ public sealed partial class MainViewModel
             var mirrors = BuildPackMirrors(s);
             var loader = CreateLoaderSpecFromServer(s);
 
-            // ✅ ВАЖНО: pack/лоадер готовим ДО запуска
             var launchVersionId = await _mc.PrepareAsync(
                 minecraftVersion: s.MinecraftVersion,
                 loader: loader,
@@ -344,12 +338,11 @@ public sealed partial class MainViewModel
                 SelectedVersion = launchVersionId;
             });
 
-            // ✅ (опционально) заранее получить join-ticket
-            // Это переносит возможные "подгружается ещё что-то" из игры в лаунчер (с логом/контролем).
+            // ✅ join-ticket имеет смысл только если реально делаем автозаход
             string? joinTicket = null;
             long joinTicketExpiresAtUnix = 0;
 
-            if (PreCreateJoinTicket && !string.IsNullOrWhiteSpace(s.Id))
+            if (AutoJoinServerOnLaunch && PreCreateJoinTicket && !string.IsNullOrWhiteSpace(s.Id))
             {
                 try
                 {
@@ -369,7 +362,6 @@ public sealed partial class MainViewModel
                     }
                     else
                     {
-                        // Не фейлим запуск жёстко: мод может работать по accessToken, если ticket не обязателен
                         var err = jt?.Error ?? jt?.Message ?? "unknown";
                         AppendLog("Сервер: join-ticket не получен: " + err);
                     }
@@ -377,19 +369,18 @@ public sealed partial class MainViewModel
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
                 {
-                    // мягко
                     AppendLog("Сервер: ошибка получения join-ticket: " + ex.Message);
                 }
             }
 
-            // ✅ Пишем auth ticket ПОСЛЕ Prepare и ПРЯМО перед стартом игры (меньше времени токен лежит на диске)
+            // ✅ Пишем auth ticket прямо перед запуском
             if (!TryWriteAuthTicketForGame(
                     accessToken: token,
                     username: username,
                     server: s,
-                    serverIpForConnect: ip, // сохраняем адрес в json (даже если автозаход отключён)
-                    joinTicket: joinTicket,
-                    joinTicketExpiresAtUnix: joinTicketExpiresAtUnix,
+                    serverAddressForMod: serverAddressForMod,
+                    joinTicket: AutoJoinServerOnLaunch ? joinTicket : null,
+                    joinTicketExpiresAtUnix: AutoJoinServerOnLaunch ? joinTicketExpiresAtUnix : 0,
                     error: out var authErr))
             {
                 StatusText = "Ошибка подготовки авторизации.";
@@ -417,7 +408,7 @@ public sealed partial class MainViewModel
                 version: launchVersionId,
                 username: username,
                 ramMb: ram,
-                serverIp: ipForAutoJoin); // ✅ ВОТ ТУТ авто-заход: если null -> без автоконнекта
+                serverIp: ipForAutoJoin); // ✅ null => без автоконнекта
 
             launched = true;
 
@@ -427,8 +418,8 @@ public sealed partial class MainViewModel
             StopGameCommand.RaiseCanExecuteChanged();
 
             AppendLog(AutoJoinServerOnLaunch
-                ? "Игра запущена (автозаход включён)."
-                : "Игра запущена (без автозахода, откроется меню).");
+                ? "Игра запущена (автозаход ВКЛ)."
+                : "Игра запущена (автозаход ВЫКЛ, откроется меню).");
 
             StatusText = "Игра запущена.";
         }
@@ -447,7 +438,6 @@ public sealed partial class MainViewModel
             IsBusy = false;
             Interlocked.Exchange(ref _playGuard, 0);
 
-            // ✅ если игру НЕ запустили — не оставляем токен на диске
             if (!launched)
                 CleanupAuthTicketFiles();
 
@@ -471,7 +461,6 @@ public sealed partial class MainViewModel
                     AppendLog("Игра закрыта.");
                     _runningProcess = null;
 
-                    // ✅ чистим ticket после выхода игры (чтобы токен не лежал лишний раз)
                     CleanupAuthTicketFiles();
 
                     Raise(nameof(CanStop));
@@ -546,7 +535,6 @@ public sealed partial class MainViewModel
         {
             _runningProcess = null;
 
-            // ✅ чистим ticket если игру стопнули руками
             CleanupAuthTicketFiles();
 
             Raise(nameof(CanStop));
