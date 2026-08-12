@@ -10,10 +10,7 @@ namespace LegendBorn.Views.Tabs;
 public partial class StartTabView : UserControl
 {
     private const int NewsTabIndex = 4;
-
-    // В XAML/подписках у тебя встречается ru.legendborn.ru, но он иногда недоступен.
-    // Для открытия сайта используем основной домен (ru — резерв, если понадобится позже).
-    private const string SiteUrlPrimary = "https://legendborn.ru/";
+    private const string SiteUrlPrimary = "https://legendborn.xyz/";
 
     public StartTabView()
     {
@@ -26,14 +23,12 @@ public partial class StartTabView : UserControl
     {
         try
         {
-            // 1) Если VM прямо на DataContext этого таба
             if (DataContext is MainViewModel vm1)
             {
                 vm1.SelectedMenuIndex = NewsTabIndex;
                 return;
             }
 
-            // 2) Если VM на окне (частый сценарий)
             if (Window.GetWindow(this)?.DataContext is MainViewModel vm2)
             {
                 vm2.SelectedMenuIndex = NewsTabIndex;
@@ -57,7 +52,6 @@ public partial class StartTabView : UserControl
         try { TryOpenUrl(SiteUrlPrimary); } catch { }
     }
 
-    // One button: Play OR Stop (логика как в старом MainWindow.xaml.cs)
     private void PlayOrStop_OnClick(object sender, RoutedEventArgs e)
     {
         try
