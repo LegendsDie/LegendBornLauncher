@@ -9,9 +9,6 @@ namespace LegendBorn.ViewModels;
 
 public sealed partial class MainViewModel
 {
-    private string _lastAutoServerIp = "";
-    private string _previousSelectedServerAddress = "";
-
     private async Task InitializeAsync(CancellationToken ct)
     {
         try
@@ -44,25 +41,14 @@ public sealed partial class MainViewModel
 
         try
         {
-            var current = (ServerIp ?? "").Trim();
+            // The server catalog is authoritative for infrastructure data. Never let a stale
+            // LastServerIp from launcher.config.json survive a server migration and override it.
             var addr = (value.Address ?? "").Trim();
-
-            // DefaultServerIp is intentionally kept only as a migration sentinel for old configs.
-            // It is never used as a fallback target anymore. A live/cached catalog owns the address.
-            var shouldAuto =
-                string.IsNullOrWhiteSpace(current) ||
-                current.Equals(DefaultServerIp, StringComparison.OrdinalIgnoreCase) ||
-                current.Equals(_lastAutoServerIp, StringComparison.OrdinalIgnoreCase) ||
-                (!string.IsNullOrWhiteSpace(_previousSelectedServerAddress) &&
-                 current.Equals(_previousSelectedServerAddress, StringComparison.OrdinalIgnoreCase));
-
-            if (shouldAuto && !string.IsNullOrWhiteSpace(addr))
+            if (!string.IsNullOrWhiteSpace(addr) &&
+                !string.Equals(ServerIp, addr, StringComparison.OrdinalIgnoreCase))
             {
                 ServerIp = addr;
-                _lastAutoServerIp = addr;
             }
-
-            _previousSelectedServerAddress = addr;
         }
         catch { /* ignore */ }
 
@@ -76,6 +62,7 @@ public sealed partial class MainViewModel
         try
         {
             _config.Current.LastServerId = value.Id;
+            _config.Current.LastServerIp = (value.Address ?? "").Trim();
             ScheduleConfigSave();
         }
         catch { /* ignore */ }
