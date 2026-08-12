@@ -25,7 +25,6 @@
 
     <ItemGroup>
         <PackageReference Include="CmlLib.Core" Version="4.0.6" />
-        <PackageReference Include="CmlLib.Core.Installer.NeoForge" Version="4.0.1" />
         <PackageReference Include="Velopack" Version="1.2.0" />
     </ItemGroup>
 
