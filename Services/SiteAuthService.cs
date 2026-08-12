@@ -17,8 +17,10 @@ namespace LegendBorn.Services;
 
 public sealed class SiteAuthService
 {
-    // Важно: API у тебя завязан на ru-домен (как в MainViewModel).
-    private const string SiteBaseUrl = "https://ru.legendborn.ru/";
+    // Source of truth: legendbornweb production is served from legendborn.xyz.
+    // Using legacy ru.legendborn.ru here can redirect POST /api/launcher/login
+    // and break the device-link handshake before a deviceId is issued.
+    private const string SiteBaseUrl = "https://legendborn.xyz/";
 
     // Safety: ответы API не должны быть большими
     private const int MaxResponseBytes = 512 * 1024; // 512 KB
