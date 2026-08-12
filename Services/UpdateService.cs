@@ -43,11 +43,11 @@ public static class UpdateService
         return new UpdateManager(source, CreateOptions());
     }
 
-    private static UpdateSourceSpec[] CreateSources() =>
+    private static UpdateSourceSpec[] CreateSources() => new[]
     {
         // Russia-friendly static S3-compatible feed first; GitHub remains an independent fallback.
-        new("LegendBorn Selectel", 0, CreateSelectelManager),
-        new("GitHub Releases", 1, CreateGitHubManager)
+        new UpdateSourceSpec("LegendBorn Selectel", 0, CreateSelectelManager),
+        new UpdateSourceSpec("GitHub Releases", 1, CreateGitHubManager)
     };
 
     private static string NormalizeGithubRepoUrl(string input)
@@ -304,6 +304,7 @@ public static class UpdateService
             }
             catch (Exception ex) when (!IsCancellation(ex, ct))
             {
+                _ = ex;
                 // Continue to the next independent source.
             }
         }
