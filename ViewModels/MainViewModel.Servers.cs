@@ -3,6 +3,7 @@ using System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using LegendBorn.Services;
 
 namespace LegendBorn.ViewModels;
 
@@ -46,6 +47,8 @@ public sealed partial class MainViewModel
             var current = (ServerIp ?? "").Trim();
             var addr = (value.Address ?? "").Trim();
 
+            // DefaultServerIp is intentionally kept only as a migration sentinel for old configs.
+            // It is never used as a fallback target anymore. A live/cached catalog owns the address.
             var shouldAuto =
                 string.IsNullOrWhiteSpace(current) ||
                 current.Equals(DefaultServerIp, StringComparison.OrdinalIgnoreCase) ||
@@ -87,10 +90,10 @@ public sealed partial class MainViewModel
 
         try
         {
-            AppendLog("Серверы: загрузка списка...");
+            AppendLog("Серверы: загрузка актуального каталога...");
 
-            var list = await _servers.GetServersOrDefaultAsync(
-                mirrors: Services.ServerListService.DefaultServersMirrors,
+            var list = await ServerCatalogService.GetServersAsync(
+                log: message => AppendLog(message),
                 ct: ct);
 
             var savedId = "";
@@ -146,8 +149,16 @@ public sealed partial class MainViewModel
         }
         catch (Exception ex)
         {
-            AppendLog("Серверы: ошибка загрузки.");
+            // Fail closed. A stale address is worse than temporarily disabling Play after an IP move.
+            InvokeOnUi(() =>
+            {
+                Servers.Clear();
+                SelectedServer = null;
+            });
+
+            AppendLog("Серверы: не удалось получить актуальный каталог; запуск отключён.");
             AppendLog(ex.Message);
+            StatusText = "Не удалось получить актуальный адрес игрового сервера.";
         }
         finally
         {
