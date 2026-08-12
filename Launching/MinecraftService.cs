@@ -35,8 +35,8 @@ public sealed class MinecraftService
 
     private static readonly string[] DefaultPackMirrors =
     {
-        "https://pack.legendborn.ru/launcher/pack/",
         "https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/pack/",
+        "https://pack.legendborn.ru/launcher/pack/",
         "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/",
         "https://downloads.sourceforge.net/project/legendborn-pack/launcher/pack/"
     };

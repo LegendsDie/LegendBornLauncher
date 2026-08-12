@@ -22,7 +22,7 @@ public sealed partial class MainViewModel : ObservableObject
     internal const string SitePublicUrlPrimary = "https://legendborn.xyz";
     internal const string SitePublicUrlFallback = "https://ru.legendborn.xyz";
 
-    private const string DefaultServerIp = "legendcraft.minerent.io";
+    private const string DefaultServerIp = "";
 
     private const int MenuMinIndex = 0;
     private const int MenuMaxIndex = 4; // 0..4 (включая News)
@@ -175,7 +175,7 @@ public sealed partial class MainViewModel : ObservableObject
         public string LoaderInstallerUrl { get; init; } = "";
 
         public string ClientVersionId { get; init; } = "";
-        public string PackBaseUrl { get; init; } = "https://legendborn.ru/launcher/pack/";
+        public string PackBaseUrl { get; init; } = "";
         public string[] PackMirrors { get; init; } = Array.Empty<string>();
         public bool SyncPack { get; init; } = true;
 

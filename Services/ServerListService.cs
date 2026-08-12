@@ -227,7 +227,7 @@ public sealed class ServerListService
                 {
                     Id = "legendCraft",
                     Name = "LegendCraft",
-                    Address = "legendcraft.minerent.io",
+                    Address = "",
                     MinecraftVersion = "1.21.1",
                     Loader = new LoaderInfo
                     {
