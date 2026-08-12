@@ -209,7 +209,7 @@ jobs:
         shell: pwsh
         run: |
           & "$env:USERPROFILE\.dotnet\tools\vpk.exe" pack `
-            --packId "${{ steps.meta.outputs.version && 'LegendBornLauncher' || 'LegendBornLauncher' }}" `
+            --packId "LegendBornLauncher" `
             --packVersion "${{ steps.meta.outputs.version }}" `
             --packDir "artifacts/publish" `
             --mainExe "LegendBorn.exe" `
