@@ -12,16 +12,26 @@ namespace LegendBorn.ViewModels;
 
 public sealed partial class MainViewModel
 {
-    private const string DefaultPackBaseUrl = "https://legendborn.ru/launcher/pack/";
+    // Russia-friendly emergency default. Normal launches receive mirrors from the authoritative
+    // server catalog; this value exists only for an old cached ServerEntry migration edge case.
+    private const string DefaultPackBaseUrl =
+        "https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/pack/";
 
-    private static readonly string[] SourceForgePackMirrors =
+    private static readonly string[] DefaultPackFallbackMirrors =
     {
-        "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/"
+        "https://pack.legendborn.ru/launcher/pack/",
+        "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/",
+        "https://downloads.sourceforge.net/project/legendborn-pack/launcher/pack/"
     };
 
-    private static bool IsLegendbornHost(string? url)
+    private static bool IsSelectel(string? url)
         => !string.IsNullOrWhiteSpace(url) &&
-           url.Contains("legendborn.ru", StringComparison.OrdinalIgnoreCase);
+           (url.Contains("selstorage.ru", StringComparison.OrdinalIgnoreCase) ||
+            url.Contains("selcloud.ru", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsLegendbornPackHost(string? url)
+        => !string.IsNullOrWhiteSpace(url) &&
+           url.Contains("pack.legendborn.ru", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsSourceForgeMaster(string? url)
         => !string.IsNullOrWhiteSpace(url) &&
@@ -31,46 +41,29 @@ public sealed partial class MainViewModel
         => !string.IsNullOrWhiteSpace(url) &&
            url.Contains("downloads.sourceforge.net", StringComparison.OrdinalIgnoreCase);
 
+    private static int PackMirrorRank(string url)
+    {
+        if (IsSelectel(url)) return 0;
+        if (IsLegendbornPackHost(url)) return 1;
+        if (IsSourceForgeMaster(url)) return 2;
+        if (IsSourceForgeDownloads(url)) return 3;
+        return 4;
+    }
+
     private static string[] BuildPackMirrors(ServerEntry s)
     {
-        var baseUrl = EnsureSlash(s.PackBaseUrl);
-        if (string.IsNullOrWhiteSpace(baseUrl))
-            baseUrl = EnsureSlash(DefaultPackBaseUrl);
-
-        var extra = (s.PackMirrors ?? Array.Empty<string>())
-            .Select(EnsureSlash)
-            .Where(u => !string.IsNullOrWhiteSpace(u))
-            .Where(u => !IsSourceForgeDownloads(u))
+        var all = new[] { EnsureSlash(s.PackBaseUrl) }
+            .Concat((s.PackMirrors ?? Array.Empty<string>()).Select(EnsureSlash))
+            .Concat(DefaultPackFallbackMirrors.Select(EnsureSlash))
+            .Where(static url => !string.IsNullOrWhiteSpace(url))
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-        var all = new[] { baseUrl }
-            .Concat(extra)
-            .Where(u => !string.IsNullOrWhiteSpace(u))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(PackMirrorRank)
             .ToList();
 
-        if (IsLegendbornHost(baseUrl))
-        {
-            if (!all.Any(IsSourceForgeMaster))
-                all.AddRange(SourceForgePackMirrors.Select(EnsureSlash).Where(x => !string.IsNullOrWhiteSpace(x)));
-        }
-
         if (all.Count == 0)
-        {
             all.Add(EnsureSlash(DefaultPackBaseUrl));
-            all.AddRange(SourceForgePackMirrors.Select(EnsureSlash).Where(x => !string.IsNullOrWhiteSpace(x)));
-        }
 
-        return all
-            .OrderBy(u =>
-            {
-                if (u.Equals(baseUrl, StringComparison.OrdinalIgnoreCase)) return 0;
-                if (IsSourceForgeMaster(u)) return 1;
-                return 2;
-            })
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        return all.ToArray();
     }
 
     // =========================
@@ -134,7 +127,10 @@ public sealed partial class MainViewModel
             StatusText = "Проверка обновлений сборки...";
             ProgressPercent = 0;
 
-            var mirrors = BuildPackMirrors(s);
+            var mirrors = await PackMirrorPreflightService.OrderByFreshnessAsync(
+                BuildPackMirrors(s),
+                log: AppendLog,
+                ct: _lifetimeCts.Token);
 
             if (s.SyncPack)
                 await _mc.SyncPackAsync(mirrors, _lifetimeCts.Token);
@@ -194,7 +190,6 @@ public sealed partial class MainViewModel
             var autoConnect = false;
             try { autoConnect = _config.Current.AutoConnect; } catch { }
 
-            // Respect the persisted launcher setting instead of a compile-time constant.
             var ipForAutoJoin = autoConnect ? ip : null;
 
             if (!TryGetAccessToken(out var token) || string.IsNullOrWhiteSpace(token))
@@ -208,7 +203,10 @@ public sealed partial class MainViewModel
             StatusText = $"Подготовка {BuildDisplayName}...";
             ProgressPercent = 0;
 
-            var mirrors = BuildPackMirrors(s);
+            var mirrors = await PackMirrorPreflightService.OrderByFreshnessAsync(
+                BuildPackMirrors(s),
+                log: AppendLog,
+                ct: _lifetimeCts.Token);
             var loader = CreateLoaderSpecFromServer(s);
 
             var launchVersionId = await _mc.PrepareAsync(
@@ -231,9 +229,6 @@ public sealed partial class MainViewModel
             {
                 StatusText = "Подготовка безопасной игровой сессии...";
 
-                // Keep the website-side Minecraft identity synchronized with the name selected
-                // in the launcher. The long-lived access token is used only over HTTPS here and
-                // is never copied into the Minecraft instance.
                 var link = await _site.LinkMinecraftAsync(
                     accessToken: token,
                     username: username,
@@ -393,25 +388,18 @@ public sealed partial class MainViewModel
         if (loaderType == "vanilla" || string.IsNullOrWhiteSpace(loaderType))
             return new MinecraftService.LoaderSpec("vanilla", "", "");
 
+        if (loaderType != "neoforge")
+            throw new InvalidOperationException($"Loader '{loaderType}' не поддерживается этой сборкой лаунчера.");
+
         if (string.IsNullOrWhiteSpace(loaderVer))
-            throw new InvalidOperationException($"Loader '{loaderType}' требует версию (loader.version).");
+            throw new InvalidOperationException("NeoForge требует loader.version.");
 
         if (string.IsNullOrWhiteSpace(installerUrl))
         {
-            if (loaderType == "neoforge")
-            {
-                installerUrl =
-                    $"https://maven.neoforged.net/releases/net/neoforged/neoforge/{loaderVer}/neoforge-{loaderVer}-installer.jar";
-            }
-            else if (loaderType == "forge")
-            {
-                installerUrl =
-                    $"https://maven.minecraftforge.net/net/minecraftforge/forge/{s.MinecraftVersion}-{loaderVer}/forge-{s.MinecraftVersion}-{loaderVer}-installer.jar";
-            }
-            else
-            {
-                throw new InvalidOperationException($"Loader '{loaderType}' требует installerUrl (не задан в конфиге сервера).");
-            }
+            // Exact SourceForge fallback, not official Maven and never /latest/download.
+            installerUrl =
+                $"https://downloads.sourceforge.net/project/legendborn-neoforge/neoforge/" +
+                $"neoforge-{Uri.EscapeDataString(loaderVer)}-installer.jar";
         }
 
         return new MinecraftService.LoaderSpec(loaderType, loaderVer, installerUrl);
