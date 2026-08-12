@@ -103,8 +103,6 @@ jobs:
             throw "Launcher logout no longer revokes the server-side token."
           }
 
-          # SiteAuthService still contains legacy helper definitions for compatibility with
-          # the old monolith, but no production code may call those phantom web routes.
           $deprecated = Get-ChildItem -Recurse -File -Filter '*.cs' |
             Where-Object { $_.FullName -notlike '*\Services\SiteAuthService.cs' } |
             Select-String -Pattern 'SendLauncherEventAsync\s*\(|GetRezoniteBalanceAsync\s*\('
@@ -112,6 +110,79 @@ jobs:
           if ($deprecated) {
             $details = ($deprecated | ForEach-Object { "$($_.Path):$($_.LineNumber): $($_.Line.Trim())" }) -join "`n"
             throw "Deprecated phantom launcher API helper is referenced outside SiteAuthService:`n$details"
+          }
+
+      - name: Verify distribution resilience policy
+        shell: pwsh
+        run: |
+          $catalog = Get-Content -Raw -Path "Services/ServerCatalogService.cs"
+          $serversVm = Get-Content -Raw -Path "ViewModels/MainViewModel.Servers.cs"
+          $loader = Get-Content -Raw -Path "Launching/LoaderInstaller.cs"
+          $neoBootstrap = Get-Content -Raw -Path "Services/NeoForgeDistributionBootstrap.cs"
+          $packPreflight = Get-Content -Raw -Path "Services/PackMirrorPreflightService.cs"
+          $update = Get-Content -Raw -Path "Services/UpdateService.cs"
+
+          foreach ($required in @(
+            'https://legendborn.xyz/api/launcher/servers',
+            'server_catalog_v2.json',
+            'validUntilUnix',
+            'Authoritative'
+          )) {
+            if (-not $catalog.Contains($required)) {
+              throw "Server catalog resilience token missing: $required"
+            }
+          }
+
+          if ($serversVm -notmatch 'ServerIp\s*=\s*addr') {
+            throw "Selected server no longer forces the authoritative catalog address over stale local config."
+          }
+
+          if ($loader -match 'files/latest/download') {
+            throw "NeoForge installer must never use an unversioned latest/download URL."
+          }
+
+          foreach ($required in @(
+            'ValidateInstallerJar',
+            'OfficialMavenDownloadTimeout',
+            'Major: >= 21',
+            'Is64Bit: true',
+            'SourceForgeDirectCdnUrl'
+          )) {
+            if (-not $loader.Contains($required)) {
+              throw "NeoForge restricted-network safeguard missing: $required"
+            }
+          }
+
+          foreach ($required in @(
+            'https://legendborn.xyz/api/maven/neoforge/',
+            'LEGENDBORN_NEOFORGE_MAVEN_MIRRORS'
+          )) {
+            if (-not $neoBootstrap.Contains($required)) {
+              throw "NeoForge LegendBorn proxy bootstrap missing: $required"
+            }
+          }
+
+          foreach ($required in @(
+            'manifest.json',
+            'Manifest.Build',
+            'VersionScore',
+            'selstorage.ru'
+          )) {
+            if (-not $packPreflight.Contains($required)) {
+              throw "Pack mirror freshness safeguard missing: $required"
+            }
+          }
+
+          foreach ($required in @(
+            'SimpleWebSource',
+            'selstorage.ru/launcher/releases/',
+            'GithubSource',
+            'SemanticVersion.CompareByVersion',
+            'FindDownloadFallbackAsync'
+          )) {
+            if (-not $update.Contains($required)) {
+              throw "Launcher update mirror safeguard missing: $required"
+            }
           }
 
       - name: Cache NuGet
@@ -138,7 +209,7 @@ jobs:
         shell: pwsh
         run: |
           & "$env:USERPROFILE\.dotnet\tools\vpk.exe" pack `
-            --packId "LegendBornLauncher" `
+            --packId "${{ steps.meta.outputs.version && 'LegendBornLauncher' || 'LegendBornLauncher' }}" `
             --packVersion "${{ steps.meta.outputs.version }}" `
             --packDir "artifacts/publish" `
             --mainExe "LegendBorn.exe" `
