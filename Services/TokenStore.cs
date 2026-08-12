@@ -7,9 +7,14 @@ using LegendBorn.Models;
 
 namespace LegendBorn.Services;
 
+/// <summary>
+/// Persists launcher authentication tokens for the current Windows user.
+/// Tokens are never intentionally written to disk in plaintext.
+/// </summary>
 public sealed class TokenStore
 {
     private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("LegendBornLauncher.v1");
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -18,6 +23,8 @@ public sealed class TokenStore
         ReadCommentHandling = JsonCommentHandling.Skip,
         AllowTrailingCommas = true
     };
+
+    private const int MaxTokenFileBytes = 64 * 1024;
 
     private readonly string _filePath;
     private readonly object _sync = new();
@@ -34,48 +41,49 @@ public sealed class TokenStore
     {
         lock (_sync)
         {
-            if (tokens is null || string.IsNullOrWhiteSpace(tokens.AccessToken))
+            SaveInternal(tokens);
+        }
+    }
+
+    private void SaveInternal(AuthTokens? tokens)
+    {
+        if (tokens is null || !tokens.HasAccessToken)
+        {
+            ClearInternal();
+            return;
+        }
+
+        var tmp = _filePath + ".tmp";
+
+        try
+        {
+            var json = JsonSerializer.Serialize(tokens, JsonOpts);
+            var data = Encoding.UTF8.GetBytes(json);
+
+            // Security invariant: persistence is allowed only when DPAPI protection succeeds.
+            // If DPAPI is unavailable, keep the token in memory for this process, but do not
+            // downgrade to an unencrypted file on disk.
+            var payload = ProtectedData.Protect(data, Entropy, DataProtectionScope.CurrentUser);
+
+            if (payload.Length <= 0 || payload.Length > MaxTokenFileBytes)
+                throw new InvalidOperationException("Protected token payload has an invalid size.");
+
+            EnsureParentDir(_filePath);
+            TryDeleteQuiet(tmp);
+
+            using (var fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
-                ClearInternal();
-                return;
+                fs.Write(payload, 0, payload.Length);
+                fs.Flush(flushToDisk: true);
             }
 
-            try
-            {
-                var json = JsonSerializer.Serialize(tokens, JsonOpts);
-                var data = Encoding.UTF8.GetBytes(json);
-
-                // DPAPI (как основной путь)
-                byte[] payload;
-                try
-                {
-                    payload = ProtectedData.Protect(data, Entropy, DataProtectionScope.CurrentUser);
-                }
-                catch
-                {
-                    // fallback plaintext (редко, но лучше чем потерять токен)
-                    payload = data;
-                }
-
-                EnsureParentDir(_filePath);
-
-                var tmp = _filePath + ".tmp";
-
-                // ✅ надёжнее записываем на диск (flush)
-                using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
-                {
-                    fs.Write(payload, 0, payload.Length);
-                    fs.Flush(flushToDisk: true);
-                }
-
-                ReplaceOrMoveAtomic(tmp, _filePath);
-
-                TryDeleteQuiet(tmp);
-            }
-            catch
-            {
-                TryDeleteQuiet(_filePath + ".tmp");
-            }
+            ReplaceOrMoveAtomic(tmp, _filePath);
+            TryDeleteQuiet(tmp);
+        }
+        catch
+        {
+            // Never leave a plaintext or partial token file behind.
+            TryDeleteQuiet(tmp);
         }
     }
 
@@ -88,33 +96,38 @@ public sealed class TokenStore
 
             try
             {
+                var info = new FileInfo(_filePath);
+                if (info.Length <= 0 || info.Length > MaxTokenFileBytes)
+                {
+                    TryBackupBroken();
+                    ClearInternal();
+                    return null;
+                }
+
                 var payload = File.ReadAllBytes(_filePath);
 
-                // 1) пробуем DPAPI unprotect
-                byte[] data;
                 try
                 {
-                    data = ProtectedData.Unprotect(payload, Entropy, DataProtectionScope.CurrentUser);
+                    var data = ProtectedData.Unprotect(payload, Entropy, DataProtectionScope.CurrentUser);
+                    return ParseTokenPayload(data);
                 }
-                catch
+                catch (CryptographicException)
                 {
-                    // 2) fallback: возможно это plaintext
-                    data = payload;
+                    // Compatibility migration for old launcher builds which could write plaintext
+                    // when DPAPI failed. Read it only if it is strict UTF-8 and structurally valid,
+                    // then immediately remove the plaintext copy and try to re-save securely.
+                    var legacy = TryParseLegacyPlaintext(payload);
+                    if (legacy is not null && legacy.HasAccessToken)
+                    {
+                        ClearInternal();
+                        SaveInternal(legacy);
+                        return legacy;
+                    }
+
+                    TryBackupBroken();
+                    ClearInternal();
+                    return null;
                 }
-
-                var raw = Encoding.UTF8.GetString(data);
-
-                // json?
-                var tokens = TryDeserializeTokens(raw);
-                if (tokens is not null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
-                    return tokens;
-
-                // legacy: одиночная строка токена
-                var maybeToken = raw?.Trim();
-                if (!string.IsNullOrWhiteSpace(maybeToken) && !maybeToken.StartsWith("{"))
-                    return new AuthTokens { AccessToken = maybeToken };
-
-                return null;
             }
             catch
             {
@@ -133,6 +146,68 @@ public sealed class TokenStore
         }
     }
 
+    private static AuthTokens? ParseTokenPayload(byte[] data)
+    {
+        if (data.Length == 0 || data.Length > MaxTokenFileBytes)
+            return null;
+
+        var raw = Encoding.UTF8.GetString(data);
+        return ParseTokenText(raw, allowLegacySingleToken: false);
+    }
+
+    private static AuthTokens? TryParseLegacyPlaintext(byte[] payload)
+    {
+        try
+        {
+            if (payload.Length == 0 || payload.Length > MaxTokenFileBytes)
+                return null;
+
+            var raw = StrictUtf8.GetString(payload);
+            return ParseTokenText(raw, allowLegacySingleToken: true);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static AuthTokens? ParseTokenText(string? raw, bool allowLegacySingleToken)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+
+        var trimmed = raw.Trim();
+
+        if (trimmed.StartsWith("{", StringComparison.Ordinal))
+        {
+            try
+            {
+                var tokens = JsonSerializer.Deserialize<AuthTokens>(trimmed, JsonOpts);
+                return tokens is not null && tokens.HasAccessToken ? tokens : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        if (!allowLegacySingleToken)
+            return null;
+
+        // Very old format: a single token line. Reject control characters and multiline data
+        // so arbitrary/corrupt binary is never interpreted as a credential.
+        if (trimmed.Length is < 16 or > 16_384)
+            return null;
+
+        foreach (var ch in trimmed)
+        {
+            if (char.IsControl(ch) || char.IsWhiteSpace(ch))
+                return null;
+        }
+
+        return new AuthTokens { AccessToken = trimmed };
+    }
+
     private void ClearInternal()
     {
         TryDeleteQuiet(_filePath);
@@ -140,26 +215,12 @@ public sealed class TokenStore
         TryDeleteQuiet(_filePath + ".bak");
     }
 
-    private static AuthTokens? TryDeserializeTokens(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-            return null;
-
-        try
-        {
-            if (raw.TrimStart().StartsWith("{"))
-                return JsonSerializer.Deserialize<AuthTokens>(raw, JsonOpts);
-        }
-        catch { }
-
-        return null;
-    }
-
     private void TryBackupBroken()
     {
         try
         {
-            if (!File.Exists(_filePath)) return;
+            if (!File.Exists(_filePath))
+                return;
 
             var ts = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
             var bak = _filePath + ".broken." + ts + ".bak";
@@ -167,56 +228,37 @@ public sealed class TokenStore
             EnsureParentDir(_filePath);
             File.Copy(_filePath, bak, overwrite: true);
         }
-        catch { }
+        catch
+        {
+        }
     }
 
     private static void EnsureParentDir(string filePath)
     {
-        try
-        {
-            var dir = Path.GetDirectoryName(filePath);
-            if (!string.IsNullOrWhiteSpace(dir))
-                Directory.CreateDirectory(dir);
-        }
-        catch { }
+        var dir = Path.GetDirectoryName(filePath);
+        if (!string.IsNullOrWhiteSpace(dir))
+            Directory.CreateDirectory(dir);
     }
 
     private static void ReplaceOrMoveAtomic(string sourceTmp, string destPath)
     {
-        try
+        if (OperatingSystem.IsWindows() && File.Exists(destPath))
         {
-            if (OperatingSystem.IsWindows() && File.Exists(destPath))
-            {
-                var backup = destPath + ".bak";
-                try
-                {
-                    TryDeleteQuiet(backup);
-                    File.Replace(sourceTmp, destPath, backup, ignoreMetadataErrors: true);
-                }
-                finally
-                {
-                    TryDeleteQuiet(backup);
-                }
-                return;
-            }
+            var backup = destPath + ".bak";
+            TryDeleteQuiet(backup);
 
-            File.Move(sourceTmp, destPath, overwrite: true);
-        }
-        catch
-        {
-            // fallback
             try
             {
-                if (File.Exists(destPath))
-                    File.Delete(destPath);
-
-                File.Move(sourceTmp, destPath);
+                File.Replace(sourceTmp, destPath, backup, ignoreMetadataErrors: true);
+                return;
             }
-            catch
+            finally
             {
-                // ignore
+                TryDeleteQuiet(backup);
             }
         }
+
+        File.Move(sourceTmp, destPath, overwrite: true);
     }
 
     private static void TryDeleteQuiet(string path)
@@ -226,6 +268,8 @@ public sealed class TokenStore
             if (File.Exists(path))
                 File.Delete(path);
         }
-        catch { }
+        catch
+        {
+        }
     }
 }
