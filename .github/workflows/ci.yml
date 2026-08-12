@@ -89,12 +89,13 @@ jobs:
           foreach ($required in @(
             'api/launcher/login',
             'api/launcher/logout',
-            'LAUNCHER_LINK_NOT_FOUND',
-            'LAUNCHER_LINK_EXPIRED',
-            'LAUNCHER_LINK_CONSUMED'
+            'PollState.TerminalError',
+            'PollState.TransientError',
+            'HttpStatusCode.TooManyRequests',
+            'AllowAutoRedirect = false'
           )) {
             if (-not $authClient.Contains($required)) {
-              throw "Launcher auth contract token missing: $required"
+              throw "Launcher auth policy token missing: $required"
             }
           }
 
