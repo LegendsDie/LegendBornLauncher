@@ -48,6 +48,34 @@ jobs:
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "velopack_version=$velopackVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
+      - name: Verify seed-only pack policy
+        shell: pwsh
+        run: |
+          $source = Get-Content -Raw -Path "Launching/MinecraftService.cs"
+          $match = [regex]::Match(
+            $source,
+            'AlwaysProtectedMutablePrefixes\s*=\s*\{(?<body>.*?)\};',
+            [System.Text.RegularExpressions.RegexOptions]::Singleline)
+
+          if (-not $match.Success) {
+            throw "AlwaysProtectedMutablePrefixes policy was not found."
+          }
+
+          $body = $match.Groups['body'].Value
+          foreach ($required in @('config/', 'defaultconfigs/', 'resourcepacks/', 'shaderpacks/')) {
+            if (-not $body.Contains('"' + $required + '"')) {
+              throw "Protected pack prefix is missing: $required"
+            }
+          }
+
+          if ($source -notmatch 'if \(IsAlwaysProtectedMutable\(rel\)\) continue;') {
+            throw "Manifest delete path no longer protects AlwaysProtectedMutable prefixes."
+          }
+
+          if ($source -notmatch '!IsAlwaysProtectedMutable\(r\)') {
+            throw "Prune path no longer excludes AlwaysProtectedMutable prefixes."
+          }
+
       - name: Cache NuGet
         uses: actions/cache@v5
         with:
@@ -59,8 +87,8 @@ jobs:
       - name: Restore win-x64
         run: dotnet restore LegendBorn.csproj -r win-x64
 
-      - name: Build
-        run: dotnet build LegendBorn.csproj -c Release --no-restore
+      - name: Build (warnings are errors)
+        run: dotnet build LegendBorn.csproj -c Release --no-restore -warnaserror
 
       - name: Publish self-contained launcher
         run: dotnet publish LegendBorn.csproj -c Release -r win-x64 --self-contained true --no-restore -o artifacts/publish
