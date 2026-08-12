@@ -76,6 +76,40 @@ jobs:
             throw "Prune path no longer excludes AlwaysProtectedMutable prefixes."
           }
 
+      - name: Verify launcher auth contract policy
+        shell: pwsh
+        run: |
+          $authClient = Get-Content -Raw -Path "Services/LauncherAuthClient.cs"
+          $authVm = Get-Content -Raw -Path "ViewModels/MainViewModel.Auth.cs"
+
+          if ($authClient -notmatch 'ProductionOrigin\s*=\s*"https://legendborn\.xyz/"') {
+            throw "Launcher auth origin drifted from legendbornweb production origin."
+          }
+
+          foreach ($required in @(
+            'api/launcher/login',
+            'api/launcher/logout',
+            'LAUNCHER_LINK_NOT_FOUND',
+            'LAUNCHER_LINK_EXPIRED',
+            'LAUNCHER_LINK_CONSUMED'
+          )) {
+            if (-not $authClient.Contains($required)) {
+              throw "Launcher auth contract token missing: $required"
+            }
+          }
+
+          if ($authVm.Contains('SendLauncherEventAsync')) {
+            throw "Launcher still calls deprecated /api/launcher/events behavior."
+          }
+
+          if ($authVm.Contains('GetRezoniteBalanceAsync')) {
+            throw "Launcher still calls deprecated /api/launcher/economy/balance behavior."
+          }
+
+          if ($authVm -notmatch 'RevokeAsync\(') {
+            throw "Launcher logout no longer revokes the server-side token."
+          }
+
       - name: Cache NuGet
         uses: actions/cache@v5
         with:
