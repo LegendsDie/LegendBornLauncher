@@ -28,6 +28,26 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Read project metadata
+        id: meta
+        shell: pwsh
+        run: |
+          [xml]$xml = Get-Content -Raw -Path "LegendBorn.csproj"
+
+          $versionNode = $xml.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -First 1
+          $version = [string]$versionNode.Version
+
+          $velopackRef = $xml.Project.ItemGroup.PackageReference |
+            Where-Object { $_.Include -eq "Velopack" } |
+            Select-Object -First 1
+          $velopackVersion = [string]$velopackRef.Version
+
+          if ([string]::IsNullOrWhiteSpace($version)) { throw "Project Version not found" }
+          if ([string]::IsNullOrWhiteSpace($velopackVersion)) { throw "Velopack PackageReference not found" }
+
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "velopack_version=$velopackVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
       - name: Cache NuGet
         uses: actions/cache@v5
         with:
@@ -46,14 +66,14 @@ jobs:
         run: dotnet publish LegendBorn.csproj -c Release -r win-x64 --self-contained true --no-restore -o artifacts/publish
 
       - name: Install Velopack CLI
-        run: dotnet tool install -g vpk --version 1.2.0
+        run: dotnet tool install -g vpk --version "${{ steps.meta.outputs.velopack_version }}"
 
       - name: Velopack package smoke test
         shell: pwsh
         run: |
           & "$env:USERPROFILE\.dotnet\tools\vpk.exe" pack `
             --packId "LegendBornLauncher" `
-            --packVersion "0.3.8" `
+            --packVersion "${{ steps.meta.outputs.version }}" `
             --packDir "artifacts/publish" `
             --mainExe "LegendBorn.exe" `
             --packTitle "LegendBorn Launcher" `
