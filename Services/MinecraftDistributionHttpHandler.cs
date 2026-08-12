@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Net.Http.Headers;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -16,7 +15,7 @@ namespace LegendBorn.Services;
 /// Normal networks keep using Mojang directly. If an official distribution host times out or
 /// returns a transient/block-like status, that host is temporarily marked degraded and subsequent
 /// requests prefer the LegendBorn fixed-origin proxy. For URL layouts that BMCLAPI documents as
-/// Mojang-compatible, BMCLAPI is an independent final mirror before retrying the official host.
+/// Mojang-compatible, BMCLAPI is an independent mirror before retrying the official host.
 ///
 /// Integrity is still enforced by CmlLib's normal SHA-1 checks; this handler only changes transport.
 /// </summary>
@@ -37,20 +36,31 @@ internal sealed class MinecraftDistributionHttpHandler : HttpMessageHandler
 
     public MinecraftDistributionHttpHandler(HttpMessageHandler innerHandler, Action<string>? log = null)
     {
-        _transport = new HttpMessageInvoker(innerHandler ?? throw new ArgumentNullException(nameof(innerHandler)), disposeHandler: true);
+        _transport = new HttpMessageInvoker(
+            innerHandler ?? throw new ArgumentNullException(nameof(innerHandler)),
+            disposeHandler: true);
         _log = log;
     }
 
-    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        if (request.RequestUri is null ||
-            (request.Method != HttpMethod.Get && request.Method != HttpMethod.Head) ||
+        if (request.RequestUri is null)
+            throw new InvalidOperationException("HTTP request URI is missing.");
+
+        if ((request.Method != HttpMethod.Get && request.Method != HttpMethod.Head) ||
             request.Content is not null ||
             !TryGetOfficialOrigin(request.RequestUri, out var originKey))
         {
-            return await SendCloneAsync(request, request.RequestUri!, cancellationToken, timeout: null).ConfigureAwait(false);
+            return await SendCloneAsync(
+                    request,
+                    request.RequestUri,
+                    cancellationToken,
+                    timeout: null)
+                .ConfigureAwait(false);
         }
 
         var original = request.RequestUri;
@@ -60,11 +70,12 @@ internal sealed class MinecraftDistributionHttpHandler : HttpMessageHandler
         if (!hostDegraded)
         {
             var direct = await TrySendCandidateAsync(
-                request,
-                original,
-                cancellationToken,
-                DirectAttemptTimeout,
-                isOfficial: true).ConfigureAwait(false);
+                    request,
+                    original,
+                    cancellationToken,
+                    DirectAttemptTimeout,
+                    mirrorCandidate: false)
+                .ConfigureAwait(false);
 
             if (direct.Response is not null && !direct.ShouldFailOver)
                 return direct.Response;
@@ -79,11 +90,12 @@ internal sealed class MinecraftDistributionHttpHandler : HttpMessageHandler
             cancellationToken.ThrowIfCancellationRequested();
 
             var mirrored = await TrySendCandidateAsync(
-                request,
-                mirror.Uri,
-                cancellationToken,
-                MirrorAttemptTimeout,
-                isOfficial: false).ConfigureAwait(false);
+                    request,
+                    mirror.Uri,
+                    cancellationToken,
+                    MirrorAttemptTimeout,
+                    mirrorCandidate: true)
+                .ConfigureAwait(false);
 
             if (mirrored.Response is not null && !mirrored.ShouldFailOver)
             {
@@ -96,10 +108,14 @@ internal sealed class MinecraftDistributionHttpHandler : HttpMessageHandler
 
         // A degraded marker is only an optimization. If every mirror failed, give the official
         // endpoint one final attempt so a recovered Mojang host can immediately heal the process.
-        var finalDirect = await SendCloneAsync(request, original, cancellationToken, timeout: MirrorAttemptTimeout)
+        var finalDirect = await SendCloneAsync(
+                request,
+                original,
+                cancellationToken,
+                timeout: MirrorAttemptTimeout)
             .ConfigureAwait(false);
 
-        if (finalDirect.IsSuccessStatusCode || finalDirect.StatusCode == HttpStatusCode.PartialContent)
+        if (IsUsable(finalDirect.StatusCode))
             ClearHostDegraded(original.Host);
 
         return finalDirect;
@@ -110,18 +126,20 @@ internal sealed class MinecraftDistributionHttpHandler : HttpMessageHandler
         Uri target,
         CancellationToken cancellationToken,
         TimeSpan timeout,
-        bool isOfficial)
+        bool mirrorCandidate)
     {
         try
         {
             var response = await SendCloneAsync(source, target, cancellationToken, timeout).ConfigureAwait(false);
-            var failOver = ShouldFailOver(response.StatusCode);
 
-            if (isOfficial && !failOver &&
-                (response.IsSuccessStatusCode || response.StatusCode == HttpStatusCode.PartialContent))
-            {
+            // For the official source, preserve authoritative non-transient errors such as 404.
+            // For a mirror/proxy, any unusable response means "try the next transport".
+            var failOver = mirrorCandidate
+                ? !IsUsable(response.StatusCode)
+                : ShouldOfficialFailOver(response.StatusCode);
+
+            if (!mirrorCandidate && !failOver && IsUsable(response.StatusCode))
                 ClearHostDegraded(target.Host);
-            }
 
             return (response, failOver);
         }
@@ -157,7 +175,13 @@ internal sealed class MinecraftDistributionHttpHandler : HttpMessageHandler
         return await _transport.SendAsync(clone, linked.Token).ConfigureAwait(false);
     }
 
-    private static bool ShouldFailOver(HttpStatusCode status)
+    private static bool IsUsable(HttpStatusCode status)
+    {
+        var code = (int)status;
+        return code is >= 200 and <= 299 || status == HttpStatusCode.NotModified;
+    }
+
+    private static bool ShouldOfficialFailOver(HttpStatusCode status)
     {
         var code = (int)status;
         return status == HttpStatusCode.Forbidden ||
@@ -187,10 +211,8 @@ internal sealed class MinecraftDistributionHttpHandler : HttpMessageHandler
             var path = original.AbsolutePath.TrimStart('/');
             if (path.Length == 0) return null;
 
-            var baseUri = new Uri(LegendBornMirrorBase, UriKind.Absolute);
-            var target = new Uri(baseUri, originKey + "/" + path);
-            var builder = new UriBuilder(target) { Query = original.Query.TrimStart('?') };
-            return builder.Uri;
+            var target = new Uri(new Uri(LegendBornMirrorBase, UriKind.Absolute), originKey + "/" + path);
+            return new UriBuilder(target) { Query = original.Query.TrimStart('?') }.Uri;
         }
         catch
         {
@@ -217,8 +239,7 @@ internal sealed class MinecraftDistributionHttpHandler : HttpMessageHandler
             if (mappedPath.Length == 0) return null;
 
             var target = new Uri(new Uri(BmclApiBase, UriKind.Absolute), mappedPath);
-            var builder = new UriBuilder(target) { Query = original.Query.TrimStart('?') };
-            return builder.Uri;
+            return new UriBuilder(target) { Query = original.Query.TrimStart('?') }.Uri;
         }
         catch
         {
