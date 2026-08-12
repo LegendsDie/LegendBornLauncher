@@ -26,6 +26,7 @@ env:
   PACK_TITLE: LegendBorn Launcher
   VPK_OUTPUT_DIR: Releases
   VPK_CHANNEL: win
+  VPK_MIRROR_PREFIX: launcher/releases
   FORCE_RELEASE: ${{ inputs.force == 'true' }}
 
 jobs:
@@ -148,6 +149,29 @@ jobs:
             }
           }
 
+      - name: Require Selectel mirror configuration
+        if: steps.tagcheck.outputs.exists != 'true'
+        shell: pwsh
+        env:
+          MIRROR_ENDPOINT: ${{ vars.LEGENDBORN_VPK_MIRROR_ENDPOINT }}
+          MIRROR_BUCKET: ${{ vars.LEGENDBORN_VPK_MIRROR_BUCKET }}
+          MIRROR_KEY_ID: ${{ secrets.LEGENDBORN_VPK_MIRROR_KEY_ID }}
+          MIRROR_SECRET: ${{ secrets.LEGENDBORN_VPK_MIRROR_SECRET }}
+        run: |
+          $missing = @()
+          if ([string]::IsNullOrWhiteSpace($env:MIRROR_ENDPOINT)) { $missing += 'vars.LEGENDBORN_VPK_MIRROR_ENDPOINT' }
+          if ([string]::IsNullOrWhiteSpace($env:MIRROR_BUCKET)) { $missing += 'vars.LEGENDBORN_VPK_MIRROR_BUCKET' }
+          if ([string]::IsNullOrWhiteSpace($env:MIRROR_KEY_ID)) { $missing += 'secrets.LEGENDBORN_VPK_MIRROR_KEY_ID' }
+          if ([string]::IsNullOrWhiteSpace($env:MIRROR_SECRET)) { $missing += 'secrets.LEGENDBORN_VPK_MIRROR_SECRET' }
+
+          if ($missing.Count -gt 0) {
+            throw "Production release blocked: configure Selectel Velopack mirror first. Missing: $($missing -join ', ')"
+          }
+
+          if (-not $env:MIRROR_ENDPOINT.StartsWith('https://', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "LEGENDBORN_VPK_MIRROR_ENDPOINT must be an HTTPS S3-compatible endpoint."
+          }
+
       - name: Restore win-x64
         if: steps.tagcheck.outputs.exists != 'true'
         shell: pwsh
@@ -198,6 +222,24 @@ jobs:
             --outputDir "${{ env.VPK_OUTPUT_DIR }}" `
             --channel "${{ env.VPK_CHANNEL }}" `
             --runtime "win-x64"
+
+      - name: Upload Selectel Velopack mirror
+        if: steps.tagcheck.outputs.exists != 'true'
+        shell: pwsh
+        env:
+          MIRROR_ENDPOINT: ${{ vars.LEGENDBORN_VPK_MIRROR_ENDPOINT }}
+          MIRROR_BUCKET: ${{ vars.LEGENDBORN_VPK_MIRROR_BUCKET }}
+          MIRROR_KEY_ID: ${{ secrets.LEGENDBORN_VPK_MIRROR_KEY_ID }}
+          MIRROR_SECRET: ${{ secrets.LEGENDBORN_VPK_MIRROR_SECRET }}
+        run: |
+          vpk upload s3 `
+            --endpoint "$env:MIRROR_ENDPOINT" `
+            --bucket "$env:MIRROR_BUCKET" `
+            --keyId "$env:MIRROR_KEY_ID" `
+            --secret "$env:MIRROR_SECRET" `
+            --prefix "${{ env.VPK_MIRROR_PREFIX }}" `
+            --outputDir "${{ env.VPK_OUTPUT_DIR }}" `
+            --channel "${{ env.VPK_CHANNEL }}"
 
       - name: Upload GitHub Release
         if: steps.tagcheck.outputs.exists != 'true'
