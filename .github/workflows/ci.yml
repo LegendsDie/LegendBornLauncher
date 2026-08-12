@@ -99,16 +99,19 @@ jobs:
             }
           }
 
-          if ($authVm.Contains('SendLauncherEventAsync')) {
-            throw "Launcher still calls deprecated /api/launcher/events behavior."
-          }
-
-          if ($authVm.Contains('GetRezoniteBalanceAsync')) {
-            throw "Launcher still calls deprecated /api/launcher/economy/balance behavior."
-          }
-
           if ($authVm -notmatch 'RevokeAsync\(') {
             throw "Launcher logout no longer revokes the server-side token."
+          }
+
+          # SiteAuthService still contains legacy helper definitions for compatibility with
+          # the old monolith, but no production code may call those phantom web routes.
+          $deprecated = Get-ChildItem -Recurse -File -Filter '*.cs' |
+            Where-Object { $_.FullName -notlike '*\Services\SiteAuthService.cs' } |
+            Select-String -Pattern 'SendLauncherEventAsync\s*\(|GetRezoniteBalanceAsync\s*\('
+
+          if ($deprecated) {
+            $details = ($deprecated | ForEach-Object { "$($_.Path):$($_.LineNumber): $($_.Line.Trim())" }) -join "`n"
+            throw "Deprecated phantom launcher API helper is referenced outside SiteAuthService:`n$details"
           }
 
       - name: Cache NuGet
