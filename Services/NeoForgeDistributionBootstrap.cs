@@ -6,14 +6,15 @@ using System.Runtime.CompilerServices;
 namespace LegendBorn.Services;
 
 /// <summary>
-/// Ensures every launcher process knows about the LegendBorn-hosted NeoForge Maven fallback
-/// before MinecraftService constructs LoaderInstaller. Operators can still append/override
-/// additional mirrors through LEGENDBORN_NEOFORGE_MAVEN_MIRRORS.
+/// Ensures every launcher process knows about independent NeoForge Maven fallbacks before
+/// MinecraftService constructs LoaderInstaller. Operators can still append additional mirrors
+/// through LEGENDBORN_NEOFORGE_MAVEN_MIRRORS.
 /// </summary>
 internal static class NeoForgeDistributionBootstrap
 {
     internal const string MirrorEnvironmentVariable = "LEGENDBORN_NEOFORGE_MAVEN_MIRRORS";
     internal const string LegendBornProxyBase = "https://legendborn.xyz/api/maven/neoforge/";
+    internal const string BmclApiMavenBase = "https://bmclapi2.bangbang93.com/maven/";
     internal const string LegendBornMavenBase = "https://maven.legendborn.ru/";
 
     [ModuleInitializer]
@@ -23,7 +24,9 @@ internal static class NeoForgeDistributionBootstrap
         {
             var mirrors = new List<string>
             {
+                // First-party proxy first, independent restricted-network mirror second.
                 LegendBornProxyBase,
+                BmclApiMavenBase,
                 LegendBornMavenBase
             };
 
