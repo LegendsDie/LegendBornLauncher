@@ -30,7 +30,6 @@
                                FontSize="18"
                                FontWeight="Bold"/>
 
-                    <!-- Click-first, чтобы не зависеть от OpenStartCommand -->
                     <Button Grid.Column="1"
                             Style="{StaticResource WinCtlButton}"
                             HorizontalAlignment="Right"
@@ -56,8 +55,6 @@
                                    Foreground="{StaticResource TextStrongLocal}"
                                    FontWeight="SemiBold"/>
 
-                        <!-- ✅ FIX: SelectedItem только OneWay (чтобы UI не мог сбросить VM),
-                             а выбор пользователя пишем в VM через SelectionChanged -->
                         <ComboBox x:Name="RamCombo"
                                   ItemsSource="{Binding RamOptions}"
                                   SelectedItem="{Binding RamMb, Mode=OneWay}"
@@ -96,9 +93,30 @@
 
                     <!-- Right column -->
                     <StackPanel Grid.Column="2" VerticalAlignment="Top">
+                        <TextBlock Text="Подключение"
+                                   Foreground="{StaticResource TextStrongLocal}"
+                                   FontWeight="SemiBold"/>
+
+                        <CheckBox Margin="0,10,0,0"
+                                  Foreground="{StaticResource TextStrongLocal}"
+                                  Content="Автоматически восстанавливать вход"
+                                  IsChecked="{Binding AutoLogin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+
+                        <CheckBox Margin="0,8,0,0"
+                                  Foreground="{StaticResource TextStrongLocal}"
+                                  Content="Автоподключение к выбранному серверу"
+                                  IsChecked="{Binding AutoConnect, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+
+                        <TextBlock Margin="0,8,0,0"
+                                   Foreground="{StaticResource TextDimLocal}"
+                                   FontSize="12"
+                                   TextWrapping="Wrap"
+                                   Text="Автоподключение создаёт свежий одноразовый join-ticket перед каждым запуском игры."/>
+
                         <Button Style="{StaticResource GhostButton}"
                                 Content="Проверить обновления лаунчера"
                                 Command="{Binding CheckLauncherUpdatesCommand}"
+                                Margin="0,18,0,0"
                                 Height="44"
                                 Padding="18,0"/>
 
@@ -135,7 +153,6 @@
                                    Foreground="{StaticResource TextStrongLocal}"
                                    FontWeight="SemiBold"/>
 
-                        <!-- UX: toggle autoscroll -->
                         <CheckBox Grid.Column="1"
                                   Content="Следовать за выводом"
                                   Foreground="{StaticResource TextDimLocal}"
@@ -144,7 +161,6 @@
                                   Visibility="Collapsed"/>
                     </Grid>
 
-                    <!-- Корневой чекбокс -->
                     <CheckBox x:Name="RootAutoScroll"
                               Grid.Row="0"
                               HorizontalAlignment="Right"
