@@ -8,6 +8,11 @@
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
 
+        <!-- Fail dependency restore/build on known NuGet advisories. -->
+        <NuGetAudit>true</NuGetAudit>
+        <NuGetAuditMode>all</NuGetAuditMode>
+        <WarningsAsErrors>$(WarningsAsErrors);NU1901;NU1902;NU1903;NU1904</WarningsAsErrors>
+
         <!-- App version -->
         <Version>0.3.8</Version>
         <AssemblyVersion>0.3.8.0</AssemblyVersion>
@@ -21,7 +26,6 @@
     <ItemGroup>
         <PackageReference Include="CmlLib.Core" Version="4.0.6" />
         <PackageReference Include="CmlLib.Core.Installer.NeoForge" Version="4.0.1" />
-        <PackageReference Include="CmlLib.Core.Installer.Forge" Version="1.1.1" />
         <PackageReference Include="Velopack" Version="1.2.0" />
     </ItemGroup>
 
