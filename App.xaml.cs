@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Windows;
 using LegendBorn.Services;
@@ -16,17 +16,21 @@ public partial class App : Application
     [STAThread]
     private static void Main(string[] args)
     {
+        Exception? velopackInitError = null;
         try
         {
             VelopackApp.Build().Run();
         }
-        catch
+        catch (Exception ex)
         {
+            // Logging is initialized a few lines below. Preserve the failure instead of
+            // swallowing it so update/bootstrap problems are diagnosable.
+            velopackInitError = ex;
         }
 
-        string logPath = "";
-        string configPath = "";
-        string tokenPath = "";
+        string logPath;
+        string configPath;
+        string tokenPath;
 
         try
         {
@@ -48,11 +52,17 @@ public partial class App : Application
         try
         {
             Log = new LogService(logPath);
-            try { Log.Info("LogService initialized."); } catch { }
+            Log.Info("LogService initialized.");
         }
         catch
         {
             Log = LogService.Noop;
+        }
+
+        if (velopackInitError is not null)
+        {
+            try { Log.Error("Velopack initialization failed. Auto-update may be unavailable.", velopackInitError); }
+            catch { }
         }
 
         try
@@ -66,7 +76,6 @@ public partial class App : Application
             Crash = new CrashReporter(LogService.Noop);
         }
 
-        // ✅ bootstrap before ConfigService, but WITHOUT forced overrides
         try
         {
             SettingsBootstrapper.Bootstrap();
@@ -132,7 +141,6 @@ public partial class App : Application
         }
         catch { }
 
-        // ✅ фиксируем старт
         try
         {
             if (Config?.Current is not null)
@@ -148,8 +156,19 @@ public partial class App : Application
     {
         try { Log.Info("Launcher exiting."); } catch { }
 
-        try { Config?.Save(); } catch { }
+        // Save() is intentionally debounced. During process shutdown we must force the
+        // final write or a recently changed setting may be lost before the timer fires.
+        try
+        {
+            Config?.Flush();
+        }
+        catch (Exception ex)
+        {
+            try { Log.Error("Final config flush failed", ex); } catch { }
+        }
 
+        try { Config?.Dispose(); } catch { }
+        try { Log.Flush(); } catch { }
         try { Log.Dispose(); } catch { }
 
         base.OnExit(e);
