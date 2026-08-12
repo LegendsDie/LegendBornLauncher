@@ -15,12 +15,12 @@ namespace LegendBorn.ViewModels;
 
 public sealed partial class MainViewModel : ObservableObject
 {
-    // API-база (логин/профиль/ивенты). Оставляем ru, чтобы не сломать существующие эндпоинты.
-    internal const string SiteBaseUrl = "https://ru.legendborn.ru";
+    // Source of truth: production origins declared by legendbornweb.
+    internal const string SiteBaseUrl = "https://legendborn.xyz";
 
     // Публичный сайт (для ссылок/картинок).
-    internal const string SitePublicUrlPrimary = "https://legendborn.ru";
-    internal const string SitePublicUrlFallback = "https://ru.legendborn.ru";
+    internal const string SitePublicUrlPrimary = "https://legendborn.xyz";
+    internal const string SitePublicUrlFallback = "https://ru.legendborn.xyz";
 
     private const string DefaultServerIp = "legendcraft.minerent.io";
 
