@@ -149,25 +149,33 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
-                        <TextBlock Text="Диагностика"
-                                   Foreground="{StaticResource TextStrongLocal}"
-                                   FontWeight="SemiBold"/>
+                        <StackPanel>
+                            <TextBlock Text="Диагностика"
+                                       Foreground="{StaticResource TextStrongLocal}"
+                                       FontWeight="SemiBold"/>
+                            <TextBlock Margin="0,3,0,0"
+                                       Foreground="{StaticResource TextDimLocal}"
+                                       FontSize="11"
+                                       Text="Отчёт исключает токены и LegendCore session; секреты в текстовых логах редактируются."/>
+                        </StackPanel>
 
-                        <CheckBox Grid.Column="1"
-                                  Content="Следовать за выводом"
-                                  Foreground="{StaticResource TextDimLocal}"
-                                  VerticalAlignment="Center"
-                                  IsChecked="{Binding ElementName=RootAutoScroll, Path=IsChecked}"
-                                  Visibility="Collapsed"/>
+                        <StackPanel Grid.Column="1"
+                                    Orientation="Horizontal"
+                                    VerticalAlignment="Center">
+                            <Button Style="{StaticResource GhostButton}"
+                                    Content="Собрать отчёт"
+                                    Command="{Binding CollectDiagnosticsCommand}"
+                                    Height="36"
+                                    Padding="14,0"
+                                    Margin="0,0,14,0"/>
+
+                            <CheckBox x:Name="RootAutoScroll"
+                                      VerticalAlignment="Center"
+                                      Foreground="{StaticResource TextDimLocal}"
+                                      Content="Следовать за выводом"
+                                      IsChecked="True"/>
+                        </StackPanel>
                     </Grid>
-
-                    <CheckBox x:Name="RootAutoScroll"
-                              Grid.Row="0"
-                              HorizontalAlignment="Right"
-                              VerticalAlignment="Center"
-                              Foreground="{StaticResource TextDimLocal}"
-                              Content="Следовать за выводом"
-                              IsChecked="True"/>
 
                     <Expander Grid.Row="1"
                               Margin="0,12,0,0"
