@@ -12,8 +12,8 @@ namespace LegendBorn.Views.Tabs;
 
 public partial class ProfileTabView : UserControl
 {
-    private const string SiteUrlPrimary = "https://legendborn.ru/";
-    private const string SiteUrlFallback = "https://ru.legendborn.ru/";
+    private const string SiteUrlPrimary = "https://legendborn.xyz/";
+    private const string SiteUrlFallback = "https://ru.legendborn.xyz/";
     private const int StartTabIndex = 0;
 
     public ProfileTabView()
@@ -54,8 +54,6 @@ public partial class ProfileTabView : UserControl
             var vm = GetHostDataContext();
             if (vm is null) return;
 
-            // ✅ FIX: Unloaded бывает при простом переключении табов.
-            // Не гасим presence, если пользователь всё ещё залогинен.
             var isLoggedIn = TryGetBoolProperty(vm, "IsLoggedIn") ?? false;
             var hasToken = TryGetBoolProperty(vm, "HasSiteToken") ?? false;
 
@@ -118,7 +116,6 @@ public partial class ProfileTabView : UserControl
         }
     }
 
-    // ===== Двойной клик по другу => открыть профиль (ТОЛЬКО по айтему) =====
     private void FriendsList_OnMouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
         try
@@ -140,7 +137,6 @@ public partial class ProfileTabView : UserControl
         }
     }
 
-    // Контекстное меню
     private void OpenFriendProfile_OnClick(object sender, RoutedEventArgs e)
     {
         try
@@ -187,15 +183,8 @@ public partial class ProfileTabView : UserControl
         TryOpenProfile(id);
     }
 
-    /// <summary>
-    /// ✅ Фикс "рандомных айди":
-    /// 1) PublicId (если > 0)
-    /// 2) Id
-    /// 3) UserId (fallback)
-    /// </summary>
     private static string? GetBestProfileId(object item)
     {
-        // 1) PublicId
         var publicIdRaw =
             TryGetStringProperty(item, "PublicId") ??
             TryGetStringProperty(item, "publicId");
@@ -207,7 +196,6 @@ public partial class ProfileTabView : UserControl
             return pid.ToString(CultureInfo.InvariantCulture);
         }
 
-        // 2) Id
         var id =
             TryGetStringProperty(item, "Id") ??
             TryGetStringProperty(item, "id");
@@ -216,7 +204,6 @@ public partial class ProfileTabView : UserControl
         if (!string.IsNullOrWhiteSpace(id))
             return id;
 
-        // 3) UserId fallback
         var userId =
             TryGetStringProperty(item, "UserId") ??
             TryGetStringProperty(item, "userId");
@@ -245,8 +232,6 @@ public partial class ProfileTabView : UserControl
             TryOpenUrl(fb + "profile/" + Uri.EscapeDataString(id));
         }
     }
-
-    // ===== helpers =====
 
     private object? GetHostDataContext()
         => DataContext ?? Window.GetWindow(this)?.DataContext;
@@ -397,14 +382,6 @@ public partial class ProfileTabView : UserControl
     }
 }
 
-/// <summary>
-/// ✅ Формирует строку: онлайн/офлайн + где/когда был.
-/// values:
-/// [0] OnlinePlace (Site/Launcher/Offline)
-/// [1] LastSeenAt (DateTime / string / null)
-/// [2] LastSeenSource (Site/Launcher / null)
-/// [3] PresenceLine fallback (string)
-/// </summary>
 public sealed class FriendPresenceLineConverter : IMultiValueConverter
 {
     public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture)
@@ -416,14 +393,12 @@ public sealed class FriendPresenceLineConverter : IMultiValueConverter
 
         var place = (onlinePlace ?? "").Trim();
 
-        // Онлайн
         if (IsPlace(place, "Site"))
             return "онлайн • на сайте";
 
         if (IsPlace(place, "Launcher"))
             return "онлайн • в лаунчере";
 
-        // Офлайн: попробуем собрать "был в ... dd.MM HH:mm"
         var dt = TryParseDate(lastSeenAt);
         var src = (lastSeenSource ?? "").Trim();
 
@@ -435,7 +410,6 @@ public sealed class FriendPresenceLineConverter : IMultiValueConverter
             return $"был {when}";
         }
 
-        // fallback: если у тебя раньше приходила строка
         if (!string.IsNullOrWhiteSpace(fallback))
         {
             var f = fallback.Trim();
