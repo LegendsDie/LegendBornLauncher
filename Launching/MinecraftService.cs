@@ -73,15 +73,19 @@ public sealed class MinecraftService
         "shaderpacks/",
     };
 
-    // Эти папки ВСЕГДА считаем user-mutable и никогда не трогаем
+    // Эти папки ВСЕГДА считаем user-mutable и никогда не перезаписываем/не prune'им.
+    // config/defaultconfigs работают как seed-only: manifest может восстановить отсутствующий файл,
+    // но уже существующий пользовательский файл остаётся владельцем пользователя даже при потере pack_state.json.
     private static readonly string[] AlwaysProtectedMutablePrefixes =
     {
         "resourcepacks/",
         "shaderpacks/",
+        "config/",
+        "defaultconfigs/",
     };
 
-    // Эти папки ставим из манифеста ТОЛЬКО при первичной установке packId,
-    // затем больше вообще не трогаем
+    // Legacy-группа сохранена для совместимости с существующей логикой pack state.
+    // AlwaysProtectedMutablePrefixes имеет приоритет, поэтому эти пути больше никогда не становятся destructive-managed.
     private static readonly string[] OneTimeBootstrapPrefixes =
     {
         "config/",
