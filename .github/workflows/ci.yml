@@ -16,31 +16,47 @@ concurrency:
 
 jobs:
   build:
-    name: Build and publish (win-x64)
+    name: Build, publish and package (win-x64)
     runs-on: windows-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup .NET 10
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
 
       - name: Cache NuGet
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.nuget/packages
           key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/*.props', '**/*.targets', '**/packages.lock.json') }}
           restore-keys: |
             ${{ runner.os }}-nuget-
 
-      - name: Restore
-        run: dotnet restore LegendBorn.csproj
+      - name: Restore win-x64
+        run: dotnet restore LegendBorn.csproj -r win-x64
 
       - name: Build
         run: dotnet build LegendBorn.csproj -c Release --no-restore
 
       - name: Publish self-contained launcher
         run: dotnet publish LegendBorn.csproj -c Release -r win-x64 --self-contained true --no-restore -o artifacts/publish
+
+      - name: Install Velopack CLI
+        run: dotnet tool install -g vpk --version 1.2.0
+
+      - name: Velopack package smoke test
+        shell: pwsh
+        run: |
+          & "$env:USERPROFILE\.dotnet\tools\vpk.exe" pack `
+            --packId "LegendBornLauncher" `
+            --packVersion "0.3.8" `
+            --packDir "artifacts/publish" `
+            --mainExe "LegendBorn.exe" `
+            --packTitle "LegendBorn Launcher" `
+            --outputDir "artifacts/releases" `
+            --channel "win" `
+            --runtime "win-x64"
