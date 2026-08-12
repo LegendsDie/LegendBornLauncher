@@ -99,7 +99,6 @@ public sealed class TokenStore
                 var info = new FileInfo(_filePath);
                 if (info.Length <= 0 || info.Length > MaxTokenFileBytes)
                 {
-                    TryBackupBroken();
                     ClearInternal();
                     return null;
                 }
@@ -109,7 +108,12 @@ public sealed class TokenStore
                 try
                 {
                     var data = ProtectedData.Unprotect(payload, Entropy, DataProtectionScope.CurrentUser);
-                    return ParseTokenPayload(data);
+                    var tokens = ParseTokenPayload(data);
+                    if (tokens is not null)
+                        return tokens;
+
+                    ClearInternal();
+                    return null;
                 }
                 catch (CryptographicException)
                 {
@@ -124,14 +128,14 @@ public sealed class TokenStore
                         return legacy;
                     }
 
-                    TryBackupBroken();
+                    // Credential stores should not create backups of unknown/corrupt payloads:
+                    // those bytes may themselves contain sensitive data.
                     ClearInternal();
                     return null;
                 }
             }
             catch
             {
-                TryBackupBroken();
                 ClearInternal();
                 return null;
             }
@@ -213,24 +217,6 @@ public sealed class TokenStore
         TryDeleteQuiet(_filePath);
         TryDeleteQuiet(_filePath + ".tmp");
         TryDeleteQuiet(_filePath + ".bak");
-    }
-
-    private void TryBackupBroken()
-    {
-        try
-        {
-            if (!File.Exists(_filePath))
-                return;
-
-            var ts = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
-            var bak = _filePath + ".broken." + ts + ".bak";
-
-            EnsureParentDir(_filePath);
-            File.Copy(_filePath, bak, overwrite: true);
-        }
-        catch
-        {
-        }
     }
 
     private static void EnsureParentDir(string filePath)
