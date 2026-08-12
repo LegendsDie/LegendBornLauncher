@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   patch:
-    if: github.event.head_commit.message == 'Remove stale compiled server defaults safely'
+    if: github.event.head_commit.message == 'Retry stale endpoint cleanup safely'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -22,32 +22,39 @@ jobs:
         run: |
           from pathlib import Path
 
+          stale_host = "legendcraft.minerent.io"
+
           vm = Path("ViewModels/MainViewModel.cs")
           text = vm.read_text(encoding="utf-8")
-          old = '    private const string DefaultServerIp = "legendcraft.minerent.io";'
+          old = f'    private const string DefaultServerIp = "{stale_host}";'
           if text.count(old) != 1:
-              raise SystemExit(f"expected one stale DefaultServerIp, got {text.count(old)}")
+              raise SystemExit(f"expected exactly one stale DefaultServerIp, got {text.count(old)}")
           text = text.replace(old, '    private const string DefaultServerIp = "";')
-          old_pack = '        public string PackBaseUrl { get; init; } = "https://legendborn.ru/launcher/pack/";'
-          if old_pack in text:
-              text = text.replace(old_pack, '        public string PackBaseUrl { get; init; } = "";')
+          text = text.replace(
+              '        public string PackBaseUrl { get; init; } = "https://legendborn.ru/launcher/pack/";',
+              '        public string PackBaseUrl { get; init; } = "";')
           vm.write_text(text, encoding="utf-8")
 
           legacy = Path("Services/ServerListService.cs")
           lt = legacy.read_text(encoding="utf-8")
-          lt = lt.replace('Address = "legendcraft.minerent.io",', 'Address = "",')
+          lt = lt.replace(f'Address = "{stale_host}",', 'Address = "",')
           legacy.write_text(lt, encoding="utf-8")
 
+          for path in (vm, legacy):
+              if stale_host in path.read_text(encoding="utf-8"):
+                  raise SystemExit(f"stale server host remains in {path}")
+
           mc = Path("Launching/MinecraftService.cs")
-          mt = mc.read_text(encoding="utf-8")
-          old_order = '''        "https://pack.legendborn.ru/launcher/pack/",
-          "https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/pack/",'''
-          new_order = '''        "https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/pack/",
-          "https://pack.legendborn.ru/launcher/pack/",'''
-          if mt.count(old_order) != 1:
-              raise SystemExit(f"expected one old pack mirror order, got {mt.count(old_order)}")
-          mt = mt.replace(old_order, new_order)
-          mc.write_text(mt, encoding="utf-8")
+          lines = mc.read_text(encoding="utf-8").splitlines()
+          pack_line = '        "https://pack.legendborn.ru/launcher/pack/",'
+          selectel_line = '        "https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/pack/",'
+          if pack_line not in lines or selectel_line not in lines:
+              raise SystemExit("expected default pack mirror lines were not found")
+          i = lines.index(pack_line)
+          j = lines.index(selectel_line)
+          if i < j:
+              lines[i], lines[j] = lines[j], lines[i]
+          mc.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
       - name: Remove one-shot workflow and commit
         shell: bash
