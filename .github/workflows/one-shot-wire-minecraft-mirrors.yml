@@ -1,0 +1,60 @@
+name: One-shot wire Minecraft mirrors
+
+on:
+  push:
+    branches: ["agent/production-hardening"]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.head_commit.message == 'Wire resilient Minecraft transport safely'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: agent/production-hardening
+          fetch-depth: 0
+
+      - name: Patch exact launcher wiring
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("Launching/MinecraftService.cs")
+          text = path.read_text(encoding="utf-8")
+
+          old_ctor = "        _launcher = new MinecraftLauncher(_path);"
+          new_ctor = """        var launcherParameters = MinecraftLauncherParameters.CreateDefault(_path, Http);
+          _launcher = new MinecraftLauncher(launcherParameters);"""
+          if text.count(old_ctor) != 1:
+              raise SystemExit(f"expected exactly one legacy MinecraftLauncher constructor, got {text.count(old_ctor)}")
+          text = text.replace(old_ctor, new_ctor)
+
+          old_http = "        var http = new HttpClient(handler)"
+          new_http = "        var http = new HttpClient(new MinecraftDistributionHttpHandler(handler))"
+          if text.count(old_http) != 1:
+              raise SystemExit(f"expected exactly one raw HttpClient(handler), got {text.count(old_http)}")
+          text = text.replace(old_http, new_http)
+          path.write_text(text, encoding="utf-8")
+
+          settings = Path("Views/Tabs/SettingsTabView.xaml")
+          sx = settings.read_text(encoding="utf-8")
+          marker = '                                   Text="Автоподключение создаёт свежий одноразовый join-ticket перед каждым запуском игры."/>'
+          if sx.count(marker) != 1:
+              raise SystemExit(f"expected one settings attribution marker, got {sx.count(marker)}")
+          addition = marker + '''\n\n                        <TextBlock Margin="0,7,0,0"\n                                   Foreground="{StaticResource TextDimLocal}"\n                                   FontSize="11"\n                                   TextWrapping="Wrap"\n                                   Text="Резервные загрузки Minecraft/NeoForge: LegendBorn mirrors + BMCLAPI."/>'''
+          sx = sx.replace(marker, addition)
+          settings.write_text(sx, encoding="utf-8")
+
+      - name: Remove one-shot workflow and commit
+        shell: bash
+        run: |
+          rm -f .github/workflows/one-shot-wire-minecraft-mirrors.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Launching/MinecraftService.cs Views/Tabs/SettingsTabView.xaml .github/workflows/one-shot-wire-minecraft-mirrors.yml
+          git diff --cached --check
+          git commit -m "Activate resilient Minecraft distribution mirrors"
+          git push origin HEAD:agent/production-hardening
