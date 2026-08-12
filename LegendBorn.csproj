@@ -20,9 +20,9 @@
 
     <ItemGroup>
         <PackageReference Include="CmlLib.Core" Version="4.0.6" />
-        <PackageReference Include="CmlLib.Core.Installer.NeoForge" Version="4.0.0" />
+        <PackageReference Include="CmlLib.Core.Installer.NeoForge" Version="4.0.1" />
         <PackageReference Include="CmlLib.Core.Installer.Forge" Version="1.1.1" />
-        <PackageReference Include="Velopack" Version="0.0.1369-g1d5c984" />
+        <PackageReference Include="Velopack" Version="1.2.0" />
     </ItemGroup>
 
     <ItemGroup>
