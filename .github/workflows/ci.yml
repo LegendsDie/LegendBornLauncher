@@ -117,10 +117,14 @@ jobs:
         run: |
           $catalog = Get-Content -Raw -Path "Services/ServerCatalogService.cs"
           $serversVm = Get-Content -Raw -Path "ViewModels/MainViewModel.Servers.cs"
+          $mainVm = Get-Content -Raw -Path "ViewModels/MainViewModel.cs"
+          $minecraft = Get-Content -Raw -Path "Launching/MinecraftService.cs"
+          $minecraftTransport = Get-Content -Raw -Path "Services/MinecraftDistributionHttpHandler.cs"
           $loader = Get-Content -Raw -Path "Launching/LoaderInstaller.cs"
           $neoBootstrap = Get-Content -Raw -Path "Services/NeoForgeDistributionBootstrap.cs"
           $packPreflight = Get-Content -Raw -Path "Services/PackMirrorPreflightService.cs"
           $update = Get-Content -Raw -Path "Services/UpdateService.cs"
+          $settings = Get-Content -Raw -Path "Views/Tabs/SettingsTabView.xaml"
 
           foreach ($required in @(
             'https://legendborn.xyz/api/launcher/servers',
@@ -135,6 +139,11 @@ jobs:
 
           if ($serversVm -notmatch 'ServerIp\s*=\s*addr') {
             throw "Selected server no longer forces the authoritative catalog address over stale local config."
+          }
+
+          $allRuntimeSources = $catalog + $serversVm + $mainVm
+          if ($allRuntimeSources.Contains('legendcraft.minerent.io')) {
+            throw "Retired Minecraft endpoint legendcraft.minerent.io reappeared in runtime launcher code."
           }
 
           if ($loader -match 'files/latest/download') {
@@ -155,11 +164,38 @@ jobs:
 
           foreach ($required in @(
             'https://legendborn.xyz/api/maven/neoforge/',
+            'https://bmclapi2.bangbang93.com/maven/',
             'LEGENDBORN_NEOFORGE_MAVEN_MIRRORS'
           )) {
             if (-not $neoBootstrap.Contains($required)) {
-              throw "NeoForge LegendBorn proxy bootstrap missing: $required"
+              throw "NeoForge mirror bootstrap missing: $required"
             }
+          }
+
+          foreach ($required in @(
+            'MinecraftLauncherParameters.CreateDefault(_path, Http)',
+            'new HttpClient(new MinecraftDistributionHttpHandler(handler))'
+          )) {
+            if (-not $minecraft.Contains($required)) {
+              throw "CmlLib resilient HTTP wiring missing: $required"
+            }
+          }
+
+          foreach ($required in @(
+            'https://legendborn.xyz/api/mirror/mojang/',
+            'https://bmclapi2.bangbang93.com/',
+            'launchermeta.mojang.com',
+            'libraries.minecraft.net',
+            'resources.download.minecraft.net',
+            'DegradedHostTtl'
+          )) {
+            if (-not $minecraftTransport.Contains($required)) {
+              throw "Minecraft distribution fallback missing: $required"
+            }
+          }
+
+          if (-not $settings.Contains('BMCLAPI')) {
+            throw "BMCLAPI source attribution must remain visible in Settings."
           }
 
           foreach ($required in @(
