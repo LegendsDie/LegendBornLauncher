@@ -1,10 +1,12 @@
 name: Release (Velopack)
 
 on:
-  push:
-    branches: ["main"]
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type RELEASE to publish a production launcher release"
+        required: true
+        default: ""
       force:
         description: "Build and publish even if tag already exists"
         required: false
@@ -15,24 +17,29 @@ permissions:
 
 concurrency:
   group: velopack-release-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
-  # Можно оставить как имя. Workflow сам найдёт реальный путь, если файла тут нет.
   CS_PROJ: LegendBorn.csproj
-
   PACK_ID: LegendBornLauncher
   MAIN_EXE: LegendBorn.exe
   PACK_TITLE: LegendBorn Launcher
   VPK_OUTPUT_DIR: Releases
   VPK_CHANNEL: win
-  FORCE_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.force == 'true' }}
+  FORCE_RELEASE: ${{ inputs.force == 'true' }}
 
 jobs:
   build-and-release:
     runs-on: windows-latest
 
     steps:
+      - name: Require explicit production confirmation
+        shell: pwsh
+        run: |
+          if ("${{ inputs.confirm }}" -cne "RELEASE") {
+            throw "Production release blocked. Re-run the workflow and type RELEASE in the confirmation field."
+          }
+
       - name: Checkout
         uses: actions/checkout@v6
         with:
@@ -141,17 +148,23 @@ jobs:
             }
           }
 
-      - name: Restore
+      - name: Restore win-x64
         if: steps.tagcheck.outputs.exists != 'true'
         shell: pwsh
         run: |
-          dotnet restore "${{ steps.csproj.outputs.path }}"
+          dotnet restore "${{ steps.csproj.outputs.path }}" -r win-x64
+
+      - name: Build (warnings are errors)
+        if: steps.tagcheck.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          dotnet build "${{ steps.csproj.outputs.path }}" -c Release --no-restore -warnaserror
 
       - name: Publish app
         if: steps.tagcheck.outputs.exists != 'true'
         shell: pwsh
         run: |
-          dotnet publish "${{ steps.csproj.outputs.path }}" -c Release -r win-x64 --self-contained true -o publish
+          dotnet publish "${{ steps.csproj.outputs.path }}" -c Release -r win-x64 --self-contained true --no-restore -o publish
 
       - name: Install vpk tool
         if: steps.tagcheck.outputs.exists != 'true'
