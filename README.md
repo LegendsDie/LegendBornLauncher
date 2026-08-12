@@ -22,7 +22,7 @@
 
 ```powershell
 dotnet restore LegendBorn.csproj -r win-x64
-dotnet build LegendBorn.csproj -c Release --no-restore
+dotnet build LegendBorn.csproj -c Release --no-restore -warnaserror
 dotnet publish LegendBorn.csproj -c Release -r win-x64 --self-contained true --no-restore -o artifacts/publish
 ```
 
@@ -38,7 +38,7 @@ Launching/                     Minecraft, loaders, pack sync
 Models/                        модели API/конфига
 Resources/                     темы и assets
 .github/workflows/ci.yml       build/publish/package validation
-.github/workflows/release.yml  Velopack release pipeline
+.github/workflows/release.yml  ручной Velopack production release
 ```
 
 ## Авторизация
@@ -66,22 +66,40 @@ Minecraft не получает долгоживущий site token. Перед 
 
 ## Синхронизация сборки
 
-Pack sync использует manifest, SHA-256, зеркала/fallback, атомарную замену файлов и `.pending` для занятых файлов. Управляемые и пользовательские пути должны оставаться разделены.
+Pack sync использует manifest, SHA-256, зеркала/fallback, атомарную замену файлов и `.pending` для занятых файлов. Управляемые и пользовательские пути разделены.
 
-Ключевое правило: пользовательские настройки нельзя уничтожать ради приведения инстанса к manifest. `mods/` и `kubejs/` могут быть managed; `config/`, `defaultconfigs/`, `resourcepacks/` и `shaderpacks/` требуют защитной политики.
+Политика каталогов:
 
-## Обновление лаунчера
+- `mods/` и `kubejs/` — managed и могут синхронизироваться/prune'иться по manifest;
+- `config/` и `defaultconfigs/` — **seed-only**: отсутствующий manifest-файл можно восстановить, существующий пользовательский файл нельзя перезаписать или удалить;
+- `resourcepacks/` и `shaderpacks/` — user-mutable и не подвергаются destructive sync;
+- потеря или повреждение `launcher/pack_state.json` не должна менять эти правила.
+
+CI отдельно проверяет наличие seed-only/user-mutable префиксов и защиту от manifest delete/prune.
+
+## Обновление и production release лаунчера
 
 Версия приложения задаётся в `LegendBorn.csproj`.
 
-При merge в `main`:
+Merge/push в `main` **не публикует production release автоматически**. На `main` всегда запускается только `CI`, который проверяет:
 
-1. `CI` всегда проверяет restore/build/self-contained publish/Velopack pack;
-2. `Release (Velopack)` читает версию из `.csproj`;
-3. если тега `v<version>` ещё нет, собирает и публикует GitHub Release;
-4. Velopack SDK и CLI `vpk` должны использовать одинаковую версию.
+1. seed-only pack policy;
+2. restore для `win-x64`;
+3. Release build с `-warnaserror`;
+4. self-contained `win-x64` publish;
+5. реальный `vpk pack` smoke-test.
 
-Не увеличивайте версию только после merge: релизный workflow запускается на самом merge-коммите.
+Production release выполняется вручную через GitHub Actions → `Release (Velopack)` после проверки установленного лаунчера и игровой авторизации. Для запуска workflow требуется явно ввести `RELEASE` в поле подтверждения.
+
+Release workflow:
+
+1. читает версию приложения и версию Velopack из `.csproj`;
+2. повторно выполняет restore/build/publish с warnings-as-errors;
+3. проверяет существование `v<version>`;
+4. собирает Velopack packages;
+5. публикует GitHub Release только после успешного прохождения предыдущих шагов.
+
+Velopack SDK и CLI `vpk` всегда должны использовать одинаковую версию.
 
 ## Перед merge
 
@@ -89,7 +107,7 @@ Pack sync использует manifest, SHA-256, зеркала/fallback, ат�
 
 ```powershell
 dotnet restore LegendBorn.csproj -r win-x64
-dotnet build LegendBorn.csproj -c Release --no-restore
+dotnet build LegendBorn.csproj -c Release --no-restore -warnaserror
 dotnet publish LegendBorn.csproj -c Release -r win-x64 --self-contained true --no-restore -o artifacts/publish
 ```
 
@@ -98,10 +116,21 @@ dotnet publish LegendBorn.csproj -c Release -r win-x64 --self-contained true --n
 - вход/выход через сайт;
 - повторный запуск с сохранённой авторизацией;
 - подготовку сборки с нуля и повторный sync;
+- изменение файла в `config/`, удаление `launcher/pack_state.json` и повторный sync — пользовательское изменение должно сохраниться;
 - запуск Minecraft и подключение к серверу;
+- фактическое чтение клиентским NeoForge-модом `.legendcore/session.json` и использование `join-ticket`;
+- отсутствие зависимости актуального мода от legacy `legendborn/auth.token` / `auth.json`;
 - очистку `.legendcore/session.json` после выхода;
 - сохранение RAM/server/settings после закрытия лаунчера;
 - обновление установленной Velopack-сборки.
+
+## Перед production release
+
+Production release запрещён без end-to-end проверки цепочки:
+
+`launcher login → Minecraft link → join-ticket → game start → client mod handshake → server join → session cleanup`.
+
+Если текущий клиентский мод всё ещё читает legacy access-token файлы, сначала обновляется мод. Возвращать долгоживущий site access token в игровой instance как временный fallback нельзя.
 
 ## Безопасность
 
