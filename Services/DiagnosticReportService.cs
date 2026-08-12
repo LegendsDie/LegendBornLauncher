@@ -22,16 +22,16 @@ public static partial class DiagnosticReportService
 
     private static readonly UTF8Encoding Utf8NoBom = new(false);
 
-    [GeneratedRegex(@"(?i)(authorization\s*[:=]\s*bearer\s+)[A-Za-z0-9._~+\-/=]+")]
+    [GeneratedRegex("(?i)(authorization\\s*[:=]\\s*bearer\\s+)[A-Za-z0-9._~+\\-/=]+")]
     private static partial Regex BearerRegex();
 
-    [GeneratedRegex(@"(?i)((?:access[_-]?token|refresh[_-]?token|join[_-]?ticket|ticket)\s*[=:]\s*[\"']?)[A-Za-z0-9._~+\-/=]{16,}")]
+    [GeneratedRegex("(?i)((?:access[_-]?token|refresh[_-]?token|join[_-]?ticket|ticket)\\s*[=:]\\s*[\\\"']?)[A-Za-z0-9._~+\\-/=]{16,}")]
     private static partial Regex NamedSecretRegex();
 
-    [GeneratedRegex(@"(?i)(\"(?:accessToken|refreshToken|ticket)\"\s*:\s*\")[^\"]+(\")")]
+    [GeneratedRegex("(?i)(\\\"(?:accessToken|refreshToken|ticket)\\\"\\s*:\\s*\\\")[^\\\"]+(\\\")")]
     private static partial Regex JsonSecretRegex();
 
-    [GeneratedRegex(@"\b[a-fA-F0-9]{64}\b")]
+    [GeneratedRegex("\\b[a-fA-F0-9]{64}\\b")]
     private static partial Regex HexTokenRegex();
 
     public sealed record ReportContext(
