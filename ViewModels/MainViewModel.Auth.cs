@@ -38,7 +38,6 @@ public sealed partial class MainViewModel
 
     private static string BuildConnectUrl(string deviceId, string connectUrl)
     {
-        // если сервер вернул относительный путь — соберём с базой.
         var path = string.IsNullOrWhiteSpace(connectUrl) ? "/launcher/connect" : connectUrl.Trim();
 
         var fullUrl = path.StartsWith("http", StringComparison.OrdinalIgnoreCase)
@@ -103,45 +102,18 @@ public sealed partial class MainViewModel
         }
     }
 
-    private async Task TrySendDailyLauncherLoginEventAsync(CancellationToken ct)
-    {
-        try
-        {
-            if (_isClosing) return;
-            if (_tokens is null || !_tokens.HasAccessToken) return;
-
-            var key = "launcher_login";
-            var idem = $"launcher_login:{DateTime.UtcNow:yyyy-MM-dd}";
-
-            var resp = await _site.SendLauncherEventAsync(
-                _tokens.SafeAccessToken,
-                key,
-                idem,
-                payload: new
-                {
-                    client = "LegendBornLauncher",
-                    launcher = LauncherIdentity.InformationalVersion,
-                    v = "1"
-                },
-                ct: ct);
-
-            if (resp is not null && resp.Ok && resp.Balance >= 0)
-                PostToUi(() => Rezonite = resp.Balance);
-        }
-        catch { /* ignore */ }
-    }
-
     private async Task ApplySuccessfulLoginAsync(AuthTokens tokens, CancellationToken ct)
     {
         _tokens = tokens;
 
+        // legendbornweb /api/launcher/me is the source of truth for profile,
+        // play access and RZN. Do not call legacy/phantom launcher economy/events APIs.
         var me = await _site.GetMeAsync(tokens.SafeAccessToken, ct);
         Profile = me;
 
         SiteUserName = string.IsNullOrWhiteSpace(me.UserName) ? "Пользователь" : me.UserName;
         IsLoggedIn = true;
 
-        // ✅ Ник с сайта берём только если в конфиге нет нормального ника.
         if (HasConfigUsername(out var local))
         {
             if (!string.Equals(Username, local, StringComparison.Ordinal))
@@ -159,8 +131,6 @@ public sealed partial class MainViewModel
             ScheduleConfigSave();
         }
         catch { /* ignore */ }
-
-        await TrySendDailyLauncherLoginEventAsync(ct).ConfigureAwait(false);
 
         if (!me.CanPlay)
         {
@@ -192,7 +162,6 @@ public sealed partial class MainViewModel
 
     private void ApplyOfflineAuthenticatedUiState(AuthTokens tokens, string statusText)
     {
-        // ✅ сеть/сайт легли -> не разлогиниваем, токен НЕ удаляем
         _tokens = tokens;
 
         if (!IsLoggedIn)
@@ -258,6 +227,7 @@ public sealed partial class MainViewModel
 
         CancelLoginWait();
         _loginCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+        var auth = new LauncherAuthClient();
 
         try
         {
@@ -265,19 +235,15 @@ public sealed partial class MainViewModel
             LoginUrl = null;
             StatusText = "Запрос входа...";
             ProgressPercent = 0;
-
             IsBusy = true;
 
-            var (deviceId, connectUrl, expiresAtUnix) =
-                await _site.StartLauncherLoginAsync(_loginCts.Token);
-
+            var start = await auth.StartAsync(_loginCts.Token);
             IsBusy = false;
 
-            var fullUrl = BuildConnectUrl(deviceId, connectUrl);
+            var fullUrl = BuildConnectUrl(start.DeviceId, start.ConnectUrl);
             LoginUrl = fullUrl;
             AppendLog($"Ссылка для входа: {fullUrl}");
 
-            // ✅ БОЛЬШЕ НЕ ИСПОЛЬЗУЕМ СТАРУЮ ФРАЗУ
             if (!TryOpenUrlInBrowser(fullUrl, out var openError))
             {
                 AppendLog(openError);
@@ -288,34 +254,80 @@ public sealed partial class MainViewModel
                 StatusText = "Подтверди вход на сайте.";
             }
 
-            var deadline = BuildDeadline(expiresAtUnix);
+            var deadline = BuildDeadline(start.ExpiresAtUnix);
+            var transientFailures = 0;
 
             while (!_loginCts.IsCancellationRequested && !_isClosing)
             {
                 if (DateTimeOffset.UtcNow > deadline)
                 {
-                    AppendLog("Время ожидания подтверждения истекло.");
-                    StatusText = "Не подтверждено. Попробуй снова.";
+                    AppendLog("Auth: время ожидания подтверждения истекло.");
+                    StatusText = "Запрос входа истёк. Начни авторизацию заново.";
                     return;
                 }
 
                 await Task.Delay(1200, _loginCts.Token);
 
-                var tokens = await _site.PollLauncherLoginAsync(deviceId, _loginCts.Token);
-                if (tokens is null || !tokens.HasAccessToken)
-                    continue;
+                var poll = await auth.PollAsync(start.DeviceId, _loginCts.Token);
 
-                if (tokens.IsExpired())
+                if (poll.State == LauncherAuthClient.PollState.Pending)
                 {
-                    AppendLog("Сайт вернул просроченный токен. Попробуй снова.");
-                    StatusText = "Ошибка входа. Попробуй снова.";
+                    transientFailures = 0;
+                    if (poll.ExpiresAtUnix > 0)
+                    {
+                        var serverDeadline = BuildDeadline(poll.ExpiresAtUnix);
+                        if (serverDeadline < deadline)
+                            deadline = serverDeadline;
+                    }
                     continue;
                 }
 
-                // ✅ Сохраняем токен сразу
+                if (poll.State == LauncherAuthClient.PollState.TransientError)
+                {
+                    transientFailures++;
+                    if (transientFailures == 1 || transientFailures % 5 == 0)
+                    {
+                        AppendLog(
+                            $"Auth polling: временная ошибка HTTP {poll.HttpStatus}" +
+                            (string.IsNullOrWhiteSpace(poll.Code) ? "." : $" ({poll.Code})."));
+                    }
+
+                    StatusText = poll.HttpStatus == 429
+                        ? "Слишком много запросов. Продолжаю ожидание подтверждения..."
+                        : "Сайт временно недоступен. Продолжаю ожидание подтверждения...";
+
+                    var retry = poll.RetryAfter ?? TimeSpan.FromMilliseconds(Math.Min(5000, 1000 + transientFailures * 500));
+                    await Task.Delay(retry, _loginCts.Token);
+                    continue;
+                }
+
+                if (poll.State == LauncherAuthClient.PollState.TerminalError)
+                {
+                    var code = string.IsNullOrWhiteSpace(poll.Code) ? "AUTH_FAILED" : poll.Code;
+                    AppendLog($"Auth завершён: {code}, HTTP {poll.HttpStatus}.");
+                    StatusText = string.IsNullOrWhiteSpace(poll.Message)
+                        ? "Запрос авторизации больше недействителен. Начни вход заново."
+                        : poll.Message!;
+                    return;
+                }
+
+                var tokens = poll.Tokens;
+                if (tokens is null || !tokens.HasAccessToken)
+                {
+                    AppendLog("Auth: сервер сообщил OK без пригодного токена.");
+                    StatusText = "Сайт вернул некорректный ответ входа. Попробуй снова.";
+                    return;
+                }
+
+                if (tokens.IsExpired())
+                {
+                    AppendLog("Auth: сайт вернул уже просроченный токен.");
+                    StatusText = "Сайт вернул просроченный токен. Попробуй снова.";
+                    return;
+                }
+
                 _tokenStore.Save(tokens);
 
-                // ✅ Улучшение: если /me упал (сайт/сеть), не считаем это провалом входа
                 try
                 {
                     await ApplySuccessfulLoginAsync(tokens, _loginCts.Token);
@@ -326,17 +338,23 @@ public sealed partial class MainViewModel
                     {
                         _tokenStore.Clear();
                         ApplyLoggedOutUiState("Требуется вход.");
-                        AppendLog("Сайт: токен не принят (401/403).");
+                        AppendLog("Сайт: новый Launcher-токен не принят /api/launcher/me (401/403).");
                     }
                     else
                     {
-                        ApplyOfflineAuthenticatedUiState(tokens, "Вход подтверждён (нет связи с сайтом).");
-                        AppendLog("Вход подтверждён, но профиль недоступен — сайт/сеть недоступны.");
+                        ApplyOfflineAuthenticatedUiState(tokens, "Вход подтверждён (профиль временно недоступен).");
+                        AppendLog("Вход подтверждён, но /api/launcher/me временно недоступен.");
                     }
                 }
 
                 return;
             }
+        }
+        catch (LauncherAuthClient.LauncherAuthException ex)
+        {
+            var code = string.IsNullOrWhiteSpace(ex.Code) ? "AUTH_ERROR" : ex.Code;
+            AppendLog($"Auth: {code}, HTTP {ex.HttpStatus}: {ex.Message}");
+            StatusText = ex.Message;
         }
         catch (OperationCanceledException)
         {
@@ -345,8 +363,8 @@ public sealed partial class MainViewModel
         }
         catch (Exception ex)
         {
-            AppendLog(ex.ToString());
-            StatusText = "Ошибка входа.";
+            AppendLog($"Auth unexpected error: {ex.GetType().Name}: {ex.Message}");
+            StatusText = "Неожиданная ошибка входа. Подробности записаны в лог.";
         }
         finally
         {
@@ -439,16 +457,20 @@ public sealed partial class MainViewModel
         }
     }
 
-    private void SiteLogout()
+    // RelayCommand intentionally accepts this async-void UI command. All exceptions are
+    // handled inside the method; local logout happens immediately, server revocation is best-effort.
+    private async void SiteLogout()
     {
+        string tokenToRevoke = string.Empty;
+
         try
         {
             CancelLoginWait();
 
+            tokenToRevoke = _tokens?.SafeAccessToken ?? string.Empty;
             _tokens = null;
             _tokenStore.Clear();
 
-            // ✅ ТЗ: при полном выходе — ник удаляем из конфига
             try
             {
                 _config.Current.LastUsername = null;
@@ -456,7 +478,6 @@ public sealed partial class MainViewModel
             }
             catch { /* ignore */ }
 
-            // ✅ сбрасываем UI-ник, НЕ через сеттер (иначе он снова сохранит в конфиг)
             _username = "Player";
             Raise(nameof(Username));
 
@@ -466,15 +487,40 @@ public sealed partial class MainViewModel
             IsLoggedIn = false;
             IsWaitingSiteConfirm = false;
             SiteUserName = "Не вошли";
-
             LoginUrl = null;
 
             StatusText = "Вы вышли.";
-            AppendLog("Сайт: выход выполнен.");
+            AppendLog("Сайт: локальный выход выполнен.");
         }
         finally
         {
             RefreshCanStates();
+        }
+
+        if (string.IsNullOrWhiteSpace(tokenToRevoke))
+            return;
+
+        try
+        {
+            using var revokeCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+            revokeCts.CancelAfter(TimeSpan.FromSeconds(6));
+
+            var revoked = await new LauncherAuthClient().RevokeAsync(tokenToRevoke, revokeCts.Token);
+            AppendLog(revoked
+                ? "Сайт: Launcher-токен отозван на сервере."
+                : "Сайт: локальный выход выполнен, но сервер не подтвердил отзыв токена.");
+        }
+        catch (OperationCanceledException)
+        {
+            AppendLog("Сайт: локальный выход выполнен; отзыв токена не подтверждён из-за отмены/таймаута.");
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Сайт: локальный выход выполнен; ошибка отзыва токена: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            tokenToRevoke = string.Empty;
         }
     }
 }
