@@ -813,7 +813,8 @@ public sealed class LoaderInstaller
 
         return Directory.EnumerateDirectories(versionsDir)
             .Select(Path.GetFileName)
-            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Where(static n => !string.IsNullOrWhiteSpace(n))
+            .Select(static n => n!)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
