@@ -24,7 +24,6 @@ env:
   PACK_ID: LegendBornLauncher
   MAIN_EXE: LegendBorn.exe
   PACK_TITLE: LegendBorn Launcher
-  VPK_VERSION: 1.2.0
   VPK_OUTPUT_DIR: Releases
   VPK_CHANNEL: win
   FORCE_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.force == 'true' }}
@@ -55,7 +54,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
-      # 1) Находим правильный csproj (если CS_PROJ не указывает на существующий файл)
       - name: Resolve csproj path
         id: csproj
         shell: pwsh
@@ -66,9 +64,6 @@ jobs:
           if (![string]::IsNullOrWhiteSpace($candidate) -and (Test-Path $candidate)) {
             $resolved = (Resolve-Path $candidate).Path
           } else {
-            # Ищем по репозиторию:
-            # - сначала точное имя LegendBorn.csproj (частый кейс)
-            # - иначе берём первый *.csproj
             $exact = Get-ChildItem -Recurse -Filter "LegendBorn.csproj" -File | Select-Object -First 1
             if ($exact) {
               $resolved = $exact.FullName
@@ -87,8 +82,7 @@ jobs:
           "path=$resolved" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "Resolved csproj: $resolved"
 
-      # 2) Читаем Version из найденного csproj
-      - name: Read Version from csproj
+      - name: Read Version and Velopack version from csproj
         id: ver
         shell: pwsh
         run: |
@@ -96,8 +90,6 @@ jobs:
           if (!(Test-Path $proj)) { throw "csproj not found: $proj" }
 
           [xml]$xml = Get-Content -Raw -Path $proj
-
-          # Берём Version из PropertyGroup (fallback: InformationalVersion/AssemblyVersion)
           $pg = $xml.Project.PropertyGroup
 
           $v = ($pg | Where-Object { $_.Version } | Select-Object -ExpandProperty Version -First 1)
@@ -107,18 +99,26 @@ jobs:
           if (-not $v) {
             $v = ($pg | Where-Object { $_.AssemblyVersion } | Select-Object -ExpandProperty AssemblyVersion -First 1)
           }
-
           if ([string]::IsNullOrWhiteSpace($v)) {
             throw "Version not found in csproj (Version/InformationalVersion/AssemblyVersion)"
           }
 
-          # На случай "0.2.2+sha" — отрезаем build metadata
           $v = $v.ToString().Split('+')[0].Trim()
+
+          $velopackRef = $xml.Project.ItemGroup.PackageReference |
+            Where-Object { $_.Include -eq "Velopack" } |
+            Select-Object -First 1
+          $velopackVersion = [string]$velopackRef.Version
+          if ([string]::IsNullOrWhiteSpace($velopackVersion)) {
+            throw "Velopack PackageReference version not found in csproj"
+          }
 
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "tag=v$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "velopack_version=$velopackVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "Version=$v"
           Write-Host "Tag=v$v"
+          Write-Host "Velopack=$velopackVersion"
 
       - name: Check if tag already exists
         id: tagcheck
@@ -153,11 +153,11 @@ jobs:
         run: |
           dotnet publish "${{ steps.csproj.outputs.path }}" -c Release -r win-x64 --self-contained true -o publish
 
-      - name: Install/Update vpk tool
+      - name: Install vpk tool
         if: steps.tagcheck.outputs.exists != 'true'
         shell: pwsh
         run: |
-          dotnet tool update -g vpk --version "${{ env.VPK_VERSION }}"
+          dotnet tool install -g vpk --version "${{ steps.ver.outputs.velopack_version }}"
           "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
           vpk --help
 
