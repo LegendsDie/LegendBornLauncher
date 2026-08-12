@@ -24,7 +24,7 @@ env:
   PACK_ID: LegendBornLauncher
   MAIN_EXE: LegendBorn.exe
   PACK_TITLE: LegendBorn Launcher
-  VPK_VERSION: 0.0.1369-g1d5c984
+  VPK_VERSION: 1.2.0
   VPK_OUTPUT_DIR: Releases
   VPK_CHANNEL: win
   FORCE_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.force == 'true' }}
