@@ -277,7 +277,8 @@ public sealed class MinecraftService
 
         _mirrorStats = LoadMirrorStats();
 
-        _launcher = new MinecraftLauncher(_path);
+        var launcherParameters = MinecraftLauncherParameters.CreateDefault(_path, Http);
+_launcher = new MinecraftLauncher(launcherParameters);
 
         _loaderInstaller = new LoaderInstaller(
             _path,
@@ -2165,7 +2166,7 @@ private void SanitizeJavaEnvironment(Process process)
             MaxConnectionsPerServer = 8
         };
 
-        var http = new HttpClient(handler)
+        var http = new HttpClient(new MinecraftDistributionHttpHandler(handler))
         {
             Timeout = Timeout.InfiniteTimeSpan,
             DefaultRequestVersion = HttpVersion.Version11,

@@ -113,6 +113,12 @@
                                    TextWrapping="Wrap"
                                    Text="Автоподключение создаёт свежий одноразовый join-ticket перед каждым запуском игры."/>
 
+                        <TextBlock Margin="0,7,0,0"
+                                   Foreground="{StaticResource TextDimLocal}"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"
+                                   Text="Резервные загрузки Minecraft/NeoForge: LegendBorn mirrors + BMCLAPI."/>
+
                         <Button Style="{StaticResource GhostButton}"
                                 Content="Проверить обновления лаунчера"
                                 Command="{Binding CheckLauncherUpdatesCommand}"
