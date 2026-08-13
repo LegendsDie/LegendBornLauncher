@@ -10,18 +10,13 @@ using System.Threading.Tasks;
 namespace LegendBorn.Services;
 
 /// <summary>
-/// Resilient GET/HEAD transport for CmlLib Minecraft distribution traffic.
-///
-/// Normal networks keep using Mojang directly. If an official distribution host times out or
-/// returns a transient/block-like status, that host is temporarily marked degraded and subsequent
-/// requests prefer the LegendBorn fixed-origin proxy. For URL layouts that BMCLAPI documents as
-/// Mojang-compatible, BMCLAPI is an independent mirror before retrying the official host.
-///
-/// Integrity is still enforced by CmlLib's normal SHA-1 checks; this handler only changes transport.
+/// Resilient GET/HEAD transport for CmlLib Minecraft/NeoForge distribution traffic.
+/// It never routes large binaries through the LegendBorn Next.js app. NeoForge Maven uses the
+/// mirror bases received from the authoritative launcher catalog; known Mojang layouts may use
+/// BMCLAPI before the official source is retried. Integrity remains enforced by the caller/CmlLib.
 /// </summary>
 internal sealed class MinecraftDistributionHttpHandler : HttpMessageHandler
 {
-    internal const string LegendBornMirrorBase = "https://legendborn.xyz/api/mirror/mojang/";
     internal const string BmclApiBase = "https://bmclapi2.bangbang93.com/";
 
     private static readonly TimeSpan DirectAttemptTimeout = TimeSpan.FromSeconds(6);
@@ -64,10 +59,11 @@ internal sealed class MinecraftDistributionHttpHandler : HttpMessageHandler
         }
 
         var original = request.RequestUri;
+        var preferMirrors = string.Equals(originKey, "neoforge-maven", StringComparison.Ordinal);
         var hostDegraded = IsHostDegraded(original.Host);
         var mirrors = BuildMirrorCandidates(original, originKey).ToArray();
 
-        if (!hostDegraded)
+        if (!preferMirrors && !hostDegraded)
         {
             var direct = await TrySendCandidateAsync(
                     request,
@@ -88,6 +84,8 @@ internal sealed class MinecraftDistributionHttpHandler : HttpMessageHandler
         foreach (var mirror in mirrors)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (UriEquals(original, mirror.Uri))
+                continue;
 
             var mirrored = await TrySendCandidateAsync(
                     request,
@@ -100,14 +98,14 @@ internal sealed class MinecraftDistributionHttpHandler : HttpMessageHandler
             if (mirrored.Response is not null && !mirrored.ShouldFailOver)
             {
                 _log?.Invoke($"Minecraft CDN: fallback -> {mirror.Label} ({original.Host})");
+                if (string.Equals(mirror.Label, "BMCLAPI", StringComparison.Ordinal))
+                    _log?.Invoke("Minecraft CDN: используется источник BMCLAPI.");
                 return mirrored.Response;
             }
 
             mirrored.Response?.Dispose();
         }
 
-        // A degraded marker is only an optimization. If every mirror failed, give the official
-        // endpoint one final attempt so a recovered Mojang host can immediately heal the process.
         var finalDirect = await SendCloneAsync(
                 request,
                 original,
@@ -131,9 +129,6 @@ internal sealed class MinecraftDistributionHttpHandler : HttpMessageHandler
         try
         {
             var response = await SendCloneAsync(source, target, cancellationToken, timeout).ConfigureAwait(false);
-
-            // For the official source, preserve authoritative non-transient errors such as 404.
-            // For a mirror/proxy, any unusable response means "try the next transport".
             var failOver = mirrorCandidate
                 ? !IsUsable(response.StatusCode)
                 : ShouldOfficialFailOver(response.StatusCode);
@@ -195,28 +190,44 @@ internal sealed class MinecraftDistributionHttpHandler : HttpMessageHandler
 
     private static IEnumerable<(Uri Uri, string Label)> BuildMirrorCandidates(Uri original, string originKey)
     {
-        var legendBorn = BuildLegendBornProxyUri(original, originKey);
-        if (legendBorn is not null)
-            yield return (legendBorn, "LegendBorn");
+        if (string.Equals(originKey, "neoforge-maven", StringComparison.Ordinal))
+        {
+            foreach (var candidate in BuildNeoForgeMavenCandidates(original))
+                yield return candidate;
+            yield break;
+        }
 
         var bmcl = BuildBmclApiUri(original, originKey);
-        if (bmcl is not null && !UriEquals(legendBorn, bmcl))
+        if (bmcl is not null)
             yield return (bmcl, "BMCLAPI");
     }
 
-    private static Uri? BuildLegendBornProxyUri(Uri original, string originKey)
+    private static IEnumerable<(Uri Uri, string Label)> BuildNeoForgeMavenCandidates(Uri original)
     {
-        try
-        {
-            var path = original.AbsolutePath.TrimStart('/');
-            if (path.Length == 0) return null;
+        var relative = original.AbsolutePath.TrimStart('/');
+        if (relative.StartsWith("releases/", StringComparison.OrdinalIgnoreCase))
+            relative = relative["releases/".Length..];
+        if (relative.Length == 0)
+            yield break;
 
-            var target = new Uri(new Uri(LegendBornMirrorBase, UriKind.Absolute), originKey + "/" + path);
-            return new UriBuilder(target) { Query = original.Query.TrimStart('?') }.Uri;
-        }
-        catch
+        foreach (var mirror in NeoForgeDistributionBootstrap.GetRegisteredMavenMirrors())
         {
-            return null;
+            var baseUrl = NeoForgeDistributionBootstrap.NormalizeHttpsBase(mirror);
+            if (baseUrl.Length == 0) continue;
+
+            Uri target;
+            try
+            {
+                target = new Uri(new Uri(baseUrl, UriKind.Absolute), relative);
+                if (!string.IsNullOrEmpty(original.Query))
+                    target = new UriBuilder(target) { Query = original.Query.TrimStart('?') }.Uri;
+            }
+            catch
+            {
+                continue;
+            }
+
+            yield return (target, NeoForgeDistributionBootstrap.DescribeSource(baseUrl));
         }
     }
 
@@ -257,6 +268,7 @@ internal sealed class MinecraftDistributionHttpHandler : HttpMessageHandler
             "libraries.minecraft.net" => "libraries",
             "resources.download.minecraft.net" => "resources",
             "launcher.mojang.com" => "launcher",
+            "maven.neoforged.net" => "neoforge-maven",
             _ => ""
         };
 
