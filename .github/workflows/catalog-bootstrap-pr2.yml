@@ -1,0 +1,80 @@
+name: PR2 catalog bootstrap
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/catalog-bootstrap-pr2.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap-selectel:
+    if: github.repository == 'LegendsDie/LegendBornLauncher' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'agent/production-hardening' && github.actor == 'LegendsDie'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout PR2
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.x
+
+      - name: Validate snapshot code
+        run: |
+          node --test tests/server-catalog-snapshot.test.mjs
+          node --check scripts/server-catalog-snapshot.mjs
+
+      - name: Render fresh production snapshot
+        run: node scripts/server-catalog-snapshot.mjs --url https://legendborn.xyz/api/launcher/servers --out artifacts/server-catalog/servers.json
+
+      - name: Require Selectel configuration
+        shell: bash
+        env:
+          MIRROR_ENDPOINT: ${{ vars.LEGENDBORN_VPK_MIRROR_ENDPOINT }}
+          MIRROR_BUCKET: ${{ vars.LEGENDBORN_VPK_MIRROR_BUCKET }}
+          MIRROR_KEY_ID: ${{ secrets.LEGENDBORN_VPK_MIRROR_KEY_ID }}
+          MIRROR_SECRET: ${{ secrets.LEGENDBORN_VPK_MIRROR_SECRET }}
+        run: |
+          set -euo pipefail
+          [[ "$MIRROR_ENDPOINT" == https://* ]]
+          [[ -n "$MIRROR_BUCKET" ]]
+          [[ -n "$MIRROR_KEY_ID" ]]
+          [[ -n "$MIRROR_SECRET" ]]
+
+      - name: Upload launcher/servers.json
+        shell: bash
+        env:
+          MIRROR_ENDPOINT: ${{ vars.LEGENDBORN_VPK_MIRROR_ENDPOINT }}
+          MIRROR_BUCKET: ${{ vars.LEGENDBORN_VPK_MIRROR_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.LEGENDBORN_VPK_MIRROR_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.LEGENDBORN_VPK_MIRROR_SECRET }}
+          AWS_DEFAULT_REGION: ru-1
+          AWS_EC2_METADATA_DISABLED: "true"
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: |
+          set -euo pipefail
+          aws --version
+          aws s3 cp artifacts/server-catalog/servers.json "s3://${MIRROR_BUCKET}/launcher/servers.json" --endpoint-url "$MIRROR_ENDPOINT" --content-type "application/json; charset=utf-8" --cache-control "public, max-age=300, must-revalidate" --no-progress --only-show-errors
+
+      - name: Verify public object byte-for-byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(sha256sum artifacts/server-catalog/servers.json | awk '{print $1}')"
+          for attempt in 1 2 3 4 5; do
+            rm -f artifacts/server-catalog/public.json
+            if node scripts/server-catalog-snapshot.mjs --url "https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/servers.json?bootstrap=${GITHUB_RUN_ID}-${attempt}" --out artifacts/server-catalog/public.json; then
+              actual="$(sha256sum artifacts/server-catalog/public.json | awk '{print $1}')"
+              if [[ "$actual" == "$expected" ]]; then
+                echo "BOOTSTRAP VERIFIED SHA256=$actual"
+                exit 0
+              fi
+            fi
+            sleep $((attempt * 2))
+          done
+          echo "Public Selectel object did not match uploaded snapshot" >&2
+          exit 1
