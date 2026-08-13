@@ -84,6 +84,38 @@ jobs:
             --out artifacts/server-catalog/servers.json
           sha256sum artifacts/server-catalog/servers.json
 
+      - name: Install pinned Selectel S3 CA bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          ca_dir="$RUNNER_TEMP/selectel-s3-ca"
+          mkdir -p "$ca_dir"
+
+          curl --fail --silent --show-error --location \
+            https://secure.globalsign.net/cacert/root-r6.crt \
+            --output "$ca_dir/root-r6.der"
+
+          openssl x509 \
+            -inform der \
+            -in "$ca_dir/root-r6.der" \
+            -out "$ca_dir/root-r6.pem"
+
+          actual="$(openssl x509 \
+            -in "$ca_dir/root-r6.pem" \
+            -noout \
+            -fingerprint \
+            -sha1 |
+            sed 's/^[^=]*=//' |
+            tr '[:lower:]' '[:upper:]')"
+
+          expected='80:94:64:0E:B5:A7:A1:CA:11:9C:1F:DD:D5:9F:81:02:63:A7:FB:D1'
+
+          [[ "$actual" == "$expected" ]] || {
+            echo "Unexpected GlobalSign Root R6 thumbprint: $actual" >&2
+            exit 1
+          }
+
+          echo "AWS_CA_BUNDLE=$ca_dir/root-r6.pem" >> "$GITHUB_ENV"
       - name: Verify AWS CLI availability
         run: aws --version
 
@@ -94,7 +126,7 @@ jobs:
           MIRROR_BUCKET: ${{ vars.LEGENDBORN_VPK_MIRROR_BUCKET }}
           AWS_ACCESS_KEY_ID: ${{ secrets.LEGENDBORN_VPK_MIRROR_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.LEGENDBORN_VPK_MIRROR_SECRET }}
-          AWS_DEFAULT_REGION: ru-1
+          AWS_DEFAULT_REGION: ru-3
           AWS_EC2_METADATA_DISABLED: "true"
           AWS_REQUEST_CHECKSUM_CALCULATION: when_required
           AWS_RESPONSE_CHECKSUM_VALIDATION: when_required

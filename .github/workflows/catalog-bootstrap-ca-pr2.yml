@@ -67,7 +67,7 @@ jobs:
           MIRROR_BUCKET: ${{ vars.LEGENDBORN_VPK_MIRROR_BUCKET }}
           AWS_ACCESS_KEY_ID: ${{ secrets.LEGENDBORN_VPK_MIRROR_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.LEGENDBORN_VPK_MIRROR_SECRET }}
-          AWS_DEFAULT_REGION: ru-1
+          AWS_DEFAULT_REGION: ru-3
           AWS_EC2_METADATA_DISABLED: "true"
           AWS_REQUEST_CHECKSUM_CALCULATION: when_required
           AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
