@@ -170,3 +170,56 @@ jobs:
             --outputDir "artifacts/releases" `
             --channel "win" `
             --runtime "win-x64"
+
+      - name: Prepare Windows test bundle
+        if: github.event_name == 'pull_request'
+        shell: pwsh
+        run: |
+          $bundle = "artifacts/test-bundle"
+          $portable = Join-Path $bundle "portable"
+          $velopack = Join-Path $bundle "velopack"
+
+          New-Item -ItemType Directory -Force -Path $portable | Out-Null
+          New-Item -ItemType Directory -Force -Path $velopack | Out-Null
+
+          Copy-Item -Path "artifacts/publish/*" -Destination $portable -Recurse -Force
+          Copy-Item -Path "artifacts/releases/*" -Destination $velopack -Recurse -Force
+
+          $headSha = "${{ github.event.pull_request.head.sha }}"
+          $pr = "${{ github.event.pull_request.number }}"
+          $run = "${{ github.run_number }}"
+          $version = "${{ steps.meta.outputs.version }}"
+
+          @(
+            "LegendBorn Launcher TEST BUILD",
+            "PR=$pr",
+            "HeadSHA=$headSha",
+            "WorkflowRun=$run",
+            "Version=$version",
+            "Runtime=win-x64",
+            "SelfContained=true",
+            "BuiltUtc=$([DateTime]::UtcNow.ToString('o'))"
+          ) | Set-Content -Path (Join-Path $bundle "BUILD-INFO.txt") -Encoding utf8
+
+          $checksums = Get-ChildItem -Path $bundle -File -Recurse |
+            Where-Object { $_.Name -ne "SHA256SUMS.txt" } |
+            Sort-Object FullName |
+            ForEach-Object {
+              $hash = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              $relative = [IO.Path]::GetRelativePath((Resolve-Path $bundle), $_.FullName).Replace('\\', '/')
+              "$hash  $relative"
+            }
+          $checksums | Set-Content -Path (Join-Path $bundle "SHA256SUMS.txt") -Encoding ascii
+
+          if (-not (Test-Path (Join-Path $portable "LegendBorn.exe"))) {
+            throw "Portable LegendBorn.exe missing from test bundle."
+          }
+
+      - name: Upload PR Windows test bundle
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: LegendBornLauncher-PR${{ github.event.pull_request.number }}-win-x64-run${{ github.run_number }}
+          path: artifacts/test-bundle
+          if-no-files-found: error
+          retention-days: 14
