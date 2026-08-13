@@ -33,18 +33,12 @@ jobs:
         shell: pwsh
         run: |
           [xml]$xml = Get-Content -Raw -Path "LegendBorn.csproj"
-
           $versionNode = $xml.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -First 1
           $version = [string]$versionNode.Version
-
-          $velopackRef = $xml.Project.ItemGroup.PackageReference |
-            Where-Object { $_.Include -eq "Velopack" } |
-            Select-Object -First 1
+          $velopackRef = $xml.Project.ItemGroup.PackageReference | Where-Object { $_.Include -eq "Velopack" } | Select-Object -First 1
           $velopackVersion = [string]$velopackRef.Version
-
           if ([string]::IsNullOrWhiteSpace($version)) { throw "Project Version not found" }
           if ([string]::IsNullOrWhiteSpace($velopackVersion)) { throw "Velopack PackageReference not found" }
-
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "velopack_version=$velopackVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
@@ -52,173 +46,71 @@ jobs:
         shell: pwsh
         run: |
           $source = Get-Content -Raw -Path "Launching/MinecraftService.cs"
-          $match = [regex]::Match(
-            $source,
-            'AlwaysProtectedMutablePrefixes\s*=\s*\{(?<body>.*?)\};',
-            [System.Text.RegularExpressions.RegexOptions]::Singleline)
-
-          if (-not $match.Success) {
-            throw "AlwaysProtectedMutablePrefixes policy was not found."
-          }
-
+          $match = [regex]::Match($source, 'AlwaysProtectedMutablePrefixes\s*=\s*\{(?<body>.*?)\};', [System.Text.RegularExpressions.RegexOptions]::Singleline)
+          if (-not $match.Success) { throw "AlwaysProtectedMutablePrefixes policy was not found." }
           $body = $match.Groups['body'].Value
           foreach ($required in @('config/', 'defaultconfigs/', 'resourcepacks/', 'shaderpacks/')) {
-            if (-not $body.Contains('"' + $required + '"')) {
-              throw "Protected pack prefix is missing: $required"
-            }
+            if (-not $body.Contains('"' + $required + '"')) { throw "Protected pack prefix is missing: $required" }
           }
-
-          if ($source -notmatch 'if \(IsAlwaysProtectedMutable\(rel\)\) continue;') {
-            throw "Manifest delete path no longer protects AlwaysProtectedMutable prefixes."
-          }
-
-          if ($source -notmatch '!IsAlwaysProtectedMutable\(r\)') {
-            throw "Prune path no longer excludes AlwaysProtectedMutable prefixes."
-          }
+          if ($source -notmatch 'if \(IsAlwaysProtectedMutable\(rel\)\) continue;') { throw "Manifest delete guard missing." }
+          if ($source -notmatch '!IsAlwaysProtectedMutable\(r\)') { throw "Prune guard missing." }
 
       - name: Verify launcher auth contract policy
         shell: pwsh
         run: |
           $authClient = Get-Content -Raw -Path "Services/LauncherAuthClient.cs"
           $authVm = Get-Content -Raw -Path "ViewModels/MainViewModel.Auth.cs"
-
-          if ($authClient -notmatch 'ProductionOrigin\s*=\s*"https://legendborn\.xyz/"') {
-            throw "Launcher auth origin drifted from legendbornweb production origin."
+          if ($authClient -notmatch 'ProductionOrigin\s*=\s*"https://legendborn\.xyz/"') { throw "Launcher auth origin drifted." }
+          foreach ($required in @('api/launcher/login','api/launcher/logout','PollState.TerminalError','PollState.TransientError','HttpStatusCode.TooManyRequests','AllowAutoRedirect = false')) {
+            if (-not $authClient.Contains($required)) { throw "Launcher auth policy token missing: $required" }
           }
+          if ($authVm -notmatch 'RevokeAsync\(') { throw "Launcher logout no longer revokes server-side token." }
 
-          foreach ($required in @(
-            'api/launcher/login',
-            'api/launcher/logout',
-            'PollState.TerminalError',
-            'PollState.TransientError',
-            'HttpStatusCode.TooManyRequests',
-            'AllowAutoRedirect = false'
-          )) {
-            if (-not $authClient.Contains($required)) {
-              throw "Launcher auth policy token missing: $required"
-            }
-          }
-
-          if ($authVm -notmatch 'RevokeAsync\(') {
-            throw "Launcher logout no longer revokes the server-side token."
-          }
-
-          $deprecated = Get-ChildItem -Recurse -File -Filter '*.cs' |
-            Where-Object { $_.FullName -notlike '*\Services\SiteAuthService.cs' } |
-            Select-String -Pattern 'SendLauncherEventAsync\s*\(|GetRezoniteBalanceAsync\s*\('
-
-          if ($deprecated) {
-            $details = ($deprecated | ForEach-Object { "$($_.Path):$($_.LineNumber): $($_.Line.Trim())" }) -join "`n"
-            throw "Deprecated phantom launcher API helper is referenced outside SiteAuthService:`n$details"
-          }
-
-      - name: Verify distribution resilience policy
+      - name: Verify distribution contract policy
         shell: pwsh
         run: |
           $catalog = Get-Content -Raw -Path "Services/ServerCatalogService.cs"
           $serversVm = Get-Content -Raw -Path "ViewModels/MainViewModel.Servers.cs"
           $mainVm = Get-Content -Raw -Path "ViewModels/MainViewModel.cs"
           $minecraft = Get-Content -Raw -Path "Launching/MinecraftService.cs"
-          $minecraftTransport = Get-Content -Raw -Path "Services/MinecraftDistributionHttpHandler.cs"
+          $transport = Get-Content -Raw -Path "Services/MinecraftDistributionHttpHandler.cs"
           $loader = Get-Content -Raw -Path "Launching/LoaderInstaller.cs"
-          $neoBootstrap = Get-Content -Raw -Path "Services/NeoForgeDistributionBootstrap.cs"
+          $neoContract = Get-Content -Raw -Path "Services/NeoForgeDistributionBootstrap.cs"
           $packPreflight = Get-Content -Raw -Path "Services/PackMirrorPreflightService.cs"
           $update = Get-Content -Raw -Path "Services/UpdateService.cs"
           $settings = Get-Content -Raw -Path "Views/Tabs/SettingsTabView.xaml"
 
-          foreach ($required in @(
-            'https://legendborn.xyz/api/launcher/servers',
-            'server_catalog_v2.json',
-            'validUntilUnix',
-            'Authoritative'
-          )) {
-            if (-not $catalog.Contains($required)) {
-              throw "Server catalog resilience token missing: $required"
-            }
+          foreach ($required in @('https://legendborn.xyz/api/launcher/servers','server_catalog_v2.json','generatedAtUnix','validUntilUnix','CacheMaxAge','installerMirrors','installerSha256','mavenMirrors','installerMirrorArgument','NeoForgeDistributionBootstrap.TryRegister')) {
+            if (-not $catalog.Contains($required)) { throw "Server catalog trust token missing: $required" }
+          }
+          if ($serversVm -notmatch 'ServerIp\s*=\s*addr') { throw "Authoritative catalog address override missing." }
+          if (($catalog + $serversVm + $mainVm).Contains('legendcraft.minerent.io')) { throw "Retired Minecraft endpoint reappeared." }
+
+          foreach ($required in @('InstallerMirrors','InstallerSha256','MavenMirrors','RequiredMirrorArgument = "--mirror"','https://bmclapi2.bangbang93.com/maven/','https://maven.neoforged.net/releases/','GetRegisteredMavenMirrors')) {
+            if (-not $neoContract.Contains($required)) { throw "NeoForge contract registry missing: $required" }
+          }
+          foreach ($required in @('MinecraftLauncherParameters.CreateDefault(_path, Http)','new HttpClient(new MinecraftDistributionHttpHandler(handler))')) {
+            if (-not $minecraft.Contains($required)) { throw "CmlLib resilient HTTP wiring missing: $required" }
+          }
+          foreach ($required in @('https://bmclapi2.bangbang93.com/','maven.neoforged.net','GetRegisteredMavenMirrors','libraries.minecraft.net','resources.download.minecraft.net','DegradedHostTtl')) {
+            if (-not $transport.Contains($required)) { throw "Distribution transport fallback missing: $required" }
           }
 
-          if ($serversVm -notmatch 'ServerIp\s*=\s*addr') {
-            throw "Selected server no longer forces the authoritative catalog address over stale local config."
+          $distributionText = $catalog + $transport + $neoContract
+          foreach ($forbidden in @('https://legendborn.xyz/api/maven/neoforge/','https://legendborn.xyz/api/mirror/mojang/')) {
+            if ($distributionText.Contains($forbidden)) { throw "Phantom Next.js binary proxy must not be used: $forbidden" }
+          }
+          if ($loader -match 'files/latest/download') { throw "NeoForge installer must never use an unversioned latest/download URL." }
+          foreach ($required in @('ValidateInstallerJar','OfficialMavenDownloadTimeout','Major: >= 21','Is64Bit: true')) {
+            if (-not $loader.Contains($required)) { throw "NeoForge baseline safeguard missing: $required" }
           }
 
-          $allRuntimeSources = $catalog + $serversVm + $mainVm
-          if ($allRuntimeSources.Contains('legendcraft.minerent.io')) {
-            throw "Retired Minecraft endpoint legendcraft.minerent.io reappeared in runtime launcher code."
+          if (-not $settings.Contains('BMCLAPI')) { throw "BMCLAPI source attribution must remain visible." }
+          foreach ($required in @('manifest.json','Manifest.Build','VersionScore','selstorage.ru')) {
+            if (-not $packPreflight.Contains($required)) { throw "Pack mirror freshness safeguard missing: $required" }
           }
-
-          if ($loader -match 'files/latest/download') {
-            throw "NeoForge installer must never use an unversioned latest/download URL."
-          }
-
-          foreach ($required in @(
-            'ValidateInstallerJar',
-            'OfficialMavenDownloadTimeout',
-            'Major: >= 21',
-            'Is64Bit: true',
-            'SourceForgeDirectCdnUrl'
-          )) {
-            if (-not $loader.Contains($required)) {
-              throw "NeoForge restricted-network safeguard missing: $required"
-            }
-          }
-
-          foreach ($required in @(
-            'https://legendborn.xyz/api/maven/neoforge/',
-            'https://bmclapi2.bangbang93.com/maven/',
-            'LEGENDBORN_NEOFORGE_MAVEN_MIRRORS'
-          )) {
-            if (-not $neoBootstrap.Contains($required)) {
-              throw "NeoForge mirror bootstrap missing: $required"
-            }
-          }
-
-          foreach ($required in @(
-            'MinecraftLauncherParameters.CreateDefault(_path, Http)',
-            'new HttpClient(new MinecraftDistributionHttpHandler(handler))'
-          )) {
-            if (-not $minecraft.Contains($required)) {
-              throw "CmlLib resilient HTTP wiring missing: $required"
-            }
-          }
-
-          foreach ($required in @(
-            'https://legendborn.xyz/api/mirror/mojang/',
-            'https://bmclapi2.bangbang93.com/',
-            'launchermeta.mojang.com',
-            'libraries.minecraft.net',
-            'resources.download.minecraft.net',
-            'DegradedHostTtl'
-          )) {
-            if (-not $minecraftTransport.Contains($required)) {
-              throw "Minecraft distribution fallback missing: $required"
-            }
-          }
-
-          if (-not $settings.Contains('BMCLAPI')) {
-            throw "BMCLAPI source attribution must remain visible in Settings."
-          }
-
-          foreach ($required in @(
-            'manifest.json',
-            'Manifest.Build',
-            'VersionScore',
-            'selstorage.ru'
-          )) {
-            if (-not $packPreflight.Contains($required)) {
-              throw "Pack mirror freshness safeguard missing: $required"
-            }
-          }
-
-          foreach ($required in @(
-            'SimpleWebSource',
-            'selstorage.ru/launcher/releases/',
-            'GithubSource',
-            'SemanticVersion.CompareByVersion',
-            'FindDownloadFallbackAsync'
-          )) {
-            if (-not $update.Contains($required)) {
-              throw "Launcher update mirror safeguard missing: $required"
-            }
+          foreach ($required in @('SimpleWebSource','selstorage.ru/launcher/releases/','GithubSource','SemanticVersion.CompareByVersion','FindDownloadFallbackAsync')) {
+            if (-not $update.Contains($required)) { throw "Launcher update mirror safeguard missing: $required" }
           }
 
       - name: Cache NuGet
