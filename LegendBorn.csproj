@@ -29,6 +29,11 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!-- PR2 security hardening: the legacy installer mutates NeoForge JARs and is intentionally excluded. -->
+        <Compile Remove="Launching\LoaderInstaller.cs" />
+    </ItemGroup>
+
+    <ItemGroup>
         <ApplicationDefinition Remove="App.xaml" />
         <Page Include="App.xaml" />
         <Page Update="Resources\Themes\LauncherTheme.xaml">
