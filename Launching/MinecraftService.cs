@@ -35,8 +35,8 @@ public sealed class MinecraftService
 
     private static readonly string[] DefaultPackMirrors =
     {
-        "https://pack.legendborn.ru/launcher/pack/",
         "https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/pack/",
+        "https://pack.legendborn.ru/launcher/pack/",
         "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/",
         "https://downloads.sourceforge.net/project/legendborn-pack/launcher/pack/"
     };
@@ -73,15 +73,19 @@ public sealed class MinecraftService
         "shaderpacks/",
     };
 
-    // Эти папки ВСЕГДА считаем user-mutable и никогда не трогаем
+    // Эти папки ВСЕГДА считаем user-mutable и никогда не перезаписываем/не prune'им.
+    // config/defaultconfigs работают как seed-only: manifest может восстановить отсутствующий файл,
+    // но уже существующий пользовательский файл остаётся владельцем пользователя даже при потере pack_state.json.
     private static readonly string[] AlwaysProtectedMutablePrefixes =
     {
         "resourcepacks/",
         "shaderpacks/",
+        "config/",
+        "defaultconfigs/",
     };
 
-    // Эти папки ставим из манифеста ТОЛЬКО при первичной установке packId,
-    // затем больше вообще не трогаем
+    // Legacy-группа сохранена для совместимости с существующей логикой pack state.
+    // AlwaysProtectedMutablePrefixes имеет приоритет, поэтому эти пути больше никогда не становятся destructive-managed.
     private static readonly string[] OneTimeBootstrapPrefixes =
     {
         "config/",
@@ -273,7 +277,8 @@ public sealed class MinecraftService
 
         _mirrorStats = LoadMirrorStats();
 
-        _launcher = new MinecraftLauncher(_path);
+        var launcherParameters = MinecraftLauncherParameters.CreateDefault(_path, Http);
+_launcher = new MinecraftLauncher(launcherParameters);
 
         _loaderInstaller = new LoaderInstaller(
             _path,
@@ -2161,7 +2166,7 @@ private void SanitizeJavaEnvironment(Process process)
             MaxConnectionsPerServer = 8
         };
 
-        var http = new HttpClient(handler)
+        var http = new HttpClient(new MinecraftDistributionHttpHandler(handler))
         {
             Timeout = Timeout.InfiniteTimeSpan,
             DefaultRequestVersion = HttpVersion.Version11,

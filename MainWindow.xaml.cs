@@ -146,7 +146,10 @@ public partial class MainWindow : Window
         try
         {
             if (_isClosing) return;
-            await UpdateService.CheckAndUpdateAsync(silent: false, showNoUpdates: false).ConfigureAwait(false);
+
+            // Startup checks must never interrupt normal launcher use with a modal
+            // network/GitHub error. The explicit settings button remains verbose.
+            await UpdateService.CheckAndUpdateAsync(silent: true, showNoUpdates: false).ConfigureAwait(false);
         }
         catch { }
     }

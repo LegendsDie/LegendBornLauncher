@@ -30,7 +30,6 @@
                                FontSize="18"
                                FontWeight="Bold"/>
 
-                    <!-- Click-first, чтобы не зависеть от OpenStartCommand -->
                     <Button Grid.Column="1"
                             Style="{StaticResource WinCtlButton}"
                             HorizontalAlignment="Right"
@@ -56,8 +55,6 @@
                                    Foreground="{StaticResource TextStrongLocal}"
                                    FontWeight="SemiBold"/>
 
-                        <!-- ✅ FIX: SelectedItem только OneWay (чтобы UI не мог сбросить VM),
-                             а выбор пользователя пишем в VM через SelectionChanged -->
                         <ComboBox x:Name="RamCombo"
                                   ItemsSource="{Binding RamOptions}"
                                   SelectedItem="{Binding RamMb, Mode=OneWay}"
@@ -96,9 +93,36 @@
 
                     <!-- Right column -->
                     <StackPanel Grid.Column="2" VerticalAlignment="Top">
+                        <TextBlock Text="Подключение"
+                                   Foreground="{StaticResource TextStrongLocal}"
+                                   FontWeight="SemiBold"/>
+
+                        <CheckBox Margin="0,10,0,0"
+                                  Foreground="{StaticResource TextStrongLocal}"
+                                  Content="Автоматически восстанавливать вход"
+                                  IsChecked="{Binding AutoLogin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+
+                        <CheckBox Margin="0,8,0,0"
+                                  Foreground="{StaticResource TextStrongLocal}"
+                                  Content="Автоподключение к выбранному серверу"
+                                  IsChecked="{Binding AutoConnect, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+
+                        <TextBlock Margin="0,8,0,0"
+                                   Foreground="{StaticResource TextDimLocal}"
+                                   FontSize="12"
+                                   TextWrapping="Wrap"
+                                   Text="Автоподключение создаёт свежий одноразовый join-ticket перед каждым запуском игры."/>
+
+                        <TextBlock Margin="0,7,0,0"
+                                   Foreground="{StaticResource TextDimLocal}"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"
+                                   Text="Резервные загрузки Minecraft/NeoForge: LegendBorn mirrors + BMCLAPI."/>
+
                         <Button Style="{StaticResource GhostButton}"
                                 Content="Проверить обновления лаунчера"
                                 Command="{Binding CheckLauncherUpdatesCommand}"
+                                Margin="0,18,0,0"
                                 Height="44"
                                 Padding="18,0"/>
 
@@ -131,27 +155,33 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
-                        <TextBlock Text="Диагностика"
-                                   Foreground="{StaticResource TextStrongLocal}"
-                                   FontWeight="SemiBold"/>
+                        <StackPanel>
+                            <TextBlock Text="Диагностика"
+                                       Foreground="{StaticResource TextStrongLocal}"
+                                       FontWeight="SemiBold"/>
+                            <TextBlock Margin="0,3,0,0"
+                                       Foreground="{StaticResource TextDimLocal}"
+                                       FontSize="11"
+                                       Text="Отчёт исключает токены и LegendCore session; секреты в текстовых логах редактируются."/>
+                        </StackPanel>
 
-                        <!-- UX: toggle autoscroll -->
-                        <CheckBox Grid.Column="1"
-                                  Content="Следовать за выводом"
-                                  Foreground="{StaticResource TextDimLocal}"
-                                  VerticalAlignment="Center"
-                                  IsChecked="{Binding ElementName=RootAutoScroll, Path=IsChecked}"
-                                  Visibility="Collapsed"/>
+                        <StackPanel Grid.Column="1"
+                                    Orientation="Horizontal"
+                                    VerticalAlignment="Center">
+                            <Button Style="{StaticResource GhostButton}"
+                                    Content="Собрать отчёт"
+                                    Command="{Binding CollectDiagnosticsCommand}"
+                                    Height="36"
+                                    Padding="14,0"
+                                    Margin="0,0,14,0"/>
+
+                            <CheckBox x:Name="RootAutoScroll"
+                                      VerticalAlignment="Center"
+                                      Foreground="{StaticResource TextDimLocal}"
+                                      Content="Следовать за выводом"
+                                      IsChecked="True"/>
+                        </StackPanel>
                     </Grid>
-
-                    <!-- Корневой чекбокс -->
-                    <CheckBox x:Name="RootAutoScroll"
-                              Grid.Row="0"
-                              HorizontalAlignment="Right"
-                              VerticalAlignment="Center"
-                              Foreground="{StaticResource TextDimLocal}"
-                              Content="Следовать за выводом"
-                              IsChecked="True"/>
 
                     <Expander Grid.Row="1"
                               Margin="0,12,0,0"

@@ -3,14 +3,12 @@ using System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using LegendBorn.Services;
 
 namespace LegendBorn.ViewModels;
 
 public sealed partial class MainViewModel
 {
-    private string _lastAutoServerIp = "";
-    private string _previousSelectedServerAddress = "";
-
     private async Task InitializeAsync(CancellationToken ct)
     {
         try
@@ -43,23 +41,14 @@ public sealed partial class MainViewModel
 
         try
         {
-            var current = (ServerIp ?? "").Trim();
+            // The server catalog is authoritative for infrastructure data. Never let a stale
+            // LastServerIp from launcher.config.json survive a server migration and override it.
             var addr = (value.Address ?? "").Trim();
-
-            var shouldAuto =
-                string.IsNullOrWhiteSpace(current) ||
-                current.Equals(DefaultServerIp, StringComparison.OrdinalIgnoreCase) ||
-                current.Equals(_lastAutoServerIp, StringComparison.OrdinalIgnoreCase) ||
-                (!string.IsNullOrWhiteSpace(_previousSelectedServerAddress) &&
-                 current.Equals(_previousSelectedServerAddress, StringComparison.OrdinalIgnoreCase));
-
-            if (shouldAuto && !string.IsNullOrWhiteSpace(addr))
+            if (!string.IsNullOrWhiteSpace(addr) &&
+                !string.Equals(ServerIp, addr, StringComparison.OrdinalIgnoreCase))
             {
                 ServerIp = addr;
-                _lastAutoServerIp = addr;
             }
-
-            _previousSelectedServerAddress = addr;
         }
         catch { /* ignore */ }
 
@@ -73,6 +62,7 @@ public sealed partial class MainViewModel
         try
         {
             _config.Current.LastServerId = value.Id;
+            _config.Current.LastServerIp = (value.Address ?? "").Trim();
             ScheduleConfigSave();
         }
         catch { /* ignore */ }
@@ -87,10 +77,10 @@ public sealed partial class MainViewModel
 
         try
         {
-            AppendLog("Серверы: загрузка списка...");
+            AppendLog("Серверы: загрузка актуального каталога...");
 
-            var list = await _servers.GetServersOrDefaultAsync(
-                mirrors: Services.ServerListService.DefaultServersMirrors,
+            var list = await ServerCatalogService.GetServersAsync(
+                log: message => AppendLog(message),
                 ct: ct);
 
             var savedId = "";
@@ -146,8 +136,16 @@ public sealed partial class MainViewModel
         }
         catch (Exception ex)
         {
-            AppendLog("Серверы: ошибка загрузки.");
+            // Fail closed. A stale address is worse than temporarily disabling Play after an IP move.
+            InvokeOnUi(() =>
+            {
+                Servers.Clear();
+                SelectedServer = null;
+            });
+
+            AppendLog("Серверы: не удалось получить актуальный каталог; запуск отключён.");
             AppendLog(ex.Message);
+            StatusText = "Не удалось получить актуальный адрес игрового сервера.";
         }
         finally
         {

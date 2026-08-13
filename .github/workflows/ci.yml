@@ -1,0 +1,225 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: launcher-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build, publish and package (win-x64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Read project metadata
+        id: meta
+        shell: pwsh
+        run: |
+          [xml]$xml = Get-Content -Raw -Path "LegendBorn.csproj"
+          $versionNode = $xml.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -First 1
+          $version = [string]$versionNode.Version
+          $velopackRef = $xml.Project.ItemGroup.PackageReference | Where-Object { $_.Include -eq "Velopack" } | Select-Object -First 1
+          $velopackVersion = [string]$velopackRef.Version
+          if ([string]::IsNullOrWhiteSpace($version)) { throw "Project Version not found" }
+          if ([string]::IsNullOrWhiteSpace($velopackVersion)) { throw "Velopack PackageReference not found" }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "velopack_version=$velopackVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Verify seed-only pack policy
+        shell: pwsh
+        run: |
+          $source = Get-Content -Raw -Path "Launching/MinecraftService.cs"
+          $match = [regex]::Match($source, 'AlwaysProtectedMutablePrefixes\s*=\s*\{(?<body>.*?)\};', [System.Text.RegularExpressions.RegexOptions]::Singleline)
+          if (-not $match.Success) { throw "AlwaysProtectedMutablePrefixes policy was not found." }
+          $body = $match.Groups['body'].Value
+          foreach ($required in @('config/', 'defaultconfigs/', 'resourcepacks/', 'shaderpacks/')) {
+            if (-not $body.Contains('"' + $required + '"')) { throw "Protected pack prefix is missing: $required" }
+          }
+          if ($source -notmatch 'if \(IsAlwaysProtectedMutable\(rel\)\) continue;') { throw "Manifest delete guard missing." }
+          if ($source -notmatch '!IsAlwaysProtectedMutable\(r\)') { throw "Prune guard missing." }
+
+      - name: Verify launcher auth contract policy
+        shell: pwsh
+        run: |
+          $authClient = Get-Content -Raw -Path "Services/LauncherAuthClient.cs"
+          $authVm = Get-Content -Raw -Path "ViewModels/MainViewModel.Auth.cs"
+          if ($authClient -notmatch 'ProductionOrigin\s*=\s*"https://legendborn\.xyz/"') { throw "Launcher auth origin drifted." }
+          foreach ($required in @('api/launcher/login','api/launcher/logout','PollState.TerminalError','PollState.TransientError','HttpStatusCode.TooManyRequests','AllowAutoRedirect = false')) {
+            if (-not $authClient.Contains($required)) { throw "Launcher auth policy token missing: $required" }
+          }
+          if ($authVm -notmatch 'RevokeAsync\(') { throw "Launcher logout no longer revokes server-side token." }
+
+      - name: Verify distribution contract policy
+        shell: pwsh
+        run: |
+          $catalog = Get-Content -Raw -Path "Services/ServerCatalogService.cs"
+          $serversVm = Get-Content -Raw -Path "ViewModels/MainViewModel.Servers.cs"
+          $mainVm = Get-Content -Raw -Path "ViewModels/MainViewModel.cs"
+          $minecraft = Get-Content -Raw -Path "Launching/MinecraftService.cs"
+          $transport = Get-Content -Raw -Path "Services/MinecraftDistributionHttpHandler.cs"
+          $loader = Get-Content -Raw -Path "Launching/LoaderInstaller.Secure.cs"
+          $neoContract = Get-Content -Raw -Path "Services/NeoForgeDistributionBootstrap.cs"
+          $packPreflight = Get-Content -Raw -Path "Services/PackMirrorPreflightService.cs"
+          $update = Get-Content -Raw -Path "Services/UpdateService.cs"
+          $settings = Get-Content -Raw -Path "Views/Tabs/SettingsTabView.xaml"
+
+          if (Test-Path "Launching/LoaderInstaller.cs") {
+            throw "Legacy NeoForge JAR mutation implementation must not exist."
+          }
+
+          foreach ($required in @('https://legendborn.xyz/api/launcher/servers','server_catalog_v2.json','generatedAtUnix','validUntilUnix','CacheMaxAge','CatalogMaxAgeWithoutExpiry','installerMirrors','installerSha256','mavenMirrors','installerMirrorArgument','NeoForgeDistributionBootstrap.TryRegister')) {
+            if (-not $catalog.Contains($required)) { throw "Server catalog trust token missing: $required" }
+          }
+          if ($serversVm -notmatch 'ServerIp\s*=\s*addr') { throw "Authoritative catalog address override missing." }
+          if (($catalog + $serversVm + $mainVm).Contains('legendcraft.minerent.io')) { throw "Retired Minecraft endpoint reappeared." }
+
+          foreach ($required in @('InstallerMirrors','InstallerSha256','MavenMirrors','RequiredMirrorArgument = "--mirror"','https://bmclapi2.bangbang93.com/maven/','https://maven.neoforged.net/releases/','GetRegisteredMavenMirrors')) {
+            if (-not $neoContract.Contains($required)) { throw "NeoForge contract registry missing: $required" }
+          }
+
+          foreach ($required in @(
+            'NeoForgeDistributionBootstrap.TryResolve',
+            'RequireInstallerHash',
+            'SHA256.HashData',
+            'InstallerMirrors',
+            'GetEffectiveMavenMirrors',
+            'InstallerMirrorArgument',
+            'InstallOriginalJarAsync',
+            'PrefetchNeoForgeMavenArtifactsAsync',
+            'ReadNeoForgeHostedArtifacts',
+            'SHA1.HashData',
+            'maven.neoforged.net',
+            'SeedVanillaVersion',
+            'Major: >= 21',
+            'Is64Bit: true',
+            'Источник загрузки: BMCLAPI',
+            'Источник зависимостей: BMCLAPI'
+          )) {
+            if (-not $loader.Contains($required)) { throw "Active NeoForge execution safeguard missing: $required" }
+          }
+          foreach ($forbidden in @('PrepareInstallerJarForExecutionAsync','CreateMirroredInstallerJarAsync','JarLikelyNeedsMavenPatch','IsSignatureEntry','RewriteAllOfficialUrls','TryRewriteNeoForgeVersionJsonUrlsAsync','rewriteNeoForgeUrlsToMirror','.mirrored.jar','Environment.Is64BitOperatingSystem','SourceForgeDirectCdnUrl','files/latest/download','--skip-hash-check')) {
+            if ($loader.Contains($forbidden)) { throw "Forbidden NeoForge mutation/legacy behavior returned: $forbidden" }
+          }
+
+          foreach ($required in @('MinecraftLauncherParameters.CreateDefault(_path, Http)','new HttpClient(new MinecraftDistributionHttpHandler(handler))')) {
+            if (-not $minecraft.Contains($required)) { throw "CmlLib resilient HTTP wiring missing: $required" }
+          }
+          foreach ($required in @('https://bmclapi2.bangbang93.com/','maven.neoforged.net','GetRegisteredMavenMirrors','libraries.minecraft.net','resources.download.minecraft.net','DegradedHostTtl')) {
+            if (-not $transport.Contains($required)) { throw "Distribution transport fallback missing: $required" }
+          }
+
+          $distributionText = $catalog + $transport + $loader + $neoContract
+          foreach ($forbidden in @('https://legendborn.xyz/api/maven/neoforge/','https://legendborn.xyz/api/mirror/mojang/')) {
+            if ($distributionText.Contains($forbidden)) { throw "Phantom Next.js binary proxy must not be used: $forbidden" }
+          }
+
+          if (-not $settings.Contains('BMCLAPI')) { throw "BMCLAPI source attribution must remain visible." }
+          foreach ($required in @('manifest.json','Manifest.Build','VersionScore','selstorage.ru')) {
+            if (-not $packPreflight.Contains($required)) { throw "Pack mirror freshness safeguard missing: $required" }
+          }
+          foreach ($required in @('SimpleWebSource','selstorage.ru/launcher/releases/','GithubSource','SemanticVersion.CompareByVersion','FindDownloadFallbackAsync')) {
+            if (-not $update.Contains($required)) { throw "Launcher update mirror safeguard missing: $required" }
+          }
+
+      - name: Cache NuGet
+        uses: actions/cache@v5
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/*.props', '**/*.targets', '**/packages.lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore win-x64
+        run: dotnet restore LegendBorn.csproj -r win-x64
+
+      - name: Build (warnings are errors)
+        run: dotnet build LegendBorn.csproj -c Release --no-restore -warnaserror
+
+      - name: Publish self-contained launcher
+        run: dotnet publish LegendBorn.csproj -c Release -r win-x64 --self-contained true --no-restore -o artifacts/publish
+
+      - name: Install Velopack CLI
+        run: dotnet tool install -g vpk --version "${{ steps.meta.outputs.velopack_version }}"
+
+      - name: Velopack package smoke test
+        shell: pwsh
+        run: |
+          & "$env:USERPROFILE\.dotnet\tools\vpk.exe" pack `
+            --packId "LegendBornLauncher" `
+            --packVersion "${{ steps.meta.outputs.version }}" `
+            --packDir "artifacts/publish" `
+            --mainExe "LegendBorn.exe" `
+            --packTitle "LegendBorn Launcher" `
+            --outputDir "artifacts/releases" `
+            --channel "win" `
+            --runtime "win-x64"
+
+      - name: Prepare Windows test bundle
+        if: github.event_name == 'pull_request'
+        shell: pwsh
+        run: |
+          $bundle = "artifacts/test-bundle"
+          $portable = Join-Path $bundle "portable"
+          $velopack = Join-Path $bundle "velopack"
+
+          New-Item -ItemType Directory -Force -Path $portable | Out-Null
+          New-Item -ItemType Directory -Force -Path $velopack | Out-Null
+
+          Copy-Item -Path "artifacts/publish/*" -Destination $portable -Recurse -Force
+          Copy-Item -Path "artifacts/releases/*" -Destination $velopack -Recurse -Force
+
+          $headSha = "${{ github.event.pull_request.head.sha }}"
+          $pr = "${{ github.event.pull_request.number }}"
+          $run = "${{ github.run_number }}"
+          $version = "${{ steps.meta.outputs.version }}"
+
+          @(
+            "LegendBorn Launcher TEST BUILD",
+            "PR=$pr",
+            "HeadSHA=$headSha",
+            "WorkflowRun=$run",
+            "Version=$version",
+            "Runtime=win-x64",
+            "SelfContained=true",
+            "BuiltUtc=$([DateTime]::UtcNow.ToString('o'))"
+          ) | Set-Content -Path (Join-Path $bundle "BUILD-INFO.txt") -Encoding utf8
+
+          $checksums = Get-ChildItem -Path $bundle -File -Recurse |
+            Where-Object { $_.Name -ne "SHA256SUMS.txt" } |
+            Sort-Object FullName |
+            ForEach-Object {
+              $hash = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              $relative = [IO.Path]::GetRelativePath((Resolve-Path $bundle), $_.FullName).Replace('\\', '/')
+              "$hash  $relative"
+            }
+          $checksums | Set-Content -Path (Join-Path $bundle "SHA256SUMS.txt") -Encoding ascii
+
+          if (-not (Test-Path (Join-Path $portable "LegendBorn.exe"))) {
+            throw "Portable LegendBorn.exe missing from test bundle."
+          }
+
+      - name: Upload PR Windows test bundle
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: LegendBornLauncher-PR${{ github.event.pull_request.number }}-win-x64-run${{ github.run_number }}
+          path: artifacts/test-bundle
+          if-no-files-found: error
+          retention-days: 14

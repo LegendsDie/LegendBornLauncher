@@ -3,43 +3,35 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using LegendBorn.Launching;
+using LegendBorn.Services;
 
 namespace LegendBorn.ViewModels;
 
 public sealed partial class MainViewModel
 {
-    private const string DefaultPackBaseUrl = "https://legendborn.ru/launcher/pack/";
+    // Russia-friendly emergency default. Normal launches receive mirrors from the authoritative
+    // server catalog; this value exists only for an old cached ServerEntry migration edge case.
+    private const string DefaultPackBaseUrl =
+        "https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/pack/";
 
-    // ============================================================
-    // ✅ КРИТИЧНО: автозаход на сервер
-    // false -> Minecraft стартует в меню (без подключения)
-    // true  -> Minecraft стартует и сразу коннектится к serverIp
-    // ============================================================
-    private const bool AutoJoinServerOnLaunch = false;
-
-    // ============================================================
-    // ✅ Опционально: заранее получить join-ticket на сайте
-    // Имеет смысл ТОЛЬКО когда AutoJoinServerOnLaunch=true.
-    // ============================================================
-    private const bool PreCreateJoinTicket = true;
-
-    // Папка/файлы, которые читает "мод авторизации/скина" внутри игры.
-    private const string AuthTicketDirName = "legendborn";
-    private const string AuthTicketJsonName = "auth.json";
-    private const string AuthTicketTokenName = "auth.token";
-
-    private static readonly string[] SourceForgePackMirrors =
+    private static readonly string[] DefaultPackFallbackMirrors =
     {
-        "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/"
+        "https://pack.legendborn.ru/launcher/pack/",
+        "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/",
+        "https://downloads.sourceforge.net/project/legendborn-pack/launcher/pack/"
     };
 
-    private static bool IsLegendbornHost(string? url)
+    private static bool IsSelectel(string? url)
         => !string.IsNullOrWhiteSpace(url) &&
-           url.Contains("legendborn.ru", StringComparison.OrdinalIgnoreCase);
+           (url.Contains("selstorage.ru", StringComparison.OrdinalIgnoreCase) ||
+            url.Contains("selcloud.ru", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsLegendbornPackHost(string? url)
+        => !string.IsNullOrWhiteSpace(url) &&
+           url.Contains("pack.legendborn.ru", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsSourceForgeMaster(string? url)
         => !string.IsNullOrWhiteSpace(url) &&
@@ -49,180 +41,69 @@ public sealed partial class MainViewModel
         => !string.IsNullOrWhiteSpace(url) &&
            url.Contains("downloads.sourceforge.net", StringComparison.OrdinalIgnoreCase);
 
+    private static int PackMirrorRank(string url)
+    {
+        if (IsSelectel(url)) return 0;
+        if (IsLegendbornPackHost(url)) return 1;
+        if (IsSourceForgeMaster(url)) return 2;
+        if (IsSourceForgeDownloads(url)) return 3;
+        return 4;
+    }
+
     private static string[] BuildPackMirrors(ServerEntry s)
     {
-        var baseUrl = EnsureSlash(s.PackBaseUrl);
-        if (string.IsNullOrWhiteSpace(baseUrl))
-            baseUrl = EnsureSlash(DefaultPackBaseUrl);
-
-        var extra = (s.PackMirrors ?? Array.Empty<string>())
-            .Select(EnsureSlash)
-            .Where(u => !string.IsNullOrWhiteSpace(u))
-            .Where(u => !IsSourceForgeDownloads(u))
+        var all = new[] { EnsureSlash(s.PackBaseUrl) }
+            .Concat((s.PackMirrors ?? Array.Empty<string>()).Select(EnsureSlash))
+            .Concat(DefaultPackFallbackMirrors.Select(EnsureSlash))
+            .Where(static url => !string.IsNullOrWhiteSpace(url))
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-        var all = new[] { baseUrl }
-            .Concat(extra)
-            .Where(u => !string.IsNullOrWhiteSpace(u))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(PackMirrorRank)
             .ToList();
 
-        if (IsLegendbornHost(baseUrl))
-        {
-            if (!all.Any(IsSourceForgeMaster))
-                all.AddRange(SourceForgePackMirrors.Select(EnsureSlash).Where(x => !string.IsNullOrWhiteSpace(x)));
-        }
-
         if (all.Count == 0)
-        {
             all.Add(EnsureSlash(DefaultPackBaseUrl));
-            all.AddRange(SourceForgePackMirrors.Select(EnsureSlash).Where(x => !string.IsNullOrWhiteSpace(x)));
-        }
 
-        return all
-            .OrderBy(u =>
-            {
-                if (u.Equals(baseUrl, StringComparison.OrdinalIgnoreCase)) return 0;
-                if (IsSourceForgeMaster(u)) return 1;
-                return 2;
-            })
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        return all.ToArray();
     }
 
     // =========================
-    // AUTH TICKET (для мода)
+    // Legacy auth cleanup
     // =========================
 
-    private string GetAuthTicketDir()
-        => Path.Combine(_gameDir, AuthTicketDirName);
-
-    private string GetAuthTicketJsonPath()
-        => Path.Combine(GetAuthTicketDir(), AuthTicketJsonName);
-
-    private string GetAuthTicketTokenPath()
-        => Path.Combine(GetAuthTicketDir(), AuthTicketTokenName);
-
-    private sealed class AuthTicket
+    /// <summary>
+    /// Older launcher builds wrote the long-lived site access token into the game directory.
+    /// The current flow uses only a short-lived one-time join-ticket via .legendcore/session.json.
+    /// Remove only the known legacy credential files; never delete the whole mod directory.
+    /// </summary>
+    private void CleanupLegacyGameAuthFiles()
     {
-        public string v { get; set; } = "1";
-        public string createdUtc { get; set; } = "";
-
-        public string username { get; set; } = "";
-        public string siteUserName { get; set; } = "";
-        public string? avatarUrl { get; set; }
-        public long rezonite { get; set; }
-
-        public string serverId { get; set; } = "";
-
-        // ✅ ВАЖНО: если заполнить serverAddress — мод может авто-коннектить.
-        // Поэтому пишем только при AutoJoinServerOnLaunch=true.
-        public string? serverAddress { get; set; }
-
-        public string build { get; set; } = "";
-
-        public string accessToken { get; set; } = "";
-
-        // ✅ Доп. поля (пишем только при автозаходе)
-        public string? joinTicket { get; set; }
-        public long joinTicketExpiresAtUnix { get; set; }
-    }
-
-    private static void WriteAllTextAtomic(string path, string content)
-    {
-        var dir = Path.GetDirectoryName(path);
-        if (!string.IsNullOrWhiteSpace(dir))
-            Directory.CreateDirectory(dir);
-
-        var tmp = path + ".tmp";
-        File.WriteAllText(tmp, content);
-
         try
         {
-            if (File.Exists(path))
-                File.Delete(path);
-        }
-        catch { /* ignore */ }
-
-        File.Move(tmp, path);
-    }
-
-    private bool TryWriteAuthTicketForGame(
-        string accessToken,
-        string username,
-        ServerEntry server,
-        string? serverAddressForMod,      // ✅ ВОТ ЭТО: null = мод не сможет автоконнектить
-        string? joinTicket,
-        long joinTicketExpiresAtUnix,
-        out string error)
-    {
-        error = "";
-
-        try
-        {
-            if (string.IsNullOrWhiteSpace(accessToken))
+            var dir = Path.Combine(_gameDir, "legendborn");
+            var names = new[]
             {
-                error = "AuthTicket: пустой accessToken.";
-                return false;
-            }
-
-            var dir = GetAuthTicketDir();
-            Directory.CreateDirectory(dir);
-
-            // 1) auth.token (простое чтение модом)
-            WriteAllTextAtomic(GetAuthTicketTokenPath(), accessToken.Trim());
-
-            // 2) auth.json
-            var ticket = new AuthTicket
-            {
-                createdUtc = DateTimeOffset.UtcNow.ToString("O"),
-
-                username = username,
-                siteUserName = (SiteUserName ?? "").Trim(),
-                avatarUrl = AvatarUrl,
-                rezonite = Rezonite,
-
-                serverId = (server.Id ?? "").Trim(),
-                serverAddress = string.IsNullOrWhiteSpace(serverAddressForMod) ? null : serverAddressForMod.Trim(),
-                build = (BuildDisplayName ?? "").Trim(),
-
-                accessToken = accessToken.Trim(),
-
-                joinTicket = string.IsNullOrWhiteSpace(joinTicket) ? null : joinTicket.Trim(),
-                joinTicketExpiresAtUnix = joinTicketExpiresAtUnix > 0 ? joinTicketExpiresAtUnix : 0
+                "auth.token",
+                "auth.json",
+                "auth.token.tmp",
+                "auth.json.tmp"
             };
 
-            var json = JsonSerializer.Serialize(ticket, new JsonSerializerOptions { WriteIndented = true });
-            WriteAllTextAtomic(GetAuthTicketJsonPath(), json);
-
-            try
+            foreach (var name in names)
             {
-                File.SetAttributes(GetAuthTicketTokenPath(), FileAttributes.Hidden);
-                File.SetAttributes(GetAuthTicketJsonPath(), FileAttributes.Hidden);
+                try
+                {
+                    var path = Path.Combine(dir, name);
+                    if (File.Exists(path))
+                        File.Delete(path);
+                }
+                catch
+                {
+                }
             }
-            catch { /* ignore */ }
-
-            return true;
         }
-        catch (Exception ex)
+        catch
         {
-            error = "AuthTicket: не удалось записать файлы авторизации: " + ex.Message;
-            return false;
         }
-    }
-
-    private void CleanupAuthTicketFiles()
-    {
-        try
-        {
-            var tokenPath = GetAuthTicketTokenPath();
-            var jsonPath = GetAuthTicketJsonPath();
-
-            try { if (File.Exists(tokenPath)) File.Delete(tokenPath); } catch { /* ignore */ }
-            try { if (File.Exists(jsonPath)) File.Delete(jsonPath); } catch { /* ignore */ }
-        }
-        catch { /* ignore */ }
     }
 
     // =========================
@@ -246,7 +127,10 @@ public sealed partial class MainViewModel
             StatusText = "Проверка обновлений сборки...";
             ProgressPercent = 0;
 
-            var mirrors = BuildPackMirrors(s);
+            var mirrors = await PackMirrorPreflightService.OrderByFreshnessAsync(
+                BuildPackMirrors(s),
+                log: AppendLog,
+                ct: _lifetimeCts.Token);
 
             if (s.SyncPack)
                 await _mc.SyncPackAsync(mirrors, _lifetimeCts.Token);
@@ -287,28 +171,26 @@ public sealed partial class MainViewModel
 
         try
         {
-            // ник
+            CleanupLegacyGameAuthFiles();
+            _mc.ClearLegendCoreSession();
+
             var username = (Username ?? "Player").Trim();
             if (string.IsNullOrWhiteSpace(username)) username = "Player";
             username = MakeValidMcName(username);
 
-            // RAM
             var ram = NormalizeRamMb(RamMb);
             if (ram < 4096) ram = 4096;
 
-            // IP сервера (из поля или из выбранного сервера)
             var ip = (ServerIp ?? "").Trim();
             if (string.IsNullOrWhiteSpace(ip))
                 ip = (s.Address ?? "").Trim();
             if (string.IsNullOrWhiteSpace(ip))
                 ip = null;
 
-            // ✅ 1) Автозаход в Minecraft через аргументы
-            var ipForAutoJoin = AutoJoinServerOnLaunch ? ip : null;
+            var autoConnect = false;
+            try { autoConnect = _config.Current.AutoConnect; } catch { }
 
-            // ✅ 2) Автозаход через мод (auth.json serverAddress)
-            // Если автозаход выключен — НЕ пишем адрес в auth.json.
-            var serverAddressForMod = AutoJoinServerOnLaunch ? ip : null;
+            var ipForAutoJoin = autoConnect ? ip : null;
 
             if (!TryGetAccessToken(out var token) || string.IsNullOrWhiteSpace(token))
             {
@@ -321,7 +203,10 @@ public sealed partial class MainViewModel
             StatusText = $"Подготовка {BuildDisplayName}...";
             ProgressPercent = 0;
 
-            var mirrors = BuildPackMirrors(s);
+            var mirrors = await PackMirrorPreflightService.OrderByFreshnessAsync(
+                BuildPackMirrors(s),
+                log: AppendLog,
+                ct: _lifetimeCts.Token);
             var loader = CreateLoaderSpecFromServer(s);
 
             var launchVersionId = await _mc.PrepareAsync(
@@ -338,54 +223,67 @@ public sealed partial class MainViewModel
                 SelectedVersion = launchVersionId;
             });
 
-            // ✅ join-ticket имеет смысл только если реально делаем автозаход
-            string? joinTicket = null;
-            long joinTicketExpiresAtUnix = 0;
+            MinecraftService.LegendCoreSession? gameSession = null;
 
-            if (AutoJoinServerOnLaunch && PreCreateJoinTicket && !string.IsNullOrWhiteSpace(s.Id))
+            if (!string.IsNullOrWhiteSpace(s.Id))
             {
-                try
-                {
-                    StatusText = "Подготовка доступа к серверу...";
-                    var jt = await _site.CreateMinecraftJoinTicketAsync(
-                        accessToken: token,
-                        serverId: s.Id,
-                        mcName: username,
-                        ct: _lifetimeCts.Token,
-                        deviceId: null);
+                StatusText = "Подготовка безопасной игровой сессии...";
 
-                    if (jt is not null && jt.Ok && !string.IsNullOrWhiteSpace(jt.Ticket))
-                    {
-                        joinTicket = jt.Ticket!.Trim();
-                        joinTicketExpiresAtUnix = jt.ExpiresAtUnix;
-                        AppendLog("Сервер: join-ticket получен (ok).");
-                    }
-                    else
-                    {
-                        var err = jt?.Error ?? jt?.Message ?? "unknown";
-                        AppendLog("Сервер: join-ticket не получен: " + err);
-                    }
-                }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex)
-                {
-                    AppendLog("Сервер: ошибка получения join-ticket: " + ex.Message);
-                }
-            }
-
-            // ✅ Пишем auth ticket прямо перед запуском
-            if (!TryWriteAuthTicketForGame(
+                var link = await _site.LinkMinecraftAsync(
                     accessToken: token,
                     username: username,
-                    server: s,
-                    serverAddressForMod: serverAddressForMod,
-                    joinTicket: AutoJoinServerOnLaunch ? joinTicket : null,
-                    joinTicketExpiresAtUnix: AutoJoinServerOnLaunch ? joinTicketExpiresAtUnix : 0,
-                    error: out var authErr))
+                    ct: _lifetimeCts.Token,
+                    deviceId: null);
+
+                if (!link.Ok)
+                {
+                    var error = link.Error ?? link.Message ?? "Не удалось связать Minecraft-профиль.";
+                    StatusText = "Не удалось подготовить профиль Minecraft.";
+                    AppendLog("Minecraft link: " + error);
+                    return;
+                }
+
+                var jt = await _site.CreateMinecraftJoinTicketAsync(
+                    accessToken: token,
+                    serverId: s.Id,
+                    mcName: username,
+                    ct: _lifetimeCts.Token,
+                    deviceId: null);
+
+                if (!jt.Ok || string.IsNullOrWhiteSpace(jt.Ticket))
+                {
+                    var error = jt.Error ?? jt.Message ?? "Сайт не выдал join-ticket.";
+                    StatusText = "Не удалось подготовить игровую сессию.";
+                    AppendLog("Сервер: join-ticket не получен: " + error);
+                    return;
+                }
+
+                var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                if (jt.ExpiresAtUnix > 0 && jt.ExpiresAtUnix <= nowUnix + 10)
+                {
+                    StatusText = "Игровая сессия уже истекла. Повтори запуск.";
+                    AppendLog("Сервер: получен слишком короткий/просроченный join-ticket.");
+                    return;
+                }
+
+                gameSession = new MinecraftService.LegendCoreSession(
+                    ServerId: s.Id.Trim(),
+                    Ticket: jt.Ticket.Trim(),
+                    ExpiresAtUnix: jt.ExpiresAtUnix,
+                    LegendUuid: jt.LegendUuid,
+                    MinecraftUuid: jt.Minecraft?.Uuid ?? link.Minecraft?.Uuid,
+                    MinecraftUsername: jt.Minecraft?.Username ?? link.Minecraft?.Username ?? username,
+                    SkinUrl: jt.Minecraft?.SkinUrl,
+                    LauncherVersion: LauncherIdentity.InformationalVersion);
+
+                AppendLog("Сервер: безопасный одноразовый join-ticket получен.");
+
+                if (!autoConnect)
+                    AppendLog("Автозаход выключен: join-ticket короткоживущий, подключайся к серверу сразу после запуска.");
+            }
+            else
             {
-                StatusText = "Ошибка подготовки авторизации.";
-                AppendLog(authErr);
-                return;
+                AppendLog("Сервер: serverId не задан — защищённая LegendCore-сессия не создана.");
             }
 
             try
@@ -400,7 +298,9 @@ public sealed partial class MainViewModel
                 _config.Current.LastServerIp = ipToSave;
                 ScheduleConfigSave();
             }
-            catch { /* ignore */ }
+            catch
+            {
+            }
 
             StatusText = "Запуск игры...";
 
@@ -408,7 +308,8 @@ public sealed partial class MainViewModel
                 version: launchVersionId,
                 username: username,
                 ramMb: ram,
-                serverIp: ipForAutoJoin); // ✅ null => без автоконнекта
+                serverIp: ipForAutoJoin,
+                session: gameSession);
 
             launched = true;
 
@@ -417,7 +318,7 @@ public sealed partial class MainViewModel
             Raise(nameof(CanStop));
             StopGameCommand.RaiseCanExecuteChanged();
 
-            AppendLog(AutoJoinServerOnLaunch
+            AppendLog(autoConnect
                 ? "Игра запущена (автозаход ВКЛ)."
                 : "Игра запущена (автозаход ВЫКЛ, откроется меню).");
 
@@ -439,7 +340,10 @@ public sealed partial class MainViewModel
             Interlocked.Exchange(ref _playGuard, 0);
 
             if (!launched)
-                CleanupAuthTicketFiles();
+            {
+                _mc.ClearLegendCoreSession();
+                CleanupLegacyGameAuthFiles();
+            }
 
             RefreshCanStates();
         }
@@ -452,6 +356,9 @@ public sealed partial class MainViewModel
             p.EnableRaisingEvents = true;
             p.Exited += (_, __) =>
             {
+                try { _mc.ClearLegendCoreSession(); } catch { }
+                CleanupLegacyGameAuthFiles();
+
                 if (_isClosing) return;
 
                 PostToUi(() =>
@@ -461,15 +368,15 @@ public sealed partial class MainViewModel
                     AppendLog("Игра закрыта.");
                     _runningProcess = null;
 
-                    CleanupAuthTicketFiles();
-
                     Raise(nameof(CanStop));
                     StopGameCommand.RaiseCanExecuteChanged();
                     RefreshCanStates();
                 });
             };
         }
-        catch { /* ignore */ }
+        catch
+        {
+        }
     }
 
     private MinecraftService.LoaderSpec CreateLoaderSpecFromServer(ServerEntry s)
@@ -481,25 +388,18 @@ public sealed partial class MainViewModel
         if (loaderType == "vanilla" || string.IsNullOrWhiteSpace(loaderType))
             return new MinecraftService.LoaderSpec("vanilla", "", "");
 
+        if (loaderType != "neoforge")
+            throw new InvalidOperationException($"Loader '{loaderType}' не поддерживается этой сборкой лаунчера.");
+
         if (string.IsNullOrWhiteSpace(loaderVer))
-            throw new InvalidOperationException($"Loader '{loaderType}' требует версию (loader.version).");
+            throw new InvalidOperationException("NeoForge требует loader.version.");
 
         if (string.IsNullOrWhiteSpace(installerUrl))
         {
-            if (loaderType == "neoforge")
-            {
-                installerUrl =
-                    $"https://maven.neoforged.net/releases/net/neoforged/neoforge/{loaderVer}/neoforge-{loaderVer}-installer.jar";
-            }
-            else if (loaderType == "forge")
-            {
-                installerUrl =
-                    $"https://maven.minecraftforge.net/net/minecraftforge/forge/{s.MinecraftVersion}-{loaderVer}/forge-{s.MinecraftVersion}-{loaderVer}-installer.jar";
-            }
-            else
-            {
-                throw new InvalidOperationException($"Loader '{loaderType}' требует installerUrl (не задан в конфиге сервера).");
-            }
+            // Exact SourceForge fallback, not official Maven and never /latest/download.
+            installerUrl =
+                $"https://downloads.sourceforge.net/project/legendborn-neoforge/neoforge/" +
+                $"neoforge-{Uri.EscapeDataString(loaderVer)}-installer.jar";
         }
 
         return new MinecraftService.LoaderSpec(loaderType, loaderVer, installerUrl);
@@ -535,7 +435,8 @@ public sealed partial class MainViewModel
         {
             _runningProcess = null;
 
-            CleanupAuthTicketFiles();
+            try { _mc.ClearLegendCoreSession(); } catch { }
+            CleanupLegacyGameAuthFiles();
 
             Raise(nameof(CanStop));
             StopGameCommand.RaiseCanExecuteChanged();

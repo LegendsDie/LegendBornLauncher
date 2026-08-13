@@ -8,7 +8,7 @@ namespace LegendBorn.Views.Tabs;
 
 public partial class NewsTabView : UserControl
 {
-    private const string SiteUrlPrimary = "https://legendborn.ru/";
+    private const string SiteUrlPrimary = "https://legendborn.xyz/";
     private const int StartTabIndex = 0;
 
     public NewsTabView()
@@ -31,14 +31,12 @@ public partial class NewsTabView : UserControl
         {
             var vm = GetVm();
 
-            // Если команда есть — используем её (она у тебя есть в MainWindow.xaml).
             if (vm?.OpenStartCommand?.CanExecute(null) == true)
             {
                 vm.OpenStartCommand.Execute(null);
                 return;
             }
 
-            // Fallback: переключаем таб вручную.
             if (vm != null)
                 vm.SelectedMenuIndex = StartTabIndex;
         }
@@ -49,14 +47,12 @@ public partial class NewsTabView : UserControl
     {
         try
         {
-            // Основной путь: Tag содержит Url.
             if (sender is FrameworkElement fe && fe.Tag is string url && !string.IsNullOrWhiteSpace(url))
             {
                 TryOpenUrl(url);
                 return;
             }
 
-            // Fallback: пробуем взять Url из DataContext элемента.
             if (sender is FrameworkElement fe2 && fe2.DataContext != null)
             {
                 var p = fe2.DataContext.GetType().GetProperty("Url");

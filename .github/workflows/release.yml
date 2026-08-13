@@ -1,10 +1,12 @@
 name: Release (Velopack)
 
 on:
-  push:
-    branches: ["main"]
   workflow_dispatch:
     inputs:
+      confirm:
+        description: "Type RELEASE to publish a production launcher release"
+        required: true
+        default: ""
       force:
         description: "Build and publish even if tag already exists"
         required: false
@@ -15,39 +17,44 @@ permissions:
 
 concurrency:
   group: velopack-release-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
-  # Можно оставить как имя. Workflow сам найдёт реальный путь, если файла тут нет.
   CS_PROJ: LegendBorn.csproj
-
   PACK_ID: LegendBornLauncher
   MAIN_EXE: LegendBorn.exe
   PACK_TITLE: LegendBorn Launcher
-  VPK_VERSION: 0.0.1369-g1d5c984
   VPK_OUTPUT_DIR: Releases
   VPK_CHANNEL: win
-  FORCE_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.force == 'true' }}
+  VPK_MIRROR_PREFIX: launcher/releases
+  FORCE_RELEASE: ${{ inputs.force == 'true' }}
 
 jobs:
   build-and-release:
     runs-on: windows-latest
 
     steps:
+      - name: Require explicit production confirmation
+        shell: pwsh
+        run: |
+          if ("${{ inputs.confirm }}" -cne "RELEASE") {
+            throw "Production release blocked. Re-run the workflow and type RELEASE in the confirmation field."
+          }
+
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Install .NET 10 + .NET 8
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: |
             10.0.x
             8.0.x
 
       - name: Cache NuGet
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.nuget/packages
@@ -55,7 +62,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
-      # 1) Находим правильный csproj (если CS_PROJ не указывает на существующий файл)
       - name: Resolve csproj path
         id: csproj
         shell: pwsh
@@ -66,9 +72,6 @@ jobs:
           if (![string]::IsNullOrWhiteSpace($candidate) -and (Test-Path $candidate)) {
             $resolved = (Resolve-Path $candidate).Path
           } else {
-            # Ищем по репозиторию:
-            # - сначала точное имя LegendBorn.csproj (частый кейс)
-            # - иначе берём первый *.csproj
             $exact = Get-ChildItem -Recurse -Filter "LegendBorn.csproj" -File | Select-Object -First 1
             if ($exact) {
               $resolved = $exact.FullName
@@ -87,8 +90,7 @@ jobs:
           "path=$resolved" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "Resolved csproj: $resolved"
 
-      # 2) Читаем Version из найденного csproj
-      - name: Read Version from csproj
+      - name: Read Version and Velopack version from csproj
         id: ver
         shell: pwsh
         run: |
@@ -96,8 +98,6 @@ jobs:
           if (!(Test-Path $proj)) { throw "csproj not found: $proj" }
 
           [xml]$xml = Get-Content -Raw -Path $proj
-
-          # Берём Version из PropertyGroup (fallback: InformationalVersion/AssemblyVersion)
           $pg = $xml.Project.PropertyGroup
 
           $v = ($pg | Where-Object { $_.Version } | Select-Object -ExpandProperty Version -First 1)
@@ -107,18 +107,26 @@ jobs:
           if (-not $v) {
             $v = ($pg | Where-Object { $_.AssemblyVersion } | Select-Object -ExpandProperty AssemblyVersion -First 1)
           }
-
           if ([string]::IsNullOrWhiteSpace($v)) {
             throw "Version not found in csproj (Version/InformationalVersion/AssemblyVersion)"
           }
 
-          # На случай "0.2.2+sha" — отрезаем build metadata
           $v = $v.ToString().Split('+')[0].Trim()
+
+          $velopackRef = $xml.Project.ItemGroup.PackageReference |
+            Where-Object { $_.Include -eq "Velopack" } |
+            Select-Object -First 1
+          $velopackVersion = [string]$velopackRef.Version
+          if ([string]::IsNullOrWhiteSpace($velopackVersion)) {
+            throw "Velopack PackageReference version not found in csproj"
+          }
 
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "tag=v$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "velopack_version=$velopackVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "Version=$v"
           Write-Host "Tag=v$v"
+          Write-Host "Velopack=$velopackVersion"
 
       - name: Check if tag already exists
         id: tagcheck
@@ -141,23 +149,52 @@ jobs:
             }
           }
 
-      - name: Restore
+      - name: Require Selectel mirror configuration
+        if: steps.tagcheck.outputs.exists != 'true'
+        shell: pwsh
+        env:
+          MIRROR_ENDPOINT: ${{ vars.LEGENDBORN_VPK_MIRROR_ENDPOINT }}
+          MIRROR_BUCKET: ${{ vars.LEGENDBORN_VPK_MIRROR_BUCKET }}
+          MIRROR_KEY_ID: ${{ secrets.LEGENDBORN_VPK_MIRROR_KEY_ID }}
+          MIRROR_SECRET: ${{ secrets.LEGENDBORN_VPK_MIRROR_SECRET }}
+        run: |
+          $missing = @()
+          if ([string]::IsNullOrWhiteSpace($env:MIRROR_ENDPOINT)) { $missing += 'vars.LEGENDBORN_VPK_MIRROR_ENDPOINT' }
+          if ([string]::IsNullOrWhiteSpace($env:MIRROR_BUCKET)) { $missing += 'vars.LEGENDBORN_VPK_MIRROR_BUCKET' }
+          if ([string]::IsNullOrWhiteSpace($env:MIRROR_KEY_ID)) { $missing += 'secrets.LEGENDBORN_VPK_MIRROR_KEY_ID' }
+          if ([string]::IsNullOrWhiteSpace($env:MIRROR_SECRET)) { $missing += 'secrets.LEGENDBORN_VPK_MIRROR_SECRET' }
+
+          if ($missing.Count -gt 0) {
+            throw "Production release blocked: configure Selectel Velopack mirror first. Missing: $($missing -join ', ')"
+          }
+
+          if (-not $env:MIRROR_ENDPOINT.StartsWith('https://', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "LEGENDBORN_VPK_MIRROR_ENDPOINT must be an HTTPS S3-compatible endpoint."
+          }
+
+      - name: Restore win-x64
         if: steps.tagcheck.outputs.exists != 'true'
         shell: pwsh
         run: |
-          dotnet restore "${{ steps.csproj.outputs.path }}"
+          dotnet restore "${{ steps.csproj.outputs.path }}" -r win-x64
+
+      - name: Build (warnings are errors)
+        if: steps.tagcheck.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          dotnet build "${{ steps.csproj.outputs.path }}" -c Release --no-restore -warnaserror
 
       - name: Publish app
         if: steps.tagcheck.outputs.exists != 'true'
         shell: pwsh
         run: |
-          dotnet publish "${{ steps.csproj.outputs.path }}" -c Release -r win-x64 --self-contained true -o publish
+          dotnet publish "${{ steps.csproj.outputs.path }}" -c Release -r win-x64 --self-contained true --no-restore -o publish
 
-      - name: Install/Update vpk tool
+      - name: Install vpk tool
         if: steps.tagcheck.outputs.exists != 'true'
         shell: pwsh
         run: |
-          dotnet tool update -g vpk --version "${{ env.VPK_VERSION }}"
+          dotnet tool install -g vpk --version "${{ steps.ver.outputs.velopack_version }}"
           "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
           vpk --help
 
@@ -185,6 +222,24 @@ jobs:
             --outputDir "${{ env.VPK_OUTPUT_DIR }}" `
             --channel "${{ env.VPK_CHANNEL }}" `
             --runtime "win-x64"
+
+      - name: Upload Selectel Velopack mirror
+        if: steps.tagcheck.outputs.exists != 'true'
+        shell: pwsh
+        env:
+          MIRROR_ENDPOINT: ${{ vars.LEGENDBORN_VPK_MIRROR_ENDPOINT }}
+          MIRROR_BUCKET: ${{ vars.LEGENDBORN_VPK_MIRROR_BUCKET }}
+          MIRROR_KEY_ID: ${{ secrets.LEGENDBORN_VPK_MIRROR_KEY_ID }}
+          MIRROR_SECRET: ${{ secrets.LEGENDBORN_VPK_MIRROR_SECRET }}
+        run: |
+          vpk upload s3 `
+            --endpoint "$env:MIRROR_ENDPOINT" `
+            --bucket "$env:MIRROR_BUCKET" `
+            --keyId "$env:MIRROR_KEY_ID" `
+            --secret "$env:MIRROR_SECRET" `
+            --prefix "${{ env.VPK_MIRROR_PREFIX }}" `
+            --outputDir "${{ env.VPK_OUTPUT_DIR }}" `
+            --channel "${{ env.VPK_CHANNEL }}"
 
       - name: Upload GitHub Release
         if: steps.tagcheck.outputs.exists != 'true'

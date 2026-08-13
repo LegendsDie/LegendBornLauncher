@@ -1,5 +1,7 @@
 // File: /Services/UpdateService.cs
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Sockets;
 using System.Threading;
@@ -13,33 +15,40 @@ namespace LegendBorn.Services;
 public static class UpdateService
 {
     private const string RepoUrlOrSlug = "https://github.com/LegendsDie/LegendBornLauncher";
+    private const string SelectelUpdateBaseUrl =
+        "https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/releases/";
     private const string Channel = "win";
 
-    // watchdog timeouts (не даём зависать вечно)
-    private static readonly TimeSpan CheckTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan CheckTimeoutPerSource = TimeSpan.FromSeconds(14);
     private static readonly TimeSpan DownloadTimeout = TimeSpan.FromMinutes(10);
 
-    private static readonly SemaphoreSlim _gate = new(1, 1);
+    private static readonly SemaphoreSlim Gate = new(1, 1);
 
-    private static GithubSource CreateSource()
+    private sealed record UpdateSourceSpec(string Name, int Priority, Func<UpdateManager> CreateManager);
+    private sealed record AvailableUpdate(string Name, int Priority, UpdateManager Manager, UpdateInfo Info);
+
+    private static UpdateOptions CreateOptions() => new()
+    {
+        ExplicitChannel = Channel
+    };
+
+    private static UpdateManager CreateSelectelManager()
+        => new(new SimpleWebSource(SelectelUpdateBaseUrl), CreateOptions());
+
+    private static UpdateManager CreateGitHubManager()
     {
         var repoUrl = NormalizeGithubRepoUrl(RepoUrlOrSlug);
-
-        // optional: env token to reduce GitHub rate-limit issues
         var token = Environment.GetEnvironmentVariable("LEGENDBORN_GITHUB_TOKEN") ?? "";
-
-        return new GithubSource(repoUrl: repoUrl, accessToken: token, prerelease: false);
+        var source = new GithubSource(repoUrl: repoUrl, accessToken: token, prerelease: false);
+        return new UpdateManager(source, CreateOptions());
     }
 
-    private static UpdateManager CreateManager()
+    private static UpdateSourceSpec[] CreateSources() => new[]
     {
-        var options = new UpdateOptions
-        {
-            ExplicitChannel = Channel
-        };
-
-        return new UpdateManager(CreateSource(), options);
-    }
+        // Russia-friendly static S3-compatible feed first; GitHub remains an independent fallback.
+        new UpdateSourceSpec("LegendBorn Selectel", 0, CreateSelectelManager),
+        new UpdateSourceSpec("GitHub Releases", 1, CreateGitHubManager)
+    };
 
     private static string NormalizeGithubRepoUrl(string input)
     {
@@ -50,22 +59,19 @@ public static class UpdateService
         if (input.StartsWith("//", StringComparison.Ordinal))
             input = "https:" + input;
 
-        // slug: owner/repo
         if (!input.Contains("://", StringComparison.Ordinal))
         {
             var slug = input.Trim().TrimEnd('/');
-
             if (slug.StartsWith("github.com/", StringComparison.OrdinalIgnoreCase))
                 slug = slug["github.com/".Length..];
 
-            var sp = slug.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            if (sp.Length >= 2)
-                return $"https://github.com/{sp[0]}/{sp[1]}";
+            var parts = slug.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2)
+                return $"https://github.com/{parts[0]}/{parts[1]}";
 
             return "https://github.com/LegendsDie/LegendBornLauncher";
         }
 
-        // full URL
         if (Uri.TryCreate(input, UriKind.Absolute, out var uri))
         {
             var parts = uri.AbsolutePath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
@@ -75,7 +81,6 @@ public static class UpdateService
                 var repo = parts[1];
                 if (repo.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
                     repo = repo[..^4];
-
                 return $"https://github.com/{owner}/{repo}";
             }
         }
@@ -88,10 +93,9 @@ public static class UpdateService
         bool showNoUpdates = false,
         CancellationToken ct = default)
     {
-        // ✅ cancellation-safe gate acquire (не вылетим мимо try/catch)
         try
         {
-            await _gate.WaitAsync(ct).ConfigureAwait(false);
+            await Gate.WaitAsync(ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -102,95 +106,115 @@ public static class UpdateService
         {
             ct.ThrowIfCancellationRequested();
 
-            var mgr = CreateManager();
+            var sources = CreateSources();
+            var localManager = sources[0].CreateManager();
 
-            if (!mgr.IsInstalled)
+            if (!localManager.IsInstalled)
             {
                 if (!silent && showNoUpdates)
                     ShowInfo("Лаунчер запущен без установки (Velopack не активен). Обновления недоступны.");
                 return;
             }
 
-            // 1) Если уже есть подготовленное обновление (скачано и ждёт рестарта)
-            if (mgr.UpdatePendingRestart is VelopackAsset pending)
+            // Pending package is local state; it does not matter which remote source created it.
+            if (localManager.UpdatePendingRestart is VelopackAsset pending)
             {
                 if (!silent)
                 {
                     var ask = ShowYesNo(
                         "Обновление уже скачано и готово к установке.\n\nПрименить сейчас? Лаунчер перезапустится.");
-
                     if (ask != MessageBoxResult.Yes)
                         return;
                 }
 
-                // ✅ Правильный порядок: сначала запускаем updater (он ждёт выхода),
-                // затем выходим из приложения.
-                StartUpdaterAndExit(mgr, pending, silent, restart: true);
+                StartUpdaterAndExit(localManager, pending, silent, restart: true);
                 return;
             }
 
-            // 2) Проверка обновлений (у Velopack нет ct в CheckForUpdatesAsync, поэтому только watchdog)
-            UpdateInfo? updates;
-            try
-            {
-                updates = await RunWithTimeout(
-                        () => mgr.CheckForUpdatesAsync(),
-                        CheckTimeout,
-                        ct)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception ex) when (!IsCancellation(ex, ct))
-            {
-                if (!silent)
-                    ShowError(BuildFriendlyError("Не удалось проверить обновления.", ex));
-                return;
-            }
-
+            var (best, errors, successfulSources) = await FindBestUpdateAsync(sources, ct).ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
 
-            var target = updates?.TargetFullRelease;
-            if (target is null)
+            if (best is null)
             {
+                if (successfulSources == 0)
+                {
+                    if (!silent)
+                        ShowError(BuildAllSourcesFailedError(errors));
+                    return;
+                }
+
                 if (!silent && showNoUpdates)
                     ShowInfo("Обновлений лаунчера нет.");
                 return;
             }
 
+            var target = best.Info.TargetFullRelease;
             if (!silent)
             {
                 var ask = ShowYesNo(
-                    $"Доступно обновление лаунчера: {target.Version}\n\nОбновить сейчас? Лаунчер перезапустится.");
+                    $"Доступно обновление лаунчера: {target.Version}\n" +
+                    $"Источник: {best.Name}\n\n" +
+                    "Обновить сейчас? Лаунчер перезапустится.");
 
                 if (ask != MessageBoxResult.Yes)
                     return;
             }
 
-            // 3) Скачивание (у DownloadUpdatesAsync есть CancellationToken)
             try
             {
-                // Реально отменяем загрузку и ставим общий таймаут.
                 using var dlCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 dlCts.CancelAfter(DownloadTimeout);
 
-                // progress можно прикрутить позже (Action<int> 0..100)
-                await mgr.DownloadUpdatesAsync(updates!, progress: null, cancelToken: dlCts.Token)
+                await best.Manager.DownloadUpdatesAsync(best.Info, progress: null, cancelToken: dlCts.Token)
                     .ConfigureAwait(false);
             }
-            catch (Exception ex) when (!IsCancellation(ex, ct))
+            catch (Exception firstDownloadError) when (!IsCancellation(firstDownloadError, ct))
             {
-                if (!silent)
-                    ShowError(BuildFriendlyError("Не удалось скачать обновление.", ex));
-                return;
+                // The selected source can disappear between feed read and asset download. If the
+                // same-or-newer release exists on the other source, retry there before failing.
+                var fallback = await FindDownloadFallbackAsync(
+                        sources,
+                        best,
+                        target.Version,
+                        ct)
+                    .ConfigureAwait(false);
+
+                if (fallback is null)
+                {
+                    if (!silent)
+                        ShowError(BuildFriendlyError(
+                            $"Не удалось скачать обновление с {best.Name} и резервный источник не помог.",
+                            firstDownloadError));
+                    return;
+                }
+
+                try
+                {
+                    using var fallbackCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    fallbackCts.CancelAfter(DownloadTimeout);
+                    await fallback.Manager.DownloadUpdatesAsync(
+                            fallback.Info,
+                            progress: null,
+                            cancelToken: fallbackCts.Token)
+                        .ConfigureAwait(false);
+                    best = fallback;
+                    target = fallback.Info.TargetFullRelease;
+                }
+                catch (Exception fallbackError) when (!IsCancellation(fallbackError, ct))
+                {
+                    if (!silent)
+                        ShowError(BuildFriendlyError(
+                            "Не удалось скачать обновление ни через LegendBorn mirror, ни через GitHub.",
+                            new AggregateException(firstDownloadError, fallbackError)));
+                    return;
+                }
             }
 
             ct.ThrowIfCancellationRequested();
-
-            // 4) Применение (правильный порядок + не заставляем silent=true всегда)
-            StartUpdaterAndExit(mgr, target, silent, restart: true);
+            StartUpdaterAndExit(best.Manager, target, silent, restart: true);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // silent cancel
         }
         catch (Exception ex)
         {
@@ -199,25 +223,114 @@ public static class UpdateService
         }
         finally
         {
-            try { _gate.Release(); } catch { }
+            try { Gate.Release(); } catch { }
         }
     }
 
-    // -------------------------
-    // Apply helpers
-    // -------------------------
+    private static async Task<(AvailableUpdate? Best, List<Exception> Errors, int SuccessfulSources)> FindBestUpdateAsync(
+        IEnumerable<UpdateSourceSpec> sources,
+        CancellationToken ct)
+    {
+        AvailableUpdate? best = null;
+        var errors = new List<Exception>();
+        var successful = 0;
 
-    private static void StartUpdaterAndExit(UpdateManager mgr, VelopackAsset toApply, bool silent, bool restart)
+        foreach (var source in sources.OrderBy(static item => item.Priority))
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var manager = source.CreateManager();
+                var info = await RunWithTimeout(
+                        () => manager.CheckForUpdatesAsync(),
+                        CheckTimeoutPerSource,
+                        ct)
+                    .ConfigureAwait(false);
+
+                successful++;
+                if (info?.TargetFullRelease is not VelopackAsset target)
+                    continue;
+
+                var candidate = new AvailableUpdate(source.Name, source.Priority, manager, info);
+                if (best is null ||
+                    SemanticVersion.CompareByVersion(target.Version, best.Info.TargetFullRelease.Version) > 0 ||
+                    (SemanticVersion.CompareByVersion(target.Version, best.Info.TargetFullRelease.Version) == 0 &&
+                     candidate.Priority < best.Priority))
+                {
+                    best = candidate;
+                }
+            }
+            catch (Exception ex) when (!IsCancellation(ex, ct))
+            {
+                errors.Add(new InvalidOperationException($"{source.Name}: {ex.Message}", ex));
+            }
+        }
+
+        return (best, errors, successful);
+    }
+
+    private static async Task<AvailableUpdate?> FindDownloadFallbackAsync(
+        IEnumerable<UpdateSourceSpec> sources,
+        AvailableUpdate failed,
+        SemanticVersion minimumVersion,
+        CancellationToken ct)
+    {
+        AvailableUpdate? fallback = null;
+
+        foreach (var source in sources
+                     .Where(item => !item.Name.Equals(failed.Name, StringComparison.Ordinal))
+                     .OrderBy(static item => item.Priority))
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var manager = source.CreateManager();
+                var info = await RunWithTimeout(
+                        () => manager.CheckForUpdatesAsync(),
+                        CheckTimeoutPerSource,
+                        ct)
+                    .ConfigureAwait(false);
+
+                if (info?.TargetFullRelease is not VelopackAsset target ||
+                    SemanticVersion.CompareByVersion(target.Version, minimumVersion) < 0)
+                    continue;
+
+                var candidate = new AvailableUpdate(source.Name, source.Priority, manager, info);
+                if (fallback is null ||
+                    SemanticVersion.CompareByVersion(target.Version, fallback.Info.TargetFullRelease.Version) > 0)
+                {
+                    fallback = candidate;
+                }
+            }
+            catch (Exception ex) when (!IsCancellation(ex, ct))
+            {
+                _ = ex;
+                // Continue to the next independent source.
+            }
+        }
+
+        return fallback;
+    }
+
+    private static string BuildAllSourcesFailedError(IReadOnlyCollection<Exception> errors)
+    {
+        var details = errors.Count == 0
+            ? "Источники обновлений не ответили."
+            : string.Join("\n\n", errors.Select(static error => error.Message));
+
+        return
+            "Не удалось проверить обновления ни через зеркало LegendBorn/Selectel, ни через GitHub.\n\n" +
+            "Проверь интернет, системный прокси/DNS или попробуй другую сеть. Для пользователей из РФ " +
+            "лаунчер сначала использует независимое Selectel-зеркало, поэтому GitHub не является обязательным.\n\n" +
+            details;
+    }
+
+    private static void StartUpdaterAndExit(UpdateManager manager, VelopackAsset toApply, bool silent, bool restart)
     {
         try
         {
-            // ✅ запускаем updater (он будет ждать выхода приложения)
-            mgr.WaitExitThenApplyUpdates(toApply, silent: silent, restart: restart);
-
-            // ✅ затем инициируем нормальное закрытие приложения
+            manager.WaitExitThenApplyUpdates(toApply, silent: silent, restart: restart);
             RequestAppShutdown();
-
-            // ✅ last resort: если вдруг приложение не умирает из-за foreground-thread и т.п.
             ForceExitSoon(TimeSpan.FromSeconds(15));
         }
         catch (Exception ex)
@@ -244,41 +357,17 @@ public static class UpdateService
         catch { }
     }
 
-    // -------------------------
-    // Watchdog helpers
-    // -------------------------
-
-    // ✅ for Task<T> (не маскируем cancel под timeout)
     private static async Task<T> RunWithTimeout<T>(Func<Task<T>> action, TimeSpan timeout, CancellationToken ct)
     {
         var task = action();
-        var delayTask = Task.Delay(timeout); // <- без ct, чтобы cancel не превращался в timeout
-
+        var delayTask = Task.Delay(timeout);
         var finished = await Task.WhenAny(task, delayTask).ConfigureAwait(false);
-
-        // если отменили — это отмена
         ct.ThrowIfCancellationRequested();
 
         if (finished == delayTask)
             throw new TimeoutException($"Operation timed out after {timeout.TotalSeconds:0}s");
 
         return await task.ConfigureAwait(false);
-    }
-
-    // ✅ for Task (void) (не маскируем cancel под timeout)
-    private static async Task RunWithTimeout(Func<Task> action, TimeSpan timeout, CancellationToken ct)
-    {
-        var task = action();
-        var delayTask = Task.Delay(timeout); // <- без ct
-
-        var finished = await Task.WhenAny(task, delayTask).ConfigureAwait(false);
-
-        ct.ThrowIfCancellationRequested();
-
-        if (finished == delayTask)
-            throw new TimeoutException($"Operation timed out after {timeout.TotalSeconds:0}s");
-
-        await task.ConfigureAwait(false);
     }
 
     private static bool IsCancellation(Exception ex, CancellationToken ct)
@@ -295,20 +384,16 @@ public static class UpdateService
             {
                 try
                 {
-                    // Сначала пытаемся закрыть главное окно (чтобы Closing-логика отработала)
                     if (app.MainWindow != null)
                     {
                         try { app.MainWindow.Close(); } catch { }
                     }
-
-                    // Затем гарантируем Shutdown (иначе можно зависнуть из-за ShutdownMode/окон/foreground threads)
                     try { app.Shutdown(); } catch { }
                 }
                 catch
                 {
                     try { app.Shutdown(); } catch { }
                 }
-
                 return;
             }
 
@@ -324,45 +409,22 @@ public static class UpdateService
         var hint = kind switch
         {
             NetworkErrorKind.DnsOrHostNotFound =>
-                "Похоже, система не может найти хост (DNS/блокировка домена). " +
-                "Чаще всего это связано с провайдером, DNS (1.1.1.1/8.8.8.8), VPN, прокси или корпоративной сетью.\n\n" +
-                "Что можно попробовать:\n" +
-                "• сменить DNS (например, 1.1.1.1 или 8.8.8.8)\n" +
-                "• включить/выключить VPN\n" +
-                "• проверить, открывается ли GitHub в браузере\n" +
-                "• проверить файл hosts и настройки прокси в системе",
+                "Система не может найти один из хостов обновления (DNS/фильтрация). " +
+                "Лаунчер пробует и LegendBorn/Selectel, и GitHub. Проверь системный DNS, прокси/VPN или другую сеть.",
 
             NetworkErrorKind.TlsOrSsl =>
-                "Ошибка защищённого соединения (TLS/SSL). Возможные причины: " +
-                "неверное время/дата на ПК, перехват HTTPS антивирусом/прокси, устаревшие корневые сертификаты.\n\n" +
-                "Что можно попробовать:\n" +
-                "• проверить дату/время Windows\n" +
-                "• временно отключить HTTPS-сканирование в антивирусе\n" +
-                "• попробовать другую сеть/VPN",
+                "Ошибка защищённого соединения (TLS/SSL). Проверь дату/время Windows, HTTPS-сканирование антивируса, " +
+                "системный прокси и корневые сертификаты.",
 
             NetworkErrorKind.Timeout =>
-                "Истекло время ожидания. Возможные причины: нестабильный интернет, блокировки, " +
-                "медленная сеть или недоступность GitHub.\n\n" +
-                "Что можно попробовать:\n" +
-                "• повторить попытку позже\n" +
-                "• попробовать VPN/другую сеть\n" +
-                "• проверить доступность GitHub в браузере",
+                "Истекло время ожидания. Возможны нестабильная сеть или фильтрация. Лаунчер использует два независимых источника обновлений.",
 
             NetworkErrorKind.ConnectionRefusedOrReset =>
-                "Соединение было сброшено/отклонено. Часто это блокировки, прокси, VPN, " +
-                "фильтрация трафика или временная проблема сети.\n\n" +
-                "Что можно попробовать:\n" +
-                "• попробовать другую сеть/VPN\n" +
-                "• отключить прокси/антивирусный веб-фильтр\n" +
-                "• повторить попытку позже",
+                "Соединение было сброшено/отклонено. Проверь другую сеть, системный прокси/VPN и сетевые фильтры.",
 
             _ =>
-                "Проверьте доступность GitHub и соединение с интернетом (DNS/VPN/прокси/антивирус)."
+                "Проверь соединение с интернетом. Лаунчер использует LegendBorn/Selectel как основной источник и GitHub как резервный."
         };
-
-        var raw = ex.ToString();
-        if (raw.Contains("release-assets.githubusercontent.com", StringComparison.OrdinalIgnoreCase))
-            hint = "Не удаётся получить доступ к GitHub Release Assets (release-assets.githubusercontent.com).\n\n" + hint;
 
         return $"{title}\n\n{hint}\n\nТехнические детали:\n{ex}";
     }
@@ -378,51 +440,41 @@ public static class UpdateService
 
     private static NetworkErrorKind ClassifyNetworkError(Exception ex)
     {
-        for (var e = ex; e != null; e = e.InnerException)
+        for (var current = ex; current != null; current = current.InnerException)
         {
-            if (e is TimeoutException)
+            if (current is TimeoutException or TaskCanceledException)
                 return NetworkErrorKind.Timeout;
 
-            // ВАЖНО: TaskCanceledException бывает и при таймаутах HttpClient.
-            // Отмену "пользователем" мы обрабатываем выше (OperationCanceledException + ct.IsCancellationRequested).
-            if (e is TaskCanceledException)
-                return NetworkErrorKind.Timeout;
-
-            if (e is HttpRequestException hre)
+            if (current is HttpRequestException requestError)
             {
-                if (hre.InnerException is SocketException se)
+                if (requestError.InnerException is SocketException socket)
                 {
-                    if (se.SocketErrorCode == SocketError.HostNotFound ||
-                        se.SocketErrorCode == SocketError.NoData ||
-                        se.SocketErrorCode == SocketError.TryAgain)
+                    if (socket.SocketErrorCode is SocketError.HostNotFound or SocketError.NoData or SocketError.TryAgain)
                         return NetworkErrorKind.DnsOrHostNotFound;
 
-                    if (se.SocketErrorCode == SocketError.TimedOut)
+                    if (socket.SocketErrorCode == SocketError.TimedOut)
                         return NetworkErrorKind.Timeout;
 
-                    if (se.SocketErrorCode == SocketError.ConnectionRefused ||
-                        se.SocketErrorCode == SocketError.ConnectionReset ||
-                        se.SocketErrorCode == SocketError.NetworkReset ||
-                        se.SocketErrorCode == SocketError.HostUnreachable ||
-                        se.SocketErrorCode == SocketError.NetworkUnreachable)
+                    if (socket.SocketErrorCode is SocketError.ConnectionRefused or SocketError.ConnectionReset or
+                        SocketError.NetworkReset or SocketError.HostUnreachable or SocketError.NetworkUnreachable)
                         return NetworkErrorKind.ConnectionRefusedOrReset;
                 }
 
-                var msg = hre.Message ?? "";
-                if (msg.Contains("No such host is known", StringComparison.OrdinalIgnoreCase) ||
-                    msg.Contains("Name or service not known", StringComparison.OrdinalIgnoreCase))
+                var message = requestError.Message ?? "";
+                if (message.Contains("No such host is known", StringComparison.OrdinalIgnoreCase) ||
+                    message.Contains("Name or service not known", StringComparison.OrdinalIgnoreCase))
                     return NetworkErrorKind.DnsOrHostNotFound;
 
-                if (msg.Contains("SSL", StringComparison.OrdinalIgnoreCase) ||
-                    msg.Contains("TLS", StringComparison.OrdinalIgnoreCase) ||
-                    msg.Contains("authentication failed", StringComparison.OrdinalIgnoreCase))
+                if (message.Contains("SSL", StringComparison.OrdinalIgnoreCase) ||
+                    message.Contains("TLS", StringComparison.OrdinalIgnoreCase) ||
+                    message.Contains("authentication failed", StringComparison.OrdinalIgnoreCase))
                     return NetworkErrorKind.TlsOrSsl;
             }
 
-            var s = e.Message ?? "";
-            if (s.Contains("SSL", StringComparison.OrdinalIgnoreCase) ||
-                s.Contains("TLS", StringComparison.OrdinalIgnoreCase) ||
-                s.Contains("authentication failed", StringComparison.OrdinalIgnoreCase))
+            var text = current.Message ?? "";
+            if (text.Contains("SSL", StringComparison.OrdinalIgnoreCase) ||
+                text.Contains("TLS", StringComparison.OrdinalIgnoreCase) ||
+                text.Contains("authentication failed", StringComparison.OrdinalIgnoreCase))
                 return NetworkErrorKind.TlsOrSsl;
         }
 
