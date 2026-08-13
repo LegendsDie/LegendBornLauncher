@@ -74,13 +74,17 @@ jobs:
           $mainVm = Get-Content -Raw -Path "ViewModels/MainViewModel.cs"
           $minecraft = Get-Content -Raw -Path "Launching/MinecraftService.cs"
           $transport = Get-Content -Raw -Path "Services/MinecraftDistributionHttpHandler.cs"
-          $loader = Get-Content -Raw -Path "Launching/LoaderInstaller.cs"
+          $loader = Get-Content -Raw -Path "Launching/LoaderInstaller.Secure.cs"
           $neoContract = Get-Content -Raw -Path "Services/NeoForgeDistributionBootstrap.cs"
           $packPreflight = Get-Content -Raw -Path "Services/PackMirrorPreflightService.cs"
           $update = Get-Content -Raw -Path "Services/UpdateService.cs"
           $settings = Get-Content -Raw -Path "Views/Tabs/SettingsTabView.xaml"
 
-          foreach ($required in @('https://legendborn.xyz/api/launcher/servers','server_catalog_v2.json','generatedAtUnix','validUntilUnix','CacheMaxAge','installerMirrors','installerSha256','mavenMirrors','installerMirrorArgument','NeoForgeDistributionBootstrap.TryRegister')) {
+          if (Test-Path "Launching/LoaderInstaller.cs") {
+            throw "Legacy NeoForge JAR mutation implementation must not exist."
+          }
+
+          foreach ($required in @('https://legendborn.xyz/api/launcher/servers','server_catalog_v2.json','generatedAtUnix','validUntilUnix','CacheMaxAge','CatalogMaxAgeWithoutExpiry','installerMirrors','installerSha256','mavenMirrors','installerMirrorArgument','NeoForgeDistributionBootstrap.TryRegister')) {
             if (-not $catalog.Contains($required)) { throw "Server catalog trust token missing: $required" }
           }
           if ($serversVm -notmatch 'ServerIp\s*=\s*addr') { throw "Authoritative catalog address override missing." }
@@ -89,6 +93,14 @@ jobs:
           foreach ($required in @('InstallerMirrors','InstallerSha256','MavenMirrors','RequiredMirrorArgument = "--mirror"','https://bmclapi2.bangbang93.com/maven/','https://maven.neoforged.net/releases/','GetRegisteredMavenMirrors')) {
             if (-not $neoContract.Contains($required)) { throw "NeoForge contract registry missing: $required" }
           }
+
+          foreach ($required in @('NeoForgeDistributionBootstrap.TryResolve','RequireInstallerHash','SHA256.HashData','InstallerMirrors','GetEffectiveMavenMirrors','InstallerMirrorArgument','InstallOriginalJarAsync','Major: >= 21','Is64Bit: true','Источник загрузки: BMCLAPI','Источник зависимостей: BMCLAPI')) {
+            if (-not $loader.Contains($required)) { throw "Active NeoForge execution safeguard missing: $required" }
+          }
+          foreach ($forbidden in @('PrepareInstallerJarForExecutionAsync','CreateMirroredInstallerJarAsync','JarLikelyNeedsMavenPatch','IsSignatureEntry','RewriteAllOfficialUrls','TryRewriteNeoForgeVersionJsonUrlsAsync','rewriteNeoForgeUrlsToMirror','.mirrored.jar','Environment.Is64BitOperatingSystem','SourceForgeDirectCdnUrl','files/latest/download','--skip-hash-check')) {
+            if ($loader.Contains($forbidden)) { throw "Forbidden NeoForge mutation/legacy behavior returned: $forbidden" }
+          }
+
           foreach ($required in @('MinecraftLauncherParameters.CreateDefault(_path, Http)','new HttpClient(new MinecraftDistributionHttpHandler(handler))')) {
             if (-not $minecraft.Contains($required)) { throw "CmlLib resilient HTTP wiring missing: $required" }
           }
@@ -96,13 +108,9 @@ jobs:
             if (-not $transport.Contains($required)) { throw "Distribution transport fallback missing: $required" }
           }
 
-          $distributionText = $catalog + $transport + $neoContract
+          $distributionText = $catalog + $transport + $loader + $neoContract
           foreach ($forbidden in @('https://legendborn.xyz/api/maven/neoforge/','https://legendborn.xyz/api/mirror/mojang/')) {
             if ($distributionText.Contains($forbidden)) { throw "Phantom Next.js binary proxy must not be used: $forbidden" }
-          }
-          if ($loader -match 'files/latest/download') { throw "NeoForge installer must never use an unversioned latest/download URL." }
-          foreach ($required in @('ValidateInstallerJar','OfficialMavenDownloadTimeout','Major: >= 21','Is64Bit: true')) {
-            if (-not $loader.Contains($required)) { throw "NeoForge baseline safeguard missing: $required" }
           }
 
           if (-not $settings.Contains('BMCLAPI')) { throw "BMCLAPI source attribution must remain visible." }
