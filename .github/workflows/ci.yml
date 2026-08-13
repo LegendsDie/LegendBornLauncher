@@ -94,7 +94,24 @@ jobs:
             if (-not $neoContract.Contains($required)) { throw "NeoForge contract registry missing: $required" }
           }
 
-          foreach ($required in @('NeoForgeDistributionBootstrap.TryResolve','RequireInstallerHash','SHA256.HashData','InstallerMirrors','GetEffectiveMavenMirrors','InstallerMirrorArgument','InstallOriginalJarAsync','Major: >= 21','Is64Bit: true','Источник загрузки: BMCLAPI','Источник зависимостей: BMCLAPI')) {
+          foreach ($required in @(
+            'NeoForgeDistributionBootstrap.TryResolve',
+            'RequireInstallerHash',
+            'SHA256.HashData',
+            'InstallerMirrors',
+            'GetEffectiveMavenMirrors',
+            'InstallerMirrorArgument',
+            'InstallOriginalJarAsync',
+            'PrefetchNeoForgeMavenArtifactsAsync',
+            'ReadNeoForgeHostedArtifacts',
+            'SHA1.HashData',
+            'maven.neoforged.net',
+            'SeedVanillaVersion',
+            'Major: >= 21',
+            'Is64Bit: true',
+            'Источник загрузки: BMCLAPI',
+            'Источник зависимостей: BMCLAPI'
+          )) {
             if (-not $loader.Contains($required)) { throw "Active NeoForge execution safeguard missing: $required" }
           }
           foreach ($forbidden in @('PrepareInstallerJarForExecutionAsync','CreateMirroredInstallerJarAsync','JarLikelyNeedsMavenPatch','IsSignatureEntry','RewriteAllOfficialUrls','TryRewriteNeoForgeVersionJsonUrlsAsync','rewriteNeoForgeUrlsToMirror','.mirrored.jar','Environment.Is64BitOperatingSystem','SourceForgeDirectCdnUrl','files/latest/download','--skip-hash-check')) {
