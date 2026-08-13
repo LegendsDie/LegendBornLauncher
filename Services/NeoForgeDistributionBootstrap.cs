@@ -1,66 +1,207 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Runtime.CompilerServices;
 
 namespace LegendBorn.Services;
 
+internal sealed record NeoForgeDistributionSpec(
+    string LoaderVersion,
+    string InstallerUrl,
+    string[] InstallerMirrors,
+    string InstallerSha256,
+    string[] MavenMirrors,
+    string InstallerMirrorArgument);
+
 /// <summary>
-/// Ensures every launcher process knows about independent NeoForge Maven fallbacks before
-/// MinecraftService constructs LoaderInstaller. Operators can still append additional mirrors
-/// through LEGENDBORN_NEOFORGE_MAVEN_MIRRORS.
+/// Runtime registry for the NeoForge distribution contract received from the authoritative
+/// LegendBorn server catalog. The catalog is the source of truth; this class deliberately does
+/// not inject a web-app Maven proxy or mutate installer artifacts.
 /// </summary>
 internal static class NeoForgeDistributionBootstrap
 {
     internal const string MirrorEnvironmentVariable = "LEGENDBORN_NEOFORGE_MAVEN_MIRRORS";
-    internal const string LegendBornProxyBase = "https://legendborn.xyz/api/maven/neoforge/";
     internal const string BmclApiMavenBase = "https://bmclapi2.bangbang93.com/maven/";
-    internal const string LegendBornMavenBase = "https://maven.legendborn.ru/";
+    internal const string OfficialMavenBase = "https://maven.neoforged.net/releases/";
+    internal const string RequiredMirrorArgument = "--mirror";
 
-    [ModuleInitializer]
-    internal static void Initialize()
+    private static readonly object Sync = new();
+    private static readonly Dictionary<string, NeoForgeDistributionSpec> Specs =
+        new(StringComparer.OrdinalIgnoreCase);
+    private static string[] _registeredMavenMirrors = Array.Empty<string>();
+
+    internal static void Reset()
     {
-        try
+        lock (Sync)
         {
-            var mirrors = new List<string>
-            {
-                // First-party proxy first, independent restricted-network mirror second.
-                LegendBornProxyBase,
-                BmclApiMavenBase,
-                LegendBornMavenBase
-            };
-
-            var existing = Environment.GetEnvironmentVariable(MirrorEnvironmentVariable) ?? "";
-            mirrors.AddRange(existing.Split(
-                new[] { ';', ',', '\r', '\n' },
-                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-
-            var value = string.Join(
-                ';',
-                mirrors
-                    .Select(NormalizeHttpsBase)
-                    .Where(static mirror => mirror.Length > 0)
-                    .Distinct(StringComparer.OrdinalIgnoreCase));
-
-            if (value.Length > 0)
-                Environment.SetEnvironmentVariable(MirrorEnvironmentVariable, value);
-        }
-        catch
-        {
-            // LoaderInstaller still has its built-in Maven/SourceForge/official fallback chain.
+            Specs.Clear();
+            _registeredMavenMirrors = Array.Empty<string>();
         }
     }
 
-    private static string NormalizeHttpsBase(string? value)
+    internal static bool TryRegister(
+        string? loaderVersion,
+        string? installerUrl,
+        IEnumerable<string>? installerMirrors,
+        string? installerSha256,
+        IEnumerable<string>? mavenMirrors,
+        string? installerMirrorArgument,
+        out string error)
+    {
+        error = "";
+
+        var version = (loaderVersion ?? "").Trim();
+        if (version.Length == 0)
+        {
+            error = "loader.version is empty";
+            return false;
+        }
+
+        var digest = NormalizeSha256(installerSha256);
+        if (!IsSha256(digest))
+        {
+            error = "loader.installerSha256 must be exactly 64 hexadecimal characters";
+            return false;
+        }
+
+        var primary = NormalizeHttpsUrl(installerUrl);
+        var installers = (installerMirrors ?? Array.Empty<string>())
+            .Prepend(primary)
+            .Select(NormalizeHttpsUrl)
+            .Where(static value => value.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (installers.Length == 0)
+        {
+            error = "loader.installerMirrors is empty";
+            return false;
+        }
+
+        var mavens = (mavenMirrors ?? Array.Empty<string>())
+            .Select(NormalizeHttpsBase)
+            .Where(static value => value.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (mavens.Length == 0)
+        {
+            error = "loader.mavenMirrors is empty";
+            return false;
+        }
+
+        var mirrorArgument = (installerMirrorArgument ?? "").Trim();
+        if (!string.Equals(mirrorArgument, RequiredMirrorArgument, StringComparison.Ordinal))
+        {
+            error = $"loader.installerMirrorArgument must be '{RequiredMirrorArgument}'";
+            return false;
+        }
+
+        var spec = new NeoForgeDistributionSpec(
+            version,
+            primary.Length > 0 ? primary : installers[0],
+            installers,
+            digest,
+            mavens,
+            mirrorArgument);
+
+        lock (Sync)
+        {
+            Specs[version] = spec;
+            _registeredMavenMirrors = Specs.Values
+                .SelectMany(static value => value.MavenMirrors)
+                .Select(NormalizeHttpsBase)
+                .Where(static value => value.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        return true;
+    }
+
+    internal static bool TryResolve(string? loaderVersion, out NeoForgeDistributionSpec spec)
+    {
+        var version = (loaderVersion ?? "").Trim();
+        lock (Sync)
+            return Specs.TryGetValue(version, out spec!);
+    }
+
+    internal static string[] GetRegisteredMavenMirrors()
+    {
+        lock (Sync)
+            return (string[])_registeredMavenMirrors.Clone();
+    }
+
+    internal static string[] GetEffectiveMavenMirrors(NeoForgeDistributionSpec spec)
+    {
+        var values = new List<string>(spec.MavenMirrors);
+
+        try
+        {
+            var configured = Environment.GetEnvironmentVariable(MirrorEnvironmentVariable) ?? "";
+            values.AddRange(configured.Split(
+                new[] { ';', ',', '\r', '\n' },
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        }
+        catch
+        {
+        }
+
+        return values
+            .Select(NormalizeHttpsBase)
+            .Where(static value => value.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    internal static string DescribeSource(string? url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return "unknown";
+
+        if (uri.Host.Contains("selstorage.ru", StringComparison.OrdinalIgnoreCase) ||
+            uri.Host.Contains("selcloud.ru", StringComparison.OrdinalIgnoreCase))
+            return "LegendBorn Selectel";
+
+        if (uri.Host.Equals("bmclapi2.bangbang93.com", StringComparison.OrdinalIgnoreCase))
+            return "BMCLAPI";
+
+        if (uri.Host.Equals("maven.neoforged.net", StringComparison.OrdinalIgnoreCase))
+            return "NeoForge official";
+
+        return uri.Host;
+    }
+
+    internal static string NormalizeSha256(string? value)
+        => (value ?? "").Trim().ToLowerInvariant();
+
+    internal static bool IsSha256(string? value)
+    {
+        var text = NormalizeSha256(value);
+        if (text.Length != 64) return false;
+
+        foreach (var ch in text)
+        {
+            if (ch is >= '0' and <= '9') continue;
+            if (ch is >= 'a' and <= 'f') continue;
+            return false;
+        }
+
+        return true;
+    }
+
+    internal static string NormalizeHttpsUrl(string? value)
     {
         var text = (value ?? "").Trim();
         if (!Uri.TryCreate(text, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
             return "";
 
-        var builder = new UriBuilder(uri) { Query = "", Fragment = "" };
-        if (!builder.Path.EndsWith("/", StringComparison.Ordinal))
-            builder.Path += "/";
+        return new UriBuilder(uri) { Fragment = "" }.Uri.ToString();
+    }
 
-        return builder.Uri.ToString();
+    internal static string NormalizeHttpsBase(string? value)
+    {
+        var url = NormalizeHttpsUrl(value);
+        if (url.Length == 0) return "";
+        return url.EndsWith("/", StringComparison.Ordinal) ? url : url + "/";
     }
 }
