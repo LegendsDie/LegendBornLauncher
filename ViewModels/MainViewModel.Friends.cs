@@ -18,16 +18,10 @@ public sealed partial class MainViewModel
 {
     private const int FriendsPreviewMax = 2;
 
-    // Как часто дергаем presence лаунчера на сервер
     private static readonly TimeSpan LauncherHeartbeatInterval = TimeSpan.FromSeconds(25);
-
-    // Сколько считаем "онлайн в лаунчере" по lastSeen (если сервер так отдаёт)
+    private static readonly TimeSpan MinecraftOnlineMaxAge = TimeSpan.FromSeconds(150);
     private static readonly TimeSpan LauncherOnlineMaxAge = TimeSpan.FromSeconds(70);
-
-    // Сколько считаем "онлайн на сайте" по lastActivity
     private static readonly TimeSpan SiteOnlineMaxAge = TimeSpan.FromMinutes(5);
-
-    // Как часто обновляем друзей, чтобы онлайны обновлялись сами
     private static readonly TimeSpan FriendsPollingInterval = TimeSpan.FromSeconds(30);
 
     private int _friendsRefreshGuard;
@@ -36,7 +30,6 @@ public sealed partial class MainViewModel
     private CancellationTokenSource? _presenceCts;
     private CancellationTokenSource? _friendsPollingCts;
 
-    // Логируем статус heartbeat только 1 раз, чтобы не спамить лог
     private int _heartbeatOkLogged;
     private int _heartbeatFailLogged;
 
@@ -47,15 +40,13 @@ public sealed partial class MainViewModel
     {
         Offline = 0,
         Site = 1,
-        Launcher = 2
+        Launcher = 2,
+        Minecraft = 3
     }
 
     public sealed class FriendEntry
     {
-        /// <summary>Уникальный id для UI/SelectedFriend. (стабильный: userId -> id -> publicId)</summary>
         public string Id { get; init; } = "";
-
-        /// <summary>То, что реально надо для /profile/&lt;id&gt; на сайте (обычно PublicId).</summary>
         public string ProfileId { get; init; } = "";
 
         public int? PublicId { get; init; }
@@ -65,18 +56,15 @@ public sealed partial class MainViewModel
         public string Name { get; init; } = "";
         public string? AvatarUrl { get; init; }
 
-        // Легаси (если где-то ещё используется)
-        public string? Status { get; init; } // online/offline/null
-        public string? Source { get; init; } // twitch/minecraft/telegram/site/null
+        public string? Status { get; init; }
+        public string? Source { get; init; }
+        public string? MinecraftServerId { get; init; }
 
-        // ✅ Источник онлайна (приоритет Launcher > Site > Offline)
+        // Priority: Minecraft > Launcher > Site > Offline.
         public OnlinePlace OnlinePlace { get; init; } = OnlinePlace.Offline;
         public bool IsOnline => OnlinePlace != OnlinePlace.Offline;
 
-        // ✅ Последний раз был онлайн (UTC)
         public DateTimeOffset? LastSeenUtc { get; init; }
-
-        // ✅ Где последний раз был (Site/Launcher/Offline=unknown)
         public OnlinePlace LastSeenPlace { get; init; } = OnlinePlace.Offline;
 
         public string Initial
@@ -88,16 +76,18 @@ public sealed partial class MainViewModel
             }
         }
 
-        /// <summary>
-        /// ЕДИНСТВЕННАЯ строка под ником:
-        /// - онлайн: "в сети • на сайте / в лаунчере"
-        /// - оффлайн: "был на сайте 31.01 18:40"
-        /// - если lastSeen нет: "" (пусто, чтобы не было дубля "оффлайн" под ником)
-        /// </summary>
         public string PresenceText
         {
             get
             {
+                if (OnlinePlace == OnlinePlace.Minecraft)
+                {
+                    var serverId = (MinecraftServerId ?? "").Trim();
+                    return string.IsNullOrWhiteSpace(serverId)
+                        ? "в сети • в Minecraft"
+                        : $"в сети • Minecraft • {serverId}";
+                }
+
                 if (OnlinePlace == OnlinePlace.Launcher) return "в сети • в лаунчере";
                 if (OnlinePlace == OnlinePlace.Site) return "в сети • на сайте";
 
@@ -106,16 +96,15 @@ public sealed partial class MainViewModel
 
                 var when = FormatWhenLocal(LastSeenUtc.Value);
 
+                if (LastSeenPlace == OnlinePlace.Minecraft) return $"был в Minecraft {when}";
                 if (LastSeenPlace == OnlinePlace.Launcher) return $"был в лаунчере {when}";
                 if (LastSeenPlace == OnlinePlace.Site) return $"был на сайте {when}";
                 return $"был {when}";
             }
         }
 
-        /// <summary>Пилюля справа: строго ОНЛАЙН/ОФФЛАЙН.</summary>
         public string PresencePillText => IsOnline ? "ОНЛАЙН" : "ОФФЛАЙН";
 
-        // Алиасы на случай старых биндингов
         public string PresenceLine => PresenceText;
         public string StatusLabel => PresencePillText;
 
@@ -132,10 +121,7 @@ public sealed partial class MainViewModel
         }
     }
 
-    // Полный список
     public ObservableCollection<FriendEntry> Friends { get; } = new();
-
-    // Витрина: максимум 2 (онлайн приоритет + рандом добивка)
     public ObservableCollection<FriendEntry> FriendsPreview { get; } = new();
 
     private FriendEntry? _selectedFriend;
@@ -158,14 +144,12 @@ public sealed partial class MainViewModel
     public string FriendsPreviewSummaryText
         => $"Онлайн: {OnlineFriendsCount} • Показано: {FriendsPreviewCount}/{FriendsPreviewMax}";
 
-    /// <summary>Только факт наличия токена.</summary>
     public bool HasSiteToken => !_isClosing && TryGetAccessToken(out _);
 
     public bool CanRefreshFriends => !_isClosing && !IsBusy && HasSiteToken;
 
     public AsyncRelayCommand RefreshFriendsCommand { get; private set; } = null!;
 
-    // Оставляем имя InitSocialCommands, чтобы не ломать места вызова
     private void InitSocialCommands()
     {
         RefreshFriendsCommand = new AsyncRelayCommand(
@@ -173,11 +157,9 @@ public sealed partial class MainViewModel
             () => CanRefreshFriends);
     }
 
-    // legacy wrappers (чтобы MainViewModel.cs не ругался на старые имена)
     private void ScheduleSocialRefresh() => ScheduleFriendsRefresh();
     private void ClearSocialUi() => ClearFriendsUi();
 
-    // ONLINE presence control (вызывается из MainViewModel.cs)
     private void StartOnlinePresence()
     {
         if (_isClosing) return;
@@ -189,7 +171,6 @@ public sealed partial class MainViewModel
 
     private void StopOnlinePresence()
     {
-        // При остановке можно мягко отправить offline (TTL тоже решает)
         try
         {
             _ = Task.Run(async () =>
@@ -199,10 +180,9 @@ public sealed partial class MainViewModel
                     if (_isClosing) return;
                     if (!TryGetAccessToken(out var token)) return;
 
-                    // В актуальном SiteAuthService метод есть
                     await _site.SendLauncherOfflineAsync(token, CancellationToken.None).ConfigureAwait(false);
                 }
-                catch { /* ignore */ }
+                catch { }
             });
         }
         catch { }
@@ -232,7 +212,6 @@ public sealed partial class MainViewModel
 
             _ = Task.Run(async () =>
             {
-                // небольшая задержка, чтобы логин/профиль успели устаканиться
                 try { await Task.Delay(800, cts.Token).ConfigureAwait(false); } catch { }
 
                 while (!cts.IsCancellationRequested && !_isClosing && IsLoggedIn)
@@ -242,17 +221,17 @@ public sealed partial class MainViewModel
                         if (TryGetAccessToken(out var tkn))
                             await TrySendLauncherHeartbeatAsync(tkn, cts.Token).ConfigureAwait(false);
                     }
-                    catch { /* ignore */ }
+                    catch { }
 
                     try
                     {
                         await Task.Delay(LauncherHeartbeatInterval, cts.Token).ConfigureAwait(false);
                     }
-                    catch { /* ignore */ }
+                    catch { }
                 }
             }, cts.Token);
         }
-        catch { /* ignore */ }
+        catch { }
     }
 
     private void StartFriendsPollingLoop()
@@ -270,21 +249,20 @@ public sealed partial class MainViewModel
 
             _ = Task.Run(async () =>
             {
-                // сразу один рефреш
-                try { await RefreshFriendsAsync().ConfigureAwait(false); } catch { /* ignore */ }
+                try { await RefreshFriendsAsync().ConfigureAwait(false); } catch { }
 
                 while (!cts.IsCancellationRequested && !_isClosing && IsLoggedIn)
                 {
                     try { await Task.Delay(FriendsPollingInterval, cts.Token).ConfigureAwait(false); }
-                    catch { /* ignore */ }
+                    catch { }
 
                     if (cts.IsCancellationRequested || _isClosing || !IsLoggedIn) break;
 
-                    try { await RefreshFriendsAsync().ConfigureAwait(false); } catch { /* ignore */ }
+                    try { await RefreshFriendsAsync().ConfigureAwait(false); } catch { }
                 }
             }, cts.Token);
         }
-        catch { /* ignore */ }
+        catch { }
     }
 
     private async Task TrySendLauncherHeartbeatAsync(string token, CancellationToken ct)
@@ -308,8 +286,8 @@ public sealed partial class MainViewModel
             }
         }
         catch (OperationCanceledException) { }
-        catch (HttpRequestException) { /* сеть/TTL переживём */ }
-        catch { /* ignore */ }
+        catch (HttpRequestException) { }
+        catch { }
     }
 
     private void ClearFriendsUi()
@@ -330,7 +308,6 @@ public sealed partial class MainViewModel
         }, DispatcherPriority.DataBind);
     }
 
-    // Можно дергать с View (Loaded) — мягко дебаунсит
     private void ScheduleFriendsRefresh()
     {
         if (_isClosing) return;
@@ -347,7 +324,7 @@ public sealed partial class MainViewModel
 
             _ = ScheduleFriendsRefreshAsync(cts.Token);
         }
-        catch { /* ignore */ }
+        catch { }
     }
 
     private async Task ScheduleFriendsRefreshAsync(CancellationToken ct)
@@ -469,10 +446,17 @@ public sealed partial class MainViewModel
         try
         {
             var now = DateTimeOffset.UtcNow;
-            if (tsUtc > now) return true; // чуть-чуть "в будущем" — считаем живым
+            if (tsUtc > now) return true;
             return (now - tsUtc) <= maxAge;
         }
         catch { return false; }
+    }
+
+    private static bool IsMinecraftString(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return false;
+        var p = s.Trim().ToLowerInvariant();
+        return p == "mc" || p.Contains("minecraft");
     }
 
     private static bool IsLauncherString(string? s)
@@ -491,20 +475,23 @@ public sealed partial class MainViewModel
 
     private static OnlinePlace ResolveOnlinePlace(FriendDto dto, string? normalizedStatus)
     {
-        // 0) server computed onlinePlace
         var place = (dto.OnlinePlace ?? "").Trim();
+        var source = (dto.Source ?? "").Trim();
+
         if (!string.IsNullOrWhiteSpace(place))
         {
+            if (IsMinecraftString(place)) return OnlinePlace.Minecraft;
             if (IsLauncherString(place)) return OnlinePlace.Launcher;
             if (IsSiteString(place)) return OnlinePlace.Site;
             if (place.Equals("offline", StringComparison.OrdinalIgnoreCase)) return OnlinePlace.Offline;
         }
 
-        // 1) Явные флаги
+        if (IsMinecraftString(source) && string.Equals(normalizedStatus, "online", StringComparison.OrdinalIgnoreCase))
+            return OnlinePlace.Minecraft;
+
         bool launcherOnline = dto.LauncherOnline == true;
         bool siteOnline = dto.SiteOnline == true;
 
-        // 1.1) легаси через reflection
         launcherOnline |=
             (TryGetDtoBool(dto, "IsLauncherOnline") ?? false) ||
             (TryGetDtoBool(dto, "OnlineLauncher") ?? false) ||
@@ -515,7 +502,6 @@ public sealed partial class MainViewModel
             (TryGetDtoBool(dto, "Online") ?? false) ||
             (TryGetDtoBool(dto, "IsSiteOnline") ?? false);
 
-        // 2) lastSeen timestamps
         var launcherLast = dto.LauncherLastSeenUtc
                            ?? TryGetDtoDateTimeOffset(dto, "LauncherLastSeenUtc")
                            ?? TryGetDtoDateTimeOffset(dto, "LauncherLastSeen")
@@ -535,11 +521,13 @@ public sealed partial class MainViewModel
         if (siteLast.HasValue && IsRecent(siteLast.Value.ToUniversalTime(), SiteOnlineMaxAge))
             siteOnline = true;
 
-        // 3) Старый Status=online -> считаем site
+        if (IsMinecraftString(source) && dto.LastSeenUtc.HasValue &&
+            IsRecent(dto.LastSeenUtc.Value.ToUniversalTime(), MinecraftOnlineMaxAge))
+            return OnlinePlace.Minecraft;
+
         if (string.Equals(normalizedStatus, "online", StringComparison.OrdinalIgnoreCase))
             siteOnline = true;
 
-        // Приоритет: Launcher > Site > Offline
         if (launcherOnline) return OnlinePlace.Launcher;
         if (siteOnline) return OnlinePlace.Site;
         return OnlinePlace.Offline;
@@ -547,7 +535,6 @@ public sealed partial class MainViewModel
 
     private static (DateTimeOffset? tsUtc, OnlinePlace place) ResolveLastSeen(FriendDto dto)
     {
-        // явные поля
         var launcherLast = dto.LauncherLastSeenUtc
                            ?? TryGetDtoDateTimeOffset(dto, "LauncherLastSeenUtc")
                            ?? TryGetDtoDateTimeOffset(dto, "LauncherLastSeen")
@@ -558,7 +545,6 @@ public sealed partial class MainViewModel
                        ?? TryGetDtoDateTimeOffset(dto, "SiteLastSeenUtc")
                        ?? TryGetDtoDateTimeOffset(dto, "LastActivityUtc");
 
-        // общий lastSeen (может быть без места)
         var anyLast = dto.LastSeenUtc
                       ?? TryGetDtoDateTimeOffset(dto, "LastSeenUtc")
                       ?? TryGetDtoDateTimeOffset(dto, "LastSeen");
@@ -577,7 +563,13 @@ public sealed partial class MainViewModel
             }
         }
 
-        Consider(anyLast, OnlinePlace.Offline);     // неизвестно где
+        var currentPlace = (dto.OnlinePlace ?? "").Trim();
+        var source = (dto.Source ?? "").Trim();
+        var anyLastPlace = IsMinecraftString(currentPlace) || IsMinecraftString(source)
+            ? OnlinePlace.Minecraft
+            : OnlinePlace.Offline;
+
+        Consider(anyLast, anyLastPlace);
         Consider(siteLast, OnlinePlace.Site);
         Consider(launcherLast, OnlinePlace.Launcher);
 
@@ -586,16 +578,13 @@ public sealed partial class MainViewModel
 
     private static int? TryGetPublicId(FriendDto dto)
     {
-        // ✅ В твоём FriendDto publicId = int? (см. SiteAuthService.cs).
-        // Главное: НЕ делать pattern matching "long" по переменной типа int? (это и давало CS8121).
         try
         {
             if (dto.PublicId is int pid && pid > 0)
                 return pid;
         }
-        catch { /* ignore */ }
+        catch { }
 
-        // На всякий: легаси/будущие поля через reflection (object => можно int/long/string)
         foreach (var name in new[] { "PublicId", "publicId", "ProfileId", "profileId", "ProfilePublicId", "PublicID", "publicID" })
         {
             try
@@ -613,7 +602,7 @@ public sealed partial class MainViewModel
                     parsed > 0)
                     return parsed;
             }
-            catch { /* ignore */ }
+            catch { }
         }
 
         return null;
@@ -621,11 +610,9 @@ public sealed partial class MainViewModel
 
     private static string ResolveProfileId(FriendDto dto, int? publicId, string? dtoId, string? userId)
     {
-        // 1) publicId — обычно то, что нужно сайту
         if (publicId.HasValue && publicId.Value > 0)
             return publicId.Value.ToString(CultureInfo.InvariantCulture);
 
-        // 2) отдельные поля профиля (если сервер вдруг начнёт отдавать)
         var profileId =
             TryGetDtoString(dto, "ProfileId") ??
             TryGetDtoString(dto, "ProfileUserId") ??
@@ -635,19 +622,16 @@ public sealed partial class MainViewModel
         if (!string.IsNullOrWhiteSpace(profileId))
             return profileId;
 
-        // 3) dto.Id как число
         var id = (dtoId ?? "").Trim();
         if (!string.IsNullOrWhiteSpace(id) &&
             int.TryParse(id, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) &&
             n > 0)
             return n.ToString(CultureInfo.InvariantCulture);
 
-        // 4) fallback на userId/cuid (если сайт это умеет)
         userId = (userId ?? "").Trim();
         if (!string.IsNullOrWhiteSpace(userId))
             return userId;
 
-        // 5) крайний fallback
         if (!string.IsNullOrWhiteSpace(id))
             return id;
 
@@ -656,7 +640,6 @@ public sealed partial class MainViewModel
 
     private static string GetDedupKey(FriendEntry x)
     {
-        // ✅ Чтобы не было повторов, если API иногда возвращает разные поля (id/userId/publicId)
         var uid = (x.UserId ?? "").Trim();
         if (!string.IsNullOrWhiteSpace(uid)) return "u:" + uid;
 
@@ -675,7 +658,6 @@ public sealed partial class MainViewModel
         var userId = (dto.UserId ?? "").Trim();
         var publicId = TryGetPublicId(dto);
 
-        // ✅ стабильный Id для UI: userId -> dtoId -> publicId
         var stableId =
             !string.IsNullOrWhiteSpace(userId) ? userId :
             !string.IsNullOrWhiteSpace(dtoId) ? dtoId :
@@ -687,11 +669,15 @@ public sealed partial class MainViewModel
 
         var status = NormalizeStatus(dto.Status);
         var onlinePlace = ResolveOnlinePlace(dto, status);
-
         var (lastSeenUtc, lastSeenPlace) = ResolveLastSeen(dto);
 
         var source = (dto.Source ?? TryGetDtoString(dto, "Platform") ?? TryGetDtoString(dto, "Provider"))?.Trim();
         if (string.IsNullOrWhiteSpace(source)) source = null;
+
+        var minecraftServerId = onlinePlace == OnlinePlace.Minecraft || IsMinecraftString(source)
+            ? (dto.Note ?? "").Trim()
+            : "";
+        if (string.IsNullOrWhiteSpace(minecraftServerId)) minecraftServerId = null;
 
         var profileId = ResolveProfileId(dto, publicId, dtoId, userId);
 
@@ -709,6 +695,7 @@ public sealed partial class MainViewModel
 
             Status = status,
             Source = source,
+            MinecraftServerId = minecraftServerId,
 
             OnlinePlace = onlinePlace,
             LastSeenUtc = lastSeenUtc,
@@ -737,7 +724,6 @@ public sealed partial class MainViewModel
     {
         var result = new List<FriendEntry>(FriendsPreviewMax);
 
-        // 1) онлайн приоритет (Launcher > Site)
         var online = all.Where(x => x.IsOnline)
                         .OrderByDescending(x => (int)x.OnlinePlace)
                         .ThenBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase)
@@ -746,7 +732,6 @@ public sealed partial class MainViewModel
 
         result.AddRange(online);
 
-        // 2) добивка рандомом из остальных (по dedupKey, чтобы не словить дубль)
         if (result.Count < FriendsPreviewMax)
         {
             var used = new HashSet<string>(result.Select(GetDedupKey), StringComparer.OrdinalIgnoreCase);
@@ -796,10 +781,8 @@ public sealed partial class MainViewModel
                 .Where(x => !string.IsNullOrWhiteSpace(x.Id))
                 .ToList();
 
-            // ✅ убираем повторы по userId/publicId/id
             all = Deduplicate(all);
 
-            // ✅ сортировка: Launcher > Site > Offline, затем имя
             all = all
                 .OrderByDescending(x => (int)x.OnlinePlace)
                 .ThenBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase)
@@ -847,10 +830,6 @@ public sealed partial class MainViewModel
         }
     }
 
-    // =========================
-    // Token resolving (макс. устойчиво)
-    // =========================
-
     private bool TryGetAccessToken(out string token)
     {
         token = "";
@@ -867,14 +846,14 @@ public sealed partial class MainViewModel
             if (TryReadTokenFromObject(tokensObj, out token))
                 return true;
         }
-        catch { /* ignore */ }
+        catch { }
 
         try
         {
             if (TryReadTokenFromObject(_tokenStore, out token))
                 return true;
         }
-        catch { /* ignore */ }
+        catch { }
 
         token = "";
         return false;
@@ -913,7 +892,7 @@ public sealed partial class MainViewModel
                     return true;
                 }
             }
-            catch { /* ignore */ }
+            catch { }
         }
 
         var pAccess = type.GetProperty("AccessToken", flags);
@@ -930,7 +909,7 @@ public sealed partial class MainViewModel
                     return true;
                 }
             }
-            catch { /* ignore */ }
+            catch { }
         }
 
         foreach (var name in new[] { "Current", "Value", "Token", "Tokens" })
@@ -944,7 +923,7 @@ public sealed partial class MainViewModel
                 if (TryReadTokenFromObject(inner, out token))
                     return true;
             }
-            catch { /* ignore */ }
+            catch { }
         }
 
         return false;
