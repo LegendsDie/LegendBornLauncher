@@ -46,12 +46,24 @@ jobs:
         shell: pwsh
         run: |
           $source = Get-Content -Raw -Path "Launching/MinecraftService.cs"
-          $match = [regex]::Match($source, 'AlwaysProtectedMutablePrefixes\s*=\s*\{(?<body>.*?)\};', [System.Text.RegularExpressions.RegexOptions]::Singleline)
-          if (-not $match.Success) { throw "AlwaysProtectedMutablePrefixes policy was not found." }
-          $body = $match.Groups['body'].Value
+          $regexOptions = [System.Text.RegularExpressions.RegexOptions]::Singleline
+
+          $protected = [regex]::Match($source, 'AlwaysProtectedMutablePrefixes\s*=\s*\{(?<body>.*?)\};', $regexOptions)
+          if (-not $protected.Success) { throw "AlwaysProtectedMutablePrefixes policy was not found." }
+          $protectedBody = $protected.Groups['body'].Value
           foreach ($required in @('config/', 'defaultconfigs/', 'resourcepacks/', 'shaderpacks/')) {
-            if (-not $body.Contains('"' + $required + '"')) { throw "Protected pack prefix is missing: $required" }
+            if (-not $protectedBody.Contains('"' + $required + '"')) { throw "Protected pack prefix is missing: $required" }
           }
+          if ($protectedBody.Contains('"scripts/"')) { throw "scripts/ must remain destructive-managed, not user-protected." }
+
+          $allowed = [regex]::Match($source, 'AllowedDestPrefixes\s*=\s*\{(?<body>.*?)\};', $regexOptions)
+          if (-not $allowed.Success) { throw "AllowedDestPrefixes policy was not found." }
+          if (-not $allowed.Groups['body'].Value.Contains('"scripts/"')) { throw "Managed pack prefix is missing: scripts/" }
+
+          $autoPrune = [regex]::Match($source, 'DefaultAutoPrunePrefixes\s*=\s*\{(?<body>.*?)\};', $regexOptions)
+          if (-not $autoPrune.Success) { throw "DefaultAutoPrunePrefixes policy was not found." }
+          if (-not $autoPrune.Groups['body'].Value.Contains('"scripts/"')) { throw "Auto-prune pack prefix is missing: scripts/" }
+
           if ($source -notmatch 'if \(IsAlwaysProtectedMutable\(rel\)\) continue;') { throw "Manifest delete guard missing." }
           if ($source -notmatch '!IsAlwaysProtectedMutable\(r\)') { throw "Prune guard missing." }
 
