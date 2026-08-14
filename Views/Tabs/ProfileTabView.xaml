@@ -12,12 +12,8 @@
 
     <UserControl.Resources>
 
-        <!-- ✅ Converter: делает человеческую строку присутствия -->
         <local:FriendPresenceLineConverter x:Key="FriendPresenceLineConverter"/>
 
-        <!-- ===== PRESENCE ===== -->
-
-        <!-- Точка на аватарке друзей -->
         <Style x:Key="OnlineDotStyle" TargetType="Ellipse">
             <Setter Property="Width" Value="9"/>
             <Setter Property="Height" Value="9"/>
@@ -26,22 +22,20 @@
             <Setter Property="HorizontalAlignment" Value="Right"/>
             <Setter Property="VerticalAlignment" Value="Bottom"/>
             <Setter Property="Margin" Value="0,0,-1,-1"/>
-            <Setter Property="Fill" Value="#6B7280"/> <!-- offline -->
+            <Setter Property="Fill" Value="#6B7280"/>
             <Style.Triggers>
-
                 <DataTrigger Binding="{Binding OnlinePlace}" Value="Site">
                     <Setter Property="Fill" Value="#34D399"/>
                 </DataTrigger>
-
                 <DataTrigger Binding="{Binding OnlinePlace}" Value="Launcher">
                     <Setter Property="Fill" Value="#A78BFA"/>
                 </DataTrigger>
-
+                <DataTrigger Binding="{Binding OnlinePlace}" Value="Minecraft">
+                    <Setter Property="Fill" Value="#34D399"/>
+                </DataTrigger>
             </Style.Triggers>
         </Style>
 
-        <!-- ✅ Точка рядом с ником в шапке (текущий пользователь)
-             OnlinePlace у MainViewModel НЕТ → показываем точку по IsLoggedIn -->
         <Style x:Key="HeaderOnlineDotStyle" TargetType="Ellipse">
             <Setter Property="Width" Value="9"/>
             <Setter Property="Height" Value="9"/>
@@ -58,7 +52,6 @@
             </Style.Triggers>
         </Style>
 
-        <!-- ✅ Пилюля справа: ONLINE/OFFLINE (не “где”) -->
         <Style x:Key="PresencePillStyle" TargetType="Border">
             <Setter Property="CornerRadius" Value="999"/>
             <Setter Property="BorderThickness" Value="1"/>
@@ -66,17 +59,18 @@
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="HorizontalAlignment" Value="Right"/>
             <Setter Property="Opacity" Value="0.95"/>
-
-            <!-- default = OFFLINE -->
             <Setter Property="Background" Value="#10131F"/>
             <Setter Property="BorderBrush" Value="#2A2F49"/>
-
             <Style.Triggers>
                 <DataTrigger Binding="{Binding OnlinePlace}" Value="Site">
                     <Setter Property="Background" Value="#0F1E18"/>
                     <Setter Property="BorderBrush" Value="#2D6A57"/>
                 </DataTrigger>
                 <DataTrigger Binding="{Binding OnlinePlace}" Value="Launcher">
+                    <Setter Property="Background" Value="#0F1E18"/>
+                    <Setter Property="BorderBrush" Value="#2D6A57"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding OnlinePlace}" Value="Minecraft">
                     <Setter Property="Background" Value="#0F1E18"/>
                     <Setter Property="BorderBrush" Value="#2D6A57"/>
                 </DataTrigger>
@@ -99,10 +93,13 @@
                     <Setter Property="Foreground" Value="#86EFAC"/>
                     <Setter Property="Text" Value="ОНЛАЙН"/>
                 </DataTrigger>
+                <DataTrigger Binding="{Binding OnlinePlace}" Value="Minecraft">
+                    <Setter Property="Foreground" Value="#86EFAC"/>
+                    <Setter Property="Text" Value="ОНЛАЙН"/>
+                </DataTrigger>
             </Style.Triggers>
         </Style>
 
-        <!-- Мини-кнопка-иконка (обновить) -->
         <Style x:Key="IconGhostButtonStyle"
                TargetType="Button"
                BasedOn="{StaticResource GhostButton}">
@@ -113,7 +110,6 @@
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
 
-        <!-- Нормальный айтем друзей -->
         <Style x:Key="FriendListItemStyle" TargetType="ListBoxItem">
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
@@ -155,7 +151,6 @@
             </Setter>
         </Style>
 
-        <!-- ListBox база -->
         <Style x:Key="SocialListBoxBase"
                TargetType="ListBox"
                BasedOn="{StaticResource SocialListBoxStyle}">
@@ -165,12 +160,10 @@
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="0"/>
-
             <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Hidden"/>
             <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
         </Style>
 
-        <!-- Шаблон строки друга -->
         <DataTemplate x:Key="FriendRowTemplate">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -181,7 +174,6 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <!-- Avatar -->
                 <Border Width="42"
                         Height="42"
                         CornerRadius="14"
@@ -202,7 +194,6 @@
                     </Grid>
                 </Border>
 
-                <!-- Text -->
                 <StackPanel Grid.Column="2" VerticalAlignment="Center" MinWidth="0">
                     <TextBlock Text="{Binding Name}"
                                Foreground="{StaticResource TextStrongLocal}"
@@ -210,7 +201,6 @@
                                FontSize="13"
                                TextTrimming="CharacterEllipsis"/>
 
-                    <!-- ✅ Под ником: используем PresenceText, но убираем “Не в сети”, чтобы не дублировать пилюлю -->
                     <TextBlock Margin="0,4,0,0"
                                Text="{Binding PresenceText}"
                                Foreground="{StaticResource TextDimLocal}"
@@ -235,12 +225,10 @@
                     </TextBlock>
                 </StackPanel>
 
-                <!-- Presence pill справа -->
                 <Border Grid.Column="4" Style="{StaticResource PresencePillStyle}">
                     <TextBlock Style="{StaticResource PresencePillTextStyle}"/>
                 </Border>
 
-                <!-- Контекстное меню: ContextMenu не наследует DataContext -->
                 <Grid.ContextMenu>
                     <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
                         <MenuItem Header="Открыть профиль" Click="OpenFriendProfile_OnClick"/>
@@ -259,7 +247,6 @@
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <!-- Header -->
         <Border Grid.Row="0" Style="{StaticResource ProfileHeaderStyle}">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -267,7 +254,6 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <!-- Left -->
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
@@ -293,15 +279,12 @@
                     </Border>
 
                     <StackPanel Grid.Column="2" VerticalAlignment="Center">
-
-                        <!-- Ник + точка -->
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                             <TextBlock Text="{Binding SiteUserName}"
                                        Foreground="{StaticResource TextStrongLocal}"
                                        FontSize="20"
                                        FontWeight="Bold"
                                        TextTrimming="CharacterEllipsis"/>
-
                             <Ellipse Style="{StaticResource HeaderOnlineDotStyle}"/>
                         </StackPanel>
 
@@ -348,7 +331,6 @@
                     </StackPanel>
                 </Grid>
 
-                <!-- Right -->
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button Style="{StaticResource GhostButton}"
                             Content="Открыть сайт"
@@ -374,7 +356,6 @@
             </Grid>
         </Border>
 
-        <!-- Body -->
         <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="1.05*"/>
@@ -382,14 +363,12 @@
                 <ColumnDefinition Width="1*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- Left -->
             <Border Grid.Column="0" Style="{StaticResource CardStyle}">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel>
 
                         <TextBlock Text="Профиль" Style="{StaticResource SectionHeaderText}"/>
 
-                        <!-- ===== ХАРАКТЕРИСТИКИ ===== -->
                         <Border Margin="0,14,0,0" Style="{StaticResource InnerCardStyle}">
                             <Grid>
                                 <Grid.RowDefinitions>
@@ -460,7 +439,6 @@
                             </Grid>
                         </Border>
 
-                        <!-- ===== ДРУЗЬЯ ===== -->
                         <Border Margin="0,14,0,0" Style="{StaticResource InnerCardStyle}">
                             <Grid>
                                 <Grid.RowDefinitions>
@@ -507,7 +485,6 @@
                                              ItemTemplate="{StaticResource FriendRowTemplate}"
                                              MouseDoubleClick="FriendsList_OnMouseDoubleClick"/>
 
-                                    <!-- Empty -->
                                     <Border Background="#0C000000"
                                             BorderBrush="#2A2F49"
                                             BorderThickness="1"
@@ -537,7 +514,6 @@
                                         </StackPanel>
                                     </Border>
 
-                                    <!-- Overlay: нет токена -->
                                     <Border Background="#A0000000"
                                             CornerRadius="16"
                                             Padding="12">
@@ -568,7 +544,6 @@
                 </ScrollViewer>
             </Border>
 
-            <!-- Right: заглушка скина -->
             <Border Grid.Column="2" Style="{StaticResource CardStyle}">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel>
