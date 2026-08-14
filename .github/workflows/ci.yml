@@ -67,6 +67,22 @@ jobs:
           if ($source -notmatch 'if \(IsAlwaysProtectedMutable\(rel\)\) continue;') { throw "Manifest delete guard missing." }
           if ($source -notmatch '!IsAlwaysProtectedMutable\(r\)') { throw "Prune guard missing." }
 
+      - name: Verify debug-only local pack policy
+        shell: pwsh
+        run: |
+          $debugPack = Get-Content -Raw -Path "Services/LocalPackDebugService.cs"
+          $launch = Get-Content -Raw -Path "ViewModels/MainViewModel.Launch.cs"
+          $first = (Get-Content -Path "Services/LocalPackDebugService.cs" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1).Trim()
+          $last = (Get-Content -Path "Services/LocalPackDebugService.cs" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1).Trim()
+          if ($first -ne '#if DEBUG' -or $last -ne '#endif') { throw "LocalPackDebugService must be compiled only in DEBUG." }
+          foreach ($required in @('LEGENDBORN_DEV_PACK_MANIFEST_PATH','LEGENDBORN_DEV_GAME_DIR','exactly one manifest file','mods/<name>.jar','SHA-256 mismatch','https')) {
+            if (-not $debugPack.Contains($required)) { throw "Debug local pack safeguard missing: $required" }
+          }
+          foreach ($required in @('LocalPackDebugService.IsEnabled','LocalPackDebugService.ApplyAsync','syncProductionPack = false')) {
+            if (-not $launch.Contains($required)) { throw "Debug launch integration missing: $required" }
+          }
+          if ($debugPack.Contains('manifest-presign') -or $debugPack.Contains('liveUploadUrl')) { throw "Debug local pack path must never publish a live manifest." }
+
       - name: Verify launcher auth contract policy
         shell: pwsh
         run: |
@@ -161,8 +177,11 @@ jobs:
       - name: Restore win-x64
         run: dotnet restore LegendBorn.csproj -r win-x64
 
-      - name: Build (warnings are errors)
-        run: dotnet build LegendBorn.csproj -c Release --no-restore -warnaserror
+      - name: Build Debug local-pack path (warnings are errors)
+        run: dotnet build LegendBorn.csproj -c Debug -r win-x64 --no-restore -warnaserror
+
+      - name: Build Release (warnings are errors)
+        run: dotnet build LegendBorn.csproj -c Release -r win-x64 --no-restore -warnaserror
 
       - name: Publish self-contained launcher
         run: dotnet publish LegendBorn.csproj -c Release -r win-x64 --self-contained true --no-restore -o artifacts/publish
