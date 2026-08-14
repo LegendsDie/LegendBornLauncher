@@ -22,8 +22,6 @@ public sealed partial class MainViewModel : ObservableObject
     internal const string SitePublicUrlPrimary = "https://legendborn.xyz";
     internal const string SitePublicUrlFallback = "https://ru.legendborn.xyz";
 
-    private const string DefaultServerIp = "";
-
     private const int MenuMinIndex = 0;
     private const int MenuMaxIndex = 4; // 0..4 (включая News)
 
@@ -35,7 +33,6 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly LogService _log;
 
     private readonly MinecraftService _mc;
-    private readonly ServerListService _servers = new();
     private readonly SiteAuthService _site = new();
     private readonly TokenStore _tokenStore;
 
@@ -416,7 +413,7 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
-    private string _serverIp = DefaultServerIp;
+    private string _serverIp = "";
     public string ServerIp
     {
         get => _serverIp;
@@ -610,8 +607,7 @@ public sealed partial class MainViewModel : ObservableObject
 
         try
         {
-            var ip = (_config.Current.LastServerIp ?? DefaultServerIp).Trim();
-            _serverIp = string.IsNullOrWhiteSpace(ip) ? DefaultServerIp : ip;
+            _serverIp = (_config.Current.LastServerIp ?? "").Trim();
             Raise(nameof(ServerIp));
 
             var ramFromCfg = _config.Current.RamMb;
