@@ -69,6 +69,7 @@ public sealed class MinecraftService
         "defaultconfigs/",
         "kubejs/",
         "mods/",
+        "scripts/",
         "resourcepacks/",
         "shaderpacks/",
     };
@@ -97,6 +98,7 @@ public sealed class MinecraftService
     {
         "mods/",
         "kubejs/",
+        "scripts/",
     };
 
     // =========================
@@ -819,7 +821,7 @@ private void SanitizeJavaEnvironment(Process process)
         // ===== prune roots =====
         var rootsRaw = new List<string>();
 
-        // (1) авто-prune всегда для mods/kubejs
+        // (1) авто-prune всегда для mods/kubejs/scripts
         rootsRaw.AddRange(DefaultAutoPrunePrefixes);
 
         // (2) первичная установка: можно привести config/defaultconfigs к манифесту

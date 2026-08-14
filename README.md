@@ -70,12 +70,12 @@ Pack sync использует manifest, SHA-256, зеркала/fallback, ат�
 
 Политика каталогов:
 
-- `mods/` и `kubejs/` — managed и могут синхронизироваться/prune'иться по manifest;
+- `mods/`, `kubejs/` и `scripts/` — managed и могут синхронизироваться/prune'иться по manifest;
 - `config/` и `defaultconfigs/` — **seed-only**: отсутствующий manifest-файл можно восстановить, существующий пользовательский файл нельзя перезаписать или удалить;
 - `resourcepacks/` и `shaderpacks/` — user-mutable и не подвергаются destructive sync;
 - потеря или повреждение `launcher/pack_state.json` не должна менять эти правила.
 
-CI отдельно проверяет наличие seed-only/user-mutable префиксов и защиту от manifest delete/prune.
+CI отдельно проверяет наличие destructive-managed, seed-only/user-mutable префиксов и защиту от manifest delete/prune.
 
 ## Обновление и production release лаунчера
 
