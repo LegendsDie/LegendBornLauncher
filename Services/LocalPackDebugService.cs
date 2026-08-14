@@ -102,7 +102,7 @@ internal static class LocalPackDebugService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
         if (normalizedMirrors.Length == 0)
-            throw new InvalidOperationException("Local pack smoke-test has no HTTPS pack mirror.");
+            throw new InvalidOperationException("Local pack smoke-test has no https pack mirror.");
 
         var gameRoot = Path.GetFullPath(gameDir);
         var modsDir = Path.Combine(gameRoot, "mods");
@@ -259,7 +259,7 @@ internal static class LocalPackDebugService
     private static string NormalizeHttpsBaseUrl(string? value)
     {
         if (!Uri.TryCreate((value ?? string.Empty).Trim(), UriKind.Absolute, out var uri) ||
-            !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            !uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
             return string.Empty;
         var builder = new UriBuilder(uri) { Query = string.Empty, Fragment = string.Empty };
         if (!builder.Path.EndsWith('/')) builder.Path += "/";
