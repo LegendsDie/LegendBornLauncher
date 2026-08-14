@@ -24,6 +24,9 @@ public sealed partial class MainViewModel
         "https://downloads.sourceforge.net/project/legendborn-pack/launcher/pack/"
     };
 
+    private MinecraftService? _runningMinecraftService;
+    private string? _runningMinecraftGameDir;
+
     private static bool IsSelectel(string? url)
         => !string.IsNullOrWhiteSpace(url) &&
            (url.Contains("selstorage.ru", StringComparison.OrdinalIgnoreCase) ||
@@ -75,11 +78,11 @@ public sealed partial class MainViewModel
     /// The current flow uses only a short-lived one-time join-ticket via .legendcore/session.json.
     /// Remove only the known legacy credential files; never delete the whole mod directory.
     /// </summary>
-    private void CleanupLegacyGameAuthFiles()
+    private void CleanupLegacyGameAuthFiles(string? gameDir = null)
     {
         try
         {
-            var dir = Path.Combine(_gameDir, "legendborn");
+            var dir = Path.Combine(gameDir ?? _gameDir, "legendborn");
             var names = new[]
             {
                 "auth.token",
@@ -168,11 +171,29 @@ public sealed partial class MainViewModel
             return;
 
         var launched = false;
+        var launchMc = _mc;
+        var launchGameDir = _gameDir;
+
+#if DEBUG
+        if (LocalPackDebugService.IsEnabled)
+        {
+            launchGameDir = LocalPackDebugService.ResolveGameDirOverride()
+                ?? Path.Combine(LauncherPaths.LocalDir, "dev-pack-test");
+            Directory.CreateDirectory(launchGameDir);
+
+            launchMc = new MinecraftService(launchGameDir);
+            launchMc.Log += (_, line) => AppendLog(line);
+            launchMc.ProgressPercent += (_, p) => OnMinecraftProgress(p);
+
+            AppendLog("DEV pack: Debug-only local manifest mode enabled.");
+            AppendLog($"DEV pack: production game dir is untouched; using {launchGameDir}");
+        }
+#endif
 
         try
         {
-            CleanupLegacyGameAuthFiles();
-            _mc.ClearLegendCoreSession();
+            CleanupLegacyGameAuthFiles(launchGameDir);
+            launchMc.ClearLegendCoreSession();
 
             var username = (Username ?? "Player").Trim();
             if (string.IsNullOrWhiteSpace(username)) username = "Player";
@@ -203,17 +224,38 @@ public sealed partial class MainViewModel
             StatusText = $"Подготовка {BuildDisplayName}...";
             ProgressPercent = 0;
 
-            var mirrors = await PackMirrorPreflightService.OrderByFreshnessAsync(
-                BuildPackMirrors(s),
-                log: AppendLog,
-                ct: _lifetimeCts.Token);
+            var configuredMirrors = BuildPackMirrors(s);
+            string[] mirrors;
+            var syncProductionPack = s.SyncPack;
+
+#if DEBUG
+            if (LocalPackDebugService.IsEnabled)
+            {
+                mirrors = configuredMirrors;
+                StatusText = "Применяем локальный manifest одного мода...";
+                await LocalPackDebugService.ApplyAsync(
+                    launchGameDir,
+                    mirrors,
+                    log: AppendLog,
+                    ct: _lifetimeCts.Token).ConfigureAwait(false);
+                syncProductionPack = false;
+            }
+            else
+#endif
+            {
+                mirrors = await PackMirrorPreflightService.OrderByFreshnessAsync(
+                    configuredMirrors,
+                    log: AppendLog,
+                    ct: _lifetimeCts.Token);
+            }
+
             var loader = CreateLoaderSpecFromServer(s);
 
-            var launchVersionId = await _mc.PrepareAsync(
+            var launchVersionId = await launchMc.PrepareAsync(
                 minecraftVersion: s.MinecraftVersion,
                 loader: loader,
                 packMirrors: mirrors,
-                syncPack: s.SyncPack,
+                syncPack: syncProductionPack,
                 ct: _lifetimeCts.Token);
 
             InvokeOnUi(() =>
@@ -304,16 +346,18 @@ public sealed partial class MainViewModel
 
             StatusText = "Запуск игры...";
 
-            _runningProcess = await _mc.BuildAndLaunchAsync(
+            _runningProcess = await launchMc.BuildAndLaunchAsync(
                 version: launchVersionId,
                 username: username,
                 ramMb: ram,
                 serverIp: ipForAutoJoin,
                 session: gameSession);
 
+            _runningMinecraftService = launchMc;
+            _runningMinecraftGameDir = launchGameDir;
             launched = true;
 
-            HookProcessExited(_runningProcess);
+            HookProcessExited(_runningProcess, launchMc, launchGameDir);
 
             Raise(nameof(CanStop));
             StopGameCommand.RaiseCanExecuteChanged();
@@ -341,23 +385,23 @@ public sealed partial class MainViewModel
 
             if (!launched)
             {
-                _mc.ClearLegendCoreSession();
-                CleanupLegacyGameAuthFiles();
+                launchMc.ClearLegendCoreSession();
+                CleanupLegacyGameAuthFiles(launchGameDir);
             }
 
             RefreshCanStates();
         }
     }
 
-    private void HookProcessExited(Process p)
+    private void HookProcessExited(Process p, MinecraftService mc, string gameDir)
     {
         try
         {
             p.EnableRaisingEvents = true;
             p.Exited += (_, __) =>
             {
-                try { _mc.ClearLegendCoreSession(); } catch { }
-                CleanupLegacyGameAuthFiles();
+                try { mc.ClearLegendCoreSession(); } catch { }
+                CleanupLegacyGameAuthFiles(gameDir);
 
                 if (_isClosing) return;
 
@@ -367,6 +411,8 @@ public sealed partial class MainViewModel
 
                     AppendLog("Игра закрыта.");
                     _runningProcess = null;
+                    _runningMinecraftService = null;
+                    _runningMinecraftGameDir = null;
 
                     Raise(nameof(CanStop));
                     StopGameCommand.RaiseCanExecuteChanged();
@@ -409,7 +455,8 @@ public sealed partial class MainViewModel
     {
         try
         {
-            Process.Start(new ProcessStartInfo { FileName = _gameDir, UseShellExecute = true });
+            var dir = _runningMinecraftGameDir ?? _gameDir;
+            Process.Start(new ProcessStartInfo { FileName = dir, UseShellExecute = true });
         }
         catch (Exception ex)
         {
@@ -435,8 +482,12 @@ public sealed partial class MainViewModel
         {
             _runningProcess = null;
 
-            try { _mc.ClearLegendCoreSession(); } catch { }
-            CleanupLegacyGameAuthFiles();
+            var mc = _runningMinecraftService ?? _mc;
+            var gameDir = _runningMinecraftGameDir ?? _gameDir;
+            try { mc.ClearLegendCoreSession(); } catch { }
+            CleanupLegacyGameAuthFiles(gameDir);
+            _runningMinecraftService = null;
+            _runningMinecraftGameDir = null;
 
             Raise(nameof(CanStop));
             StopGameCommand.RaiseCanExecuteChanged();
