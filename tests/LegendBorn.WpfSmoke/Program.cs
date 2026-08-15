@@ -5,13 +5,13 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using LegendBorn.Views.Tabs;
 
+public sealed class ReadOnlyProfileProbe
+{
+    public double ProfileXpProgressPercent => 37.5;
+}
+
 internal static class Program
 {
-    private sealed class ReadOnlyProfileProbe
-    {
-        public double ProfileXpProgressPercent => 37.5;
-    }
-
     [STAThread]
     private static int Main()
     {
