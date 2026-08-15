@@ -160,8 +160,8 @@
                                     </StackPanel>
                                 </Border>
                             </Grid>
-                            <ProgressBar Margin="0,14,0,0" Height="7" Minimum="0" Maximum="100"
-                                         Value="{Binding ProfileXpProgressPercent, Mode=OneWay}"/>
+                            <ProgressBar x:Name="ProfileXpProgressBar"
+                                         Margin="0,14,0,0" Height="7" Minimum="0" Maximum="100"/>
                         </StackPanel>
                     </Border>
 
