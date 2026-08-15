@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Data;
 using System.Windows.Input;
 using LegendBorn.ViewModels;
 
@@ -15,7 +17,60 @@ public partial class ProfileTabView : UserControl
     public ProfileTabView()
     {
         InitializeComponent();
+        InstallProfileProgressBinding();
         Loaded += OnLoaded;
+    }
+
+    /// <summary>
+    /// RangeBase.Value binds TwoWay by default. The XAML binding is intentionally replaced
+    /// before this view inherits MainViewModel as its DataContext so WPF can never attempt
+    /// source write-back against the read-only ProfileXpProgressPercent presentation property.
+    /// Keeping the property read-only is important: XP remains server-owned state, not UI input.
+    /// </summary>
+    private void InstallProfileProgressBinding()
+    {
+        var progress = FindProfileProgressBar(this);
+        if (progress is null)
+            throw new InvalidOperationException("Profile XP progress bar binding target was not found.");
+
+        BindingOperations.SetBinding(
+            progress,
+            RangeBase.ValueProperty,
+            new Binding(nameof(MainViewModel.ProfileXpProgressPercent))
+            {
+                Mode = BindingMode.OneWay
+            });
+
+        var installed = BindingOperations.GetBinding(progress, RangeBase.ValueProperty);
+        if (installed?.Mode != BindingMode.OneWay)
+            throw new InvalidOperationException("Profile XP progress binding was not installed as OneWay.");
+    }
+
+    private static ProgressBar? FindProfileProgressBar(DependencyObject root)
+    {
+        foreach (var child in LogicalTreeHelper.GetChildren(root))
+        {
+            if (child is ProgressBar progress)
+            {
+                var binding = BindingOperations.GetBinding(progress, RangeBase.ValueProperty);
+                if (string.Equals(
+                        binding?.Path?.Path,
+                        nameof(MainViewModel.ProfileXpProgressPercent),
+                        StringComparison.Ordinal))
+                {
+                    return progress;
+                }
+            }
+
+            if (child is DependencyObject dependencyObject)
+            {
+                var nested = FindProfileProgressBar(dependencyObject);
+                if (nested is not null)
+                    return nested;
+            }
+        }
+
+        return null;
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
