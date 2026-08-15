@@ -12,61 +12,49 @@ namespace LegendBorn.ViewModels;
 
 public sealed partial class MainViewModel
 {
-    // Russia-friendly emergency default. Normal launches receive mirrors from the authoritative
-    // server catalog; this value exists only for an old cached ServerEntry migration edge case.
+    // Emergency-only fallback for an old cached ServerEntry that has no usable HTTPS pack mirrors.
+    // Normal launches must use exactly the mirrors advertised by the authoritative server catalog.
     private const string DefaultPackBaseUrl =
         "https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/pack/";
-
-    private static readonly string[] DefaultPackFallbackMirrors =
-    {
-        "https://pack.legendborn.ru/launcher/pack/",
-        "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/pack/",
-        "https://downloads.sourceforge.net/project/legendborn-pack/launcher/pack/"
-    };
 
     private MinecraftService? _runningMinecraftService;
     private string? _runningMinecraftGameDir;
 
-    private static bool IsSelectel(string? url)
-        => !string.IsNullOrWhiteSpace(url) &&
-           (url.Contains("selstorage.ru", StringComparison.OrdinalIgnoreCase) ||
-            url.Contains("selcloud.ru", StringComparison.OrdinalIgnoreCase));
-
-    private static bool IsLegendbornPackHost(string? url)
-        => !string.IsNullOrWhiteSpace(url) &&
-           url.Contains("pack.legendborn.ru", StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsSourceForgeMaster(string? url)
-        => !string.IsNullOrWhiteSpace(url) &&
-           url.Contains("master.dl.sourceforge.net", StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsSourceForgeDownloads(string? url)
-        => !string.IsNullOrWhiteSpace(url) &&
-           url.Contains("downloads.sourceforge.net", StringComparison.OrdinalIgnoreCase);
-
-    private static int PackMirrorRank(string url)
+    private static string NormalizePackMirror(string? value)
     {
-        if (IsSelectel(url)) return 0;
-        if (IsLegendbornPackHost(url)) return 1;
-        if (IsSourceForgeMaster(url)) return 2;
-        if (IsSourceForgeDownloads(url)) return 3;
-        return 4;
+        var text = (value ?? "").Trim();
+        if (!Uri.TryCreate(text, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
+            return "";
+
+        var builder = new UriBuilder(uri)
+        {
+            Query = "",
+            Fragment = ""
+        };
+
+        if (!builder.Path.EndsWith("/", StringComparison.Ordinal))
+            builder.Path += "/";
+
+        return builder.Uri.ToString();
     }
 
     private static string[] BuildPackMirrors(ServerEntry s)
     {
-        var all = new[] { EnsureSlash(s.PackBaseUrl) }
-            .Concat((s.PackMirrors ?? Array.Empty<string>()).Select(EnsureSlash))
-            .Concat(DefaultPackFallbackMirrors.Select(EnsureSlash))
+        var catalogMirrors = new[] { s.PackBaseUrl }
+            .Concat(s.PackMirrors ?? Array.Empty<string>())
+            .Select(NormalizePackMirror)
             .Where(static url => !string.IsNullOrWhiteSpace(url))
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(PackMirrorRank)
-            .ToList();
+            .ToArray();
 
-        if (all.Count == 0)
-            all.Add(EnsureSlash(DefaultPackBaseUrl));
+        if (catalogMirrors.Length > 0)
+            return catalogMirrors;
 
-        return all.ToArray();
+        // Fail closed to one first-party emergency source for legacy cached entries instead of
+        // silently re-introducing mirrors that the live catalog intentionally stopped advertising.
+        return new[] { NormalizePackMirror(DefaultPackBaseUrl) }
+            .Where(static url => !string.IsNullOrWhiteSpace(url))
+            .ToArray();
     }
 
     // =========================
@@ -442,10 +430,14 @@ public sealed partial class MainViewModel
 
         if (string.IsNullOrWhiteSpace(installerUrl))
         {
-            // Exact SourceForge fallback, not official Maven and never /latest/download.
-            installerUrl =
-                $"https://downloads.sourceforge.net/project/legendborn-neoforge/neoforge/" +
-                $"neoforge-{Uri.EscapeDataString(loaderVer)}-installer.jar";
+            if (!NeoForgeDistributionBootstrap.TryResolve(loaderVer, out var distribution) ||
+                string.IsNullOrWhiteSpace(distribution.InstallerUrl))
+            {
+                throw new InvalidOperationException(
+                    $"Для NeoForge {loaderVer} отсутствует доверенный installer URL из server catalog.");
+            }
+
+            installerUrl = distribution.InstallerUrl;
         }
 
         return new MinecraftService.LoaderSpec(loaderType, loaderVer, installerUrl);
