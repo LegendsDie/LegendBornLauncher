@@ -12,9 +12,10 @@ internal static class Program
     [STAThread]
     private static int Main()
     {
-        // This is a separate executable assembly, so LegendBorn's App.xaml relative
-        // ResourceDictionary URIs would otherwise resolve against the smoke-test assembly.
-        // Load the exact production dictionaries explicitly from LegendBorn.dll.
+        // Make pack://application:,,,/... resolve exactly as it does when LegendBorn.exe
+        // is the entry assembly, even though this smoke test is a separate executable.
+        Application.ResourceAssembly = typeof(MainWindow).Assembly;
+
         var app = new Application
         {
             ShutdownMode = ShutdownMode.OnExplicitShutdown
