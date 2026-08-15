@@ -79,7 +79,7 @@ jobs:
             if (-not $debugPack.Contains($required)) { throw "Debug local pack safeguard missing: $required" }
           }
           foreach ($required in @('LocalPackDebugService.IsEnabled','LocalPackDebugService.ApplyAsync','syncProductionPack = false')) {
-            if (-not $launch.Contains($required)) { throw "Debug launch integration missing: $required" }
+            if (-not $launch.Contains($required)) { throw "Debug local pack integration missing: $required" }
           }
           if ($debugPack.Contains('manifest-presign') -or $debugPack.Contains('liveUploadUrl')) { throw "Debug local pack path must never publish a live manifest." }
 
@@ -206,13 +206,16 @@ jobs:
           }
 
           if (-not $profileXaml.Contains('x:Name="ProfileXpProgressBar"')) {
-            throw "Profile XP progress control must keep its explicit runtime-binding target name."
+            throw "Profile XP progress control must keep its explicit manual-update target name."
           }
           if ($profileXaml.Contains('ProfileXpProgressPercent')) {
-            throw "ProfileXpProgressPercent must not be bound from compiled XAML/BAML."
+            throw "ProfileXpProgressPercent must never return to compiled XAML/BAML."
           }
-          foreach ($required in @('BindingOperations.SetBinding','ProfileXpProgressBar','RangeBase.ValueProperty','nameof(MainViewModel.ProfileXpProgressPercent)','Mode = BindingMode.OneWay')) {
-            if (-not $profileCode.Contains($required)) { throw "Runtime profile XP OneWay binding guard missing: $required" }
+          foreach ($required in @('DataContextChanged += OnDataContextChanged','PropertyChanged += OnProfileProgressPropertyChanged','PropertyChanged -= OnProfileProgressPropertyChanged','ProfileXpProgressBar.Value =','nameof(MainViewModel.ProfileXpProgressPercent)')) {
+            if (-not $profileCode.Contains($required)) { throw "Manual profile XP presentation guard missing: $required" }
+          }
+          foreach ($forbidden in @('BindingOperations.SetBinding','new Binding(nameof(MainViewModel.ProfileXpProgressPercent))','RangeBase.ValueProperty')) {
+            if ($profileCode.Contains($forbidden)) { throw "Profile XP must not use WPF BindingEngine: $forbidden" }
           }
           if (-not $startXaml.Contains('Value="{Binding ProgressPercent, Mode=OneWay}"')) {
             throw "Start progress binding must remain explicitly OneWay."
@@ -237,10 +240,10 @@ jobs:
       - name: Build Debug local-pack path (warnings are errors)
         run: dotnet build LegendBorn.csproj -c Debug -r win-x64 --no-restore -warnaserror
 
-      - name: Build WPF binding runtime smoke (warnings are errors)
+      - name: Build WPF profile XP runtime smoke (warnings are errors)
         run: dotnet build tests/LegendBorn.WpfSmoke/LegendBorn.WpfSmoke.csproj -c Debug -r win-x64 --no-restore -warnaserror
 
-      - name: Run WPF binding runtime smoke
+      - name: Run WPF profile XP runtime smoke
         run: dotnet run --project tests/LegendBorn.WpfSmoke/LegendBorn.WpfSmoke.csproj -c Debug -r win-x64 --no-build --no-restore
 
       - name: Build Release (warnings are errors)
