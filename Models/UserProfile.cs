@@ -1,38 +1,84 @@
+using System;
+
 namespace LegendBorn.Models;
 
 public sealed class UserProfile
 {
-    // cuid / uuid
     public string Id { get; set; } = "";
-
-    // может быть 0/не задан в каких-то средах — safer как nullable
     public int? PublicId { get; set; }
-
-    // "USER" | "ADMIN" | ...
     public string Role { get; set; } = "USER";
-
-    // то, что показываем в лаунчере
     public string UserName { get; set; } = "Unknown";
-
-    // ник для Minecraft (может прийти пустым)
     public string? MinecraftName { get; set; }
-
-    // ссылки с сайта
+    public string? ServerNick { get; set; }
     public string? AvatarUrl { get; set; }
     public string? BannerImage { get; set; }
     public string? ProfileThemeKey { get; set; }
-
-    // приходит строкой/JSON из БД на сайте (raw JSON-string)
     public string? FeaturedAchievements { get; set; }
-
-    // баланс
     public long Rezonite { get; set; }
-
-    // доступ к игре + причина
     public bool CanPlay { get; set; } = true;
     public string? Reason { get; set; }
 
-    // ===== Release-safe helpers =====
+    // /api/launcher/me already exposes these snapshots. Modeling them here prevents the launcher
+    // from throwing away useful social/profile state and keeps display data on the server as source of truth.
+    public MinecraftSnapshot? Minecraft { get; set; }
+    public ClanSnapshot? Clan { get; set; }
+    public ProgressionSnapshot? Progression { get; set; }
+    public SocialSnapshot? Social { get; set; }
+
+    public sealed class MinecraftSnapshot
+    {
+        public string? Uuid { get; set; }
+        public string? Username { get; set; }
+        public string? ServerNick { get; set; }
+        public string? EffectiveServerNick { get; set; }
+        public bool IsLinked { get; set; }
+        public string? SelectedSkinKey { get; set; }
+        public SkinSnapshot? SelectedSkin { get; set; }
+    }
+
+    public sealed class SkinSnapshot
+    {
+        public string? Title { get; set; }
+        public string? PreviewUrl { get; set; }
+        public string? SkinUrl { get; set; }
+        public bool IsEnabled { get; set; }
+    }
+
+    public sealed class ClanSnapshot
+    {
+        public string? Key { get; set; }
+        public string? Name { get; set; }
+        public string? Description { get; set; }
+        public string? EmblemUrl { get; set; }
+        public string? ColorHex { get; set; }
+        public ClanRankSnapshot? Rank { get; set; }
+        public DateTimeOffset? JoinedAt { get; set; }
+    }
+
+    public sealed class ClanRankSnapshot
+    {
+        public string? Key { get; set; }
+        public string? Name { get; set; }
+        public int Level { get; set; }
+        public bool IsLeader { get; set; }
+    }
+
+    public sealed class ProgressionSnapshot
+    {
+        public long XpTotal { get; set; }
+        public long XpSeason { get; set; }
+        public int Level { get; set; } = 1;
+        public long XpIntoLevel { get; set; }
+        public long XpForNext { get; set; }
+        public double XpProgress { get; set; }
+    }
+
+    public sealed class SocialSnapshot
+    {
+        public int FriendsCount { get; set; }
+        public int PendingFriendRequests { get; set; }
+        public int UnreadNotifications { get; set; }
+    }
 
     public string SafeId => (Id ?? "").Trim();
 
@@ -58,7 +104,7 @@ public sealed class UserProfile
     {
         get
         {
-            var n = (MinecraftName ?? "").Trim();
+            var n = (MinecraftName ?? Minecraft?.Username ?? "").Trim();
             return string.IsNullOrWhiteSpace(n) ? null : n;
         }
     }
@@ -83,20 +129,9 @@ public sealed class UserProfile
 
     public bool HasAvatar => SafeAvatarUrl is not null;
     public bool HasBanner => SafeBannerImage is not null;
-
-    /// <summary>
-    /// Удобно для UI: гарантированно отдаёт имя
-    /// </summary>
     public string DisplayName => SafeUserName;
-
-    /// <summary>
-    /// Удобно для MC: если MinecraftName пустой — берём DisplayName
-    /// </summary>
     public string EffectiveMinecraftName => SafeMinecraftName ?? DisplayName;
 
-    /// <summary>
-    /// Полезно для UI: если доступ запрещён — вернуть человекочитаемую причину
-    /// </summary>
     public string DenyReason
     {
         get
