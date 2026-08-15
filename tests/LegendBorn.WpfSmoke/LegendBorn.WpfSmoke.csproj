@@ -13,4 +13,14 @@
     <ProjectReference Include="..\..\LegendBorn.csproj" />
   </ItemGroup>
 
+  <!-- MainWindow uses pack://application:,,,/Resources/Assets/... URIs. Because this
+       smoke test is the entry assembly, mirror the production assets into the same
+       resource paths so the real MainWindow can be instantiated without changing it. -->
+  <ItemGroup>
+    <Resource Include="..\..\Resources\Assets\launcherstart.png" Link="Resources\Assets\launcherstart.png" />
+    <Resource Include="..\..\Resources\Assets\legendcraft.jpg" Link="Resources\Assets\legendcraft.jpg" />
+    <Resource Include="..\..\Resources\Assets\legendcraft.png" Link="Resources\Assets\legendcraft.png" />
+    <Resource Include="..\..\Resources\Assets\logolauncher.png" Link="Resources\Assets\logolauncher.png" />
+  </ItemGroup>
+
 </Project>
