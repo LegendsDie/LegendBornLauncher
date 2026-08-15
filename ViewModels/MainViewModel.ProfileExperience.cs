@@ -31,7 +31,7 @@ public sealed partial class MainViewModel
 
     public sealed class ClanBrowserEntry
     {
-        public string Id { get; init; } = "";
+        public string Id { get; init; } = ""; // public clan key; never the DB id
         public string Name { get; init; } = "";
         public string Tag { get; init; } = "";
         public string? AvatarUrl { get; init; }
@@ -42,23 +42,13 @@ public sealed partial class MainViewModel
 
     public sealed class ClanMemberEntry
     {
+        public string UserId { get; init; } = "";
         public int? PublicId { get; init; }
         public string Name { get; init; } = "Без имени";
-        public string Role { get; init; } = "MEMBER";
+        public string RoleText { get; init; } = "Участник";
         public string? AvatarUrl { get; init; }
-        public string Presence { get; init; } = "offline";
-        public string? ServerKey { get; init; }
+        public string PresenceText { get; init; } = "оффлайн";
         public string Initial => string.IsNullOrWhiteSpace(Name) ? "?" : Name.Trim()[..1].ToUpperInvariant();
-        public bool IsOnline => !Presence.Equals("offline", StringComparison.OrdinalIgnoreCase);
-        public string PresenceText => IsOnline
-            ? string.IsNullOrWhiteSpace(ServerKey) ? "в сети" : $"в сети • {ServerKey}"
-            : "оффлайн";
-        public string RoleText => Role.ToUpperInvariant() switch
-        {
-            "OWNER" => "Владелец",
-            "OFFICER" => "Офицер",
-            _ => "Участник"
-        };
     }
 
     public ObservableCollection<FriendEntry> FilteredFriends { get; } = new();
@@ -73,8 +63,7 @@ public sealed partial class MainViewModel
         get => _friendSearchText;
         set
         {
-            if (Set(ref _friendSearchText, value ?? ""))
-                RebuildFilteredFriends();
+            if (Set(ref _friendSearchText, value ?? "")) RebuildFilteredFriends();
         }
     }
 
@@ -84,8 +73,7 @@ public sealed partial class MainViewModel
         get => _friendRequestQuery;
         set
         {
-            if (Set(ref _friendRequestQuery, value ?? ""))
-                RefreshProfileExperienceCanStates();
+            if (Set(ref _friendRequestQuery, value ?? "")) RefreshProfileExperienceCanStates();
         }
     }
 
@@ -116,7 +104,6 @@ public sealed partial class MainViewModel
     private string _clanRole = "";
     private string? _clanAvatarUrl;
     private int _clanMemberCount;
-    private long _clanTreasury;
 
     public string ClanId => _clanId;
     public string ClanName => string.IsNullOrWhiteSpace(_clanName) ? "Нет клана" : _clanName;
@@ -124,15 +111,15 @@ public sealed partial class MainViewModel
     public string ClanRole => _clanRole;
     public string? ClanAvatarUrl => NormalizePublicUrl(_clanAvatarUrl);
     public int ClanMemberCount => _clanMemberCount;
-    public long ClanTreasury => _clanTreasury;
+    public long ClanTreasury => 0; // current launcher clan API does not expose treasury
     public bool HasClan => !string.IsNullOrWhiteSpace(_clanId) || Profile?.Clan is not null;
-    public bool CanLeaveClan => HasClan && !_clanRole.Equals("OWNER", StringComparison.OrdinalIgnoreCase);
+    public bool CanLeaveClan => HasClan;
     public string ClanRoleText => _clanRole.ToUpperInvariant() switch
     {
         "OWNER" => "Владелец",
         "OFFICER" => "Офицер",
         "MEMBER" => "Участник",
-        _ => Profile?.Clan?.Rank?.Name ?? ""
+        _ => string.IsNullOrWhiteSpace(_clanRole) ? Profile?.Clan?.Rank?.Name ?? "" : _clanRole
     };
 
     private int _profileLevel = 1;
@@ -167,18 +154,16 @@ public sealed partial class MainViewModel
     {
         get
         {
-            var skin = Profile?.Minecraft?.SelectedSkin;
-            var title = (skin?.Title ?? "").Trim();
-            return string.IsNullOrWhiteSpace(title) ? "Стандартный образ" : title;
+            var title = (Profile?.Minecraft?.SelectedSkin?.Title ?? "").Trim();
+            return title.Length == 0 ? "Стандартный образ" : title;
         }
     }
 
     public string SelectedSkinKey => (Profile?.Minecraft?.SelectedSkinKey ?? "").Trim();
-    public string? SkinPreviewUrl => NormalizePublicUrl(
-        Profile?.Minecraft?.SelectedSkin?.PreviewUrl ?? Profile?.Minecraft?.SelectedSkin?.SkinUrl);
+    public string? SkinPreviewUrl => NormalizePublicUrl(Profile?.Minecraft?.SelectedSkin?.PreviewUrl ?? Profile?.Minecraft?.SelectedSkin?.SkinUrl);
     public bool HasSelectedSkin => Profile?.Minecraft?.SelectedSkin is not null;
     public string SkinStatusText => Profile?.Minecraft?.IsLinked == true
-        ? HasSelectedSkin ? "Активный образ синхронизирован с аккаунтом." : "Minecraft привязан. Можно выбрать образ на сайте."
+        ? HasSelectedSkin ? "Активный образ синхронизирован с аккаунтом." : "Minecraft привязан. Образ можно выбрать на странице Minecraft."
         : "Сначала привяжите Minecraft-аккаунт.";
 
     private AsyncRelayCommand? _refreshProfileExperienceCommand;
@@ -200,11 +185,11 @@ public sealed partial class MainViewModel
         () => !_isClosing && IsLoggedIn && HasSiteToken && !_isFriendActionBusy && !string.IsNullOrWhiteSpace(FriendRequestQuery));
 
     public AsyncRelayCommand<FriendRequestEntry> AcceptFriendRequestCommand => _acceptFriendRequestCommand ??= new AsyncRelayCommand<FriendRequestEntry>(
-        AcceptFriendRequestAsync,
+        item => MutateFriendRequestAsync(item, true),
         item => !_isClosing && IsLoggedIn && HasSiteToken && !_isFriendActionBusy && item is not null);
 
     public AsyncRelayCommand<FriendRequestEntry> DeclineFriendRequestCommand => _declineFriendRequestCommand ??= new AsyncRelayCommand<FriendRequestEntry>(
-        DeclineFriendRequestAsync,
+        item => MutateFriendRequestAsync(item, false),
         item => !_isClosing && IsLoggedIn && HasSiteToken && !_isFriendActionBusy && item is not null);
 
     public AsyncRelayCommand<FriendEntry> RemoveFriendCommand => _removeFriendCommand ??= new AsyncRelayCommand<FriendEntry>(
@@ -224,14 +209,12 @@ public sealed partial class MainViewModel
         () => !_isClosing && IsLoggedIn && HasSiteToken && !_isClanBusy && CanLeaveClan);
 
     public RelayCommand OpenSkinManagerCommand => _openSkinManagerCommand ??= new RelayCommand(
-        () => OpenProfileWebPath("minecraft/skin"),
+        () => OpenProfileWebPath("minecraft"),
         () => !_isClosing && IsLoggedIn);
 
     private void EnsureProfileExperienceHooks()
     {
-        if (Interlocked.Exchange(ref _profileExperienceHooksInitialized, 1) == 1)
-            return;
-
+        if (Interlocked.Exchange(ref _profileExperienceHooksInitialized, 1) == 1) return;
         Friends.CollectionChanged += (_, _) => RebuildFilteredFriends();
         ApplyProfileSnapshotToExperience();
         RebuildFilteredFriends();
@@ -243,7 +226,7 @@ public sealed partial class MainViewModel
         if (!TryGetAccessToken(out var token)) return;
 
         SetProfileExperienceBusy(true);
-        SocialStatusText = "Обновляю профиль и социальные данные…";
+        SetSocialStatus("Обновляю профиль…");
         try
         {
             await RefreshProfileSnapshotAsync(token).ConfigureAwait(false);
@@ -251,20 +234,15 @@ public sealed partial class MainViewModel
             await RefreshFriendRequestsAsync(token).ConfigureAwait(false);
             await RefreshClanAsync(token).ConfigureAwait(false);
             await RefreshProgressionAsync(token).ConfigureAwait(false);
-            SocialStatusText = "Профиль синхронизирован.";
+            SetSocialStatus("Профиль синхронизирован.");
         }
-        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
-        {
-        }
+        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested) { }
         catch (Exception ex)
         {
-            SocialStatusText = "Не всё удалось обновить: " + ex.Message;
+            SetSocialStatus("Не всё удалось обновить: " + ex.Message);
             AppendLog("Профиль: ошибка обновления: " + ex.Message);
         }
-        finally
-        {
-            SetProfileExperienceBusy(false);
-        }
+        finally { SetProfileExperienceBusy(false); }
     }
 
     private async Task RefreshProfileSnapshotAsync(string token)
@@ -279,10 +257,7 @@ public sealed partial class MainViewModel
                 ApplyProfileSnapshotToExperience();
             }, DispatcherPriority.DataBind);
         }
-        catch (HttpRequestException ex)
-        {
-            AppendLog("Профиль: snapshot недоступен: " + ex.Message);
-        }
+        catch (HttpRequestException ex) { AppendLog("Профиль: snapshot недоступен: " + ex.Message); }
     }
 
     private async Task RefreshFriendRequestsAsync(string token)
@@ -290,7 +265,7 @@ public sealed partial class MainViewModel
         var response = await _site.GetFriendRequestsAsync(token, _lifetimeCts.Token).ConfigureAwait(false);
         if (!response.Ok)
         {
-            SocialStatusText = response.Error ?? "Не удалось загрузить заявки в друзья.";
+            SetSocialStatus(response.Error ?? "Не удалось загрузить заявки в друзья.");
             return;
         }
 
@@ -316,33 +291,22 @@ public sealed partial class MainViewModel
         try
         {
             var response = await _site.SendFriendRequestAsync(token, query, _lifetimeCts.Token).ConfigureAwait(false);
-            SocialStatusText = response.Ok
+            SetSocialStatus(response.Ok
                 ? response.Status switch
                 {
-                    "auto_accepted" => "Вы уже были во встречной заявке — дружба подтверждена.",
+                    "auto_accepted" => "Встречная заявка найдена — дружба подтверждена.",
                     "already_sent" => "Заявка уже отправлена.",
                     _ => "Заявка в друзья отправлена."
                 }
-                : response.Error ?? response.Message ?? "Не удалось отправить заявку.";
+                : response.Error ?? response.Message ?? "Не удалось отправить заявку.");
 
-            if (response.Ok)
-            {
-                PostToUi(() => FriendRequestQuery = "");
-                await RefreshFriendsAsync().ConfigureAwait(false);
-                await RefreshFriendRequestsAsync(token).ConfigureAwait(false);
-            }
+            if (!response.Ok) return;
+            PostToUi(() => FriendRequestQuery = "");
+            await RefreshFriendsAsync().ConfigureAwait(false);
+            await RefreshFriendRequestsAsync(token).ConfigureAwait(false);
         }
-        finally
-        {
-            SetFriendActionBusy(false);
-        }
+        finally { SetFriendActionBusy(false); }
     }
-
-    private Task AcceptFriendRequestAsync(FriendRequestEntry? item)
-        => MutateFriendRequestAsync(item, accept: true);
-
-    private Task DeclineFriendRequestAsync(FriendRequestEntry? item)
-        => MutateFriendRequestAsync(item, accept: false);
 
     private async Task MutateFriendRequestAsync(FriendRequestEntry? item, bool accept)
     {
@@ -353,21 +317,14 @@ public sealed partial class MainViewModel
             var response = accept
                 ? await _site.AcceptFriendRequestAsync(token, item.UserId, _lifetimeCts.Token).ConfigureAwait(false)
                 : await _site.DeclineFriendRequestAsync(token, item.UserId, _lifetimeCts.Token).ConfigureAwait(false);
-
-            SocialStatusText = response.Ok
+            SetSocialStatus(response.Ok
                 ? accept ? $"{item.Name} добавлен в друзья." : $"Заявка от {item.Name} отклонена."
-                : response.Error ?? response.Message ?? "Операция не выполнена.";
-
-            if (response.Ok)
-            {
-                await RefreshFriendsAsync().ConfigureAwait(false);
-                await RefreshFriendRequestsAsync(token).ConfigureAwait(false);
-            }
+                : response.Error ?? response.Message ?? "Операция не выполнена.");
+            if (!response.Ok) return;
+            await RefreshFriendsAsync().ConfigureAwait(false);
+            await RefreshFriendRequestsAsync(token).ConfigureAwait(false);
         }
-        finally
-        {
-            SetFriendActionBusy(false);
-        }
+        finally { SetFriendActionBusy(false); }
     }
 
     private async Task RemoveFriendAsync(FriendEntry? item)
@@ -380,16 +337,10 @@ public sealed partial class MainViewModel
         try
         {
             var response = await _site.RemoveFriendAsync(token, userId, _lifetimeCts.Token).ConfigureAwait(false);
-            SocialStatusText = response.Ok
-                ? $"{item.Name} удалён из друзей."
-                : response.Error ?? response.Message ?? "Не удалось удалить друга.";
-            if (response.Ok)
-                await RefreshFriendsAsync().ConfigureAwait(false);
+            SetSocialStatus(response.Ok ? $"{item.Name} удалён из друзей." : response.Error ?? response.Message ?? "Не удалось удалить друга.");
+            if (response.Ok) await RefreshFriendsAsync().ConfigureAwait(false);
         }
-        finally
-        {
-            SetFriendActionBusy(false);
-        }
+        finally { SetFriendActionBusy(false); }
     }
 
     private async Task RefreshClanAsync(string token)
@@ -400,14 +351,14 @@ public sealed partial class MainViewModel
             var response = await _profileApi.GetClanAsync(token, _lifetimeCts.Token).ConfigureAwait(false);
             if (!response.Ok)
             {
-                ClanStatusText = response.Error ?? "Не удалось загрузить клан.";
+                SetClanStatus(response.Error ?? "Не удалось загрузить клан.");
                 return;
             }
 
-            ApplyClan(response.Clan);
-            if (response.Clan is null)
+            ApplyClan(response);
+            if (!response.HasClan || response.Clan is null)
             {
-                ClanStatusText = "Вы пока не состоите в клане.";
+                SetClanStatus("Вы пока не состоите в клане.");
                 return;
             }
 
@@ -419,15 +370,13 @@ public sealed partial class MainViewModel
                 {
                     ClanMembers.Clear();
                     foreach (var member in mapped) ClanMembers.Add(member);
+                    _clanMemberCount = mapped.Length;
                     Raise(nameof(ClanMemberCount));
                 }, DispatcherPriority.DataBind);
             }
-            ClanStatusText = "Клан синхронизирован.";
+            SetClanStatus("Клан синхронизирован.");
         }
-        finally
-        {
-            SetClanBusy(false);
-        }
+        finally { SetClanBusy(false); }
     }
 
     private async Task SearchClansAsync()
@@ -439,21 +388,20 @@ public sealed partial class MainViewModel
             var response = await _profileApi.SearchClansAsync(token, ClanSearchText, _lifetimeCts.Token).ConfigureAwait(false);
             if (!response.Ok)
             {
-                ClanStatusText = response.Error ?? "Не удалось найти кланы.";
+                SetClanStatus(response.Error ?? "Не удалось найти кланы.");
                 return;
             }
 
             var mapped = response.Clans
-                .Where(x => !string.IsNullOrWhiteSpace(x.Id) && !string.IsNullOrWhiteSpace(x.Name))
+                .Where(x => !string.IsNullOrWhiteSpace(x.Key) && !string.IsNullOrWhiteSpace(x.Name))
                 .Select(x => new ClanBrowserEntry
                 {
-                    Id = x.Id,
+                    Id = x.Key.Trim(),
                     Name = x.Name.Trim(),
-                    Tag = (x.Tag ?? "").Trim(),
-                    AvatarUrl = NormalizePublicUrl(x.AvatarUrl),
-                    MemberCount = Math.Max(0, x.MemberCount)
-                })
-                .ToArray();
+                    Tag = x.Key.Trim(),
+                    AvatarUrl = NormalizePublicUrl(x.EmblemUrl ?? x.Image),
+                    MemberCount = Math.Max(0, x.MembersCount)
+                }).ToArray();
 
             PostToUi(() =>
             {
@@ -461,12 +409,9 @@ public sealed partial class MainViewModel
                 foreach (var clan in mapped) ClanSearchResults.Add(clan);
                 Raise(nameof(HasClanSearchResults));
             }, DispatcherPriority.DataBind);
-            ClanStatusText = mapped.Length == 0 ? "Кланы не найдены." : $"Найдено кланов: {mapped.Length}.";
+            SetClanStatus(mapped.Length == 0 ? "Кланы не найдены." : $"Найдено кланов: {mapped.Length}.");
         }
-        finally
-        {
-            SetClanBusy(false);
-        }
+        finally { SetClanBusy(false); }
     }
 
     private async Task JoinClanAsync(ClanBrowserEntry? item)
@@ -476,20 +421,13 @@ public sealed partial class MainViewModel
         try
         {
             var response = await _profileApi.JoinClanAsync(token, item.Id, _lifetimeCts.Token).ConfigureAwait(false);
-            ClanStatusText = response.Ok
-                ? $"Вы вступили в клан {item.DisplayName}."
-                : response.Error ?? response.Message ?? "Не удалось вступить в клан.";
-            if (response.Ok)
-            {
-                PostToUi(() => ClanSearchResults.Clear());
-                await RefreshClanAsync(token).ConfigureAwait(false);
-                await RefreshProfileSnapshotAsync(token).ConfigureAwait(false);
-            }
+            SetClanStatus(response.Ok ? $"Вы вступили в клан {item.DisplayName}." : response.Error ?? response.Message ?? "Не удалось вступить в клан.");
+            if (!response.Ok) return;
+            PostToUi(() => ClanSearchResults.Clear());
+            await RefreshProfileSnapshotAsync(token).ConfigureAwait(false);
+            await RefreshClanAsync(token).ConfigureAwait(false);
         }
-        finally
-        {
-            SetClanBusy(false);
-        }
+        finally { SetClanBusy(false); }
     }
 
     private async Task LeaveClanAsync()
@@ -499,19 +437,12 @@ public sealed partial class MainViewModel
         try
         {
             var response = await _profileApi.LeaveClanAsync(token, _lifetimeCts.Token).ConfigureAwait(false);
-            ClanStatusText = response.Ok
-                ? "Вы покинули клан."
-                : response.Error ?? response.Message ?? "Не удалось покинуть клан.";
-            if (response.Ok)
-            {
-                ApplyClan(null);
-                await RefreshProfileSnapshotAsync(token).ConfigureAwait(false);
-            }
+            SetClanStatus(response.Ok ? "Вы покинули клан." : response.Error ?? response.Message ?? "Не удалось покинуть клан.");
+            if (!response.Ok) return;
+            ClearClanState();
+            await RefreshProfileSnapshotAsync(token).ConfigureAwait(false);
         }
-        finally
-        {
-            SetClanBusy(false);
-        }
+        finally { SetClanBusy(false); }
     }
 
     private async Task RefreshProgressionAsync(string token)
@@ -525,25 +456,10 @@ public sealed partial class MainViewModel
                 AppendLog("Прогрессия: " + (response.Error ?? "ответ не OK"));
                 return;
             }
-
-            PostToUi(() =>
-            {
-                _profileLevel = Math.Max(1, response.Level);
-                _profileXpTotal = Math.Max(0, response.XpTotal);
-                _profileXpSeason = Math.Max(0, response.XpSeason);
-                _profileXpIntoLevel = Math.Max(0, response.XpIntoLevel);
-                _profileXpForNext = Math.Max(0, response.XpForNext);
-                var progress = response.XpProgress;
-                if (progress <= 1.0) progress *= 100.0;
-                _profileXpProgressPercent = Math.Clamp(progress, 0.0, 100.0);
-                if (response.BalanceRzn >= 0) Rezonite = response.BalanceRzn;
-                RaiseProgressionPresentation();
-            }, DispatcherPriority.DataBind);
+            PostToUi(() => ApplyProgression(response.Level, response.XpTotal, response.XpSeason, response.XpIntoLevel,
+                response.XpForNext, response.XpProgress, response.BalanceRzn), DispatcherPriority.DataBind);
         }
-        finally
-        {
-            SetProgressionBusy(false);
-        }
+        finally { SetProgressionBusy(false); }
     }
 
     private void ApplyProfileSnapshotToExperience()
@@ -551,67 +467,97 @@ public sealed partial class MainViewModel
         var clan = Profile?.Clan;
         if (clan is not null && string.IsNullOrWhiteSpace(_clanName))
         {
+            _clanId = (clan.Key ?? clan.Name ?? "").Trim();
             _clanName = (clan.Name ?? "").Trim();
             _clanTag = (clan.Key ?? "").Trim();
-            _clanRole = clan.Rank?.IsLeader == true ? "OWNER" : (clan.Rank?.Key ?? "MEMBER");
+            _clanRole = clan.Rank?.IsLeader == true ? "OWNER" : (clan.Rank?.Key ?? clan.Rank?.Name ?? "MEMBER");
+            _clanAvatarUrl = clan.EmblemUrl;
         }
 
         var progression = Profile?.Progression;
         if (progression is not null)
-        {
-            _profileLevel = Math.Max(1, progression.Level);
-            _profileXpTotal = Math.Max(0, progression.XpTotal);
-            _profileXpSeason = Math.Max(0, progression.XpSeason);
-            _profileXpIntoLevel = Math.Max(0, progression.XpIntoLevel);
-            _profileXpForNext = Math.Max(0, progression.XpForNext);
-            var progress = progression.XpProgress;
-            if (progress <= 1.0) progress *= 100.0;
-            _profileXpProgressPercent = Math.Clamp(progress, 0.0, 100.0);
-        }
+            ApplyProgression(progression.Level, progression.XpTotal, progression.XpSeason, progression.XpIntoLevel,
+                progression.XpForNext, progression.XpProgress, Rezonite);
 
         RaiseProfileExperiencePresentation();
     }
 
-    private void ApplyClan(LauncherProfileService.ClanDto? clan)
+    private void ApplyProgression(int level, long total, long season, long intoLevel, long forNext, double progress, long balance)
+    {
+        _profileLevel = Math.Max(1, level);
+        _profileXpTotal = Math.Max(0, total);
+        _profileXpSeason = Math.Max(0, season);
+        _profileXpIntoLevel = Math.Max(0, intoLevel);
+        _profileXpForNext = Math.Max(0, forNext);
+        if (progress <= 1.0) progress *= 100.0;
+        _profileXpProgressPercent = Math.Clamp(progress, 0.0, 100.0);
+        if (balance >= 0) Rezonite = balance;
+        RaiseProgressionPresentation();
+    }
+
+    private void ApplyClan(LauncherProfileService.ClanResponse response)
     {
         PostToUi(() =>
         {
-            _clanId = clan?.Id?.Trim() ?? "";
-            _clanName = clan?.Name?.Trim() ?? "";
-            _clanTag = clan?.Tag?.Trim() ?? "";
-            _clanRole = clan?.Role?.Trim() ?? "";
-            _clanAvatarUrl = clan?.AvatarUrl;
-            _clanMemberCount = Math.Max(0, clan?.MemberCount ?? 0);
-            _clanTreasury = Math.Max(0, clan?.Treasury ?? 0);
-            if (clan is null) ClanMembers.Clear();
+            var clan = response.Clan;
+            _clanId = response.HasClan ? (clan?.Key ?? clan?.Id ?? "").Trim() : "";
+            _clanName = response.HasClan ? (clan?.Name ?? "").Trim() : "";
+            _clanTag = response.HasClan ? (clan?.Key ?? "").Trim() : "";
+            _clanRole = response.IsLeader ? "OWNER" : (response.Rank?.Key ?? response.Rank?.Name ?? (response.HasClan ? "MEMBER" : ""));
+            _clanAvatarUrl = response.HasClan ? clan?.EmblemUrl ?? clan?.Image : null;
+            if (!response.HasClan) ClearClanCollectionsOnly();
             RaiseClanPresentation();
         }, DispatcherPriority.DataBind);
+    }
+
+    private void ClearClanState()
+    {
+        PostToUi(() =>
+        {
+            _clanId = "";
+            _clanName = "";
+            _clanTag = "";
+            _clanRole = "";
+            _clanAvatarUrl = null;
+            _clanMemberCount = 0;
+            ClearClanCollectionsOnly();
+            RaiseClanPresentation();
+        }, DispatcherPriority.DataBind);
+    }
+
+    private void ClearClanCollectionsOnly()
+    {
+        ClanMembers.Clear();
+        _clanMemberCount = 0;
+    }
+
+    private ClanMemberEntry MapClanMember(LauncherProfileService.ClanMemberDto dto)
+    {
+        var name = (dto.Name ?? "").Trim();
+        var friend = Friends.FirstOrDefault(f =>
+            (dto.PublicId.HasValue && f.PublicId == dto.PublicId) ||
+            (!string.IsNullOrWhiteSpace(dto.UserId) && string.Equals(f.UserId, dto.UserId, StringComparison.OrdinalIgnoreCase)));
+
+        return new ClanMemberEntry
+        {
+            UserId = dto.UserId,
+            PublicId = dto.PublicId,
+            Name = name.Length == 0 ? "Без имени" : name,
+            RoleText = dto.IsLeader ? "Владелец" : string.IsNullOrWhiteSpace(dto.RankName) ? "Участник" : dto.RankName!,
+            AvatarUrl = NormalizePublicUrl(dto.Image),
+            PresenceText = friend?.PresenceText is { Length: > 0 } presence ? presence : "оффлайн"
+        };
     }
 
     private static FriendRequestEntry ToFriendRequestEntry(SiteAuthService.FriendDto dto)
     {
         var name = (dto.Name ?? "").Trim();
-        var userId = (dto.UserId ?? dto.Id ?? "").Trim();
         return new FriendRequestEntry
         {
-            UserId = userId,
+            UserId = (dto.UserId ?? dto.Id ?? "").Trim(),
             PublicId = dto.PublicId,
-            Name = string.IsNullOrWhiteSpace(name) ? "Без имени" : name,
+            Name = name.Length == 0 ? "Без имени" : name,
             AvatarUrl = NormalizePublicUrl(dto.Image)
-        };
-    }
-
-    private static ClanMemberEntry MapClanMember(LauncherProfileService.ClanMemberDto dto)
-    {
-        var name = (dto.User.Nick ?? "").Trim();
-        return new ClanMemberEntry
-        {
-            PublicId = dto.User.PublicId,
-            Name = string.IsNullOrWhiteSpace(name) ? "Без имени" : name,
-            Role = string.IsNullOrWhiteSpace(dto.Role) ? "MEMBER" : dto.Role,
-            AvatarUrl = NormalizePublicUrl(dto.User.AvatarUrl),
-            Presence = (dto.User.Presence ?? "offline").Trim(),
-            ServerKey = string.IsNullOrWhiteSpace(dto.User.PresenceServerKey) ? null : dto.User.PresenceServerKey.Trim()
         };
     }
 
@@ -619,13 +565,11 @@ public sealed partial class MainViewModel
     {
         var query = (FriendSearchText ?? "").Trim();
         var source = Friends
-            .Where(x => query.Length == 0 ||
-                        x.Name.Contains(query, StringComparison.CurrentCultureIgnoreCase) ||
+            .Where(x => query.Length == 0 || x.Name.Contains(query, StringComparison.CurrentCultureIgnoreCase) ||
                         (x.PublicId?.ToString() ?? "").Contains(query, StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(x => (int)x.OnlinePlace)
             .ThenBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToArray();
-
         PostToUi(() =>
         {
             FilteredFriends.Clear();
@@ -634,34 +578,25 @@ public sealed partial class MainViewModel
         }, DispatcherPriority.DataBind);
     }
 
+    private void SetSocialStatus(string text) => PostToUi(() => SocialStatusText = text);
+    private void SetClanStatus(string text) => PostToUi(() => ClanStatusText = text);
+
     private void SetProfileExperienceBusy(bool value)
     {
         _isProfileExperienceBusy = value;
-        PostToUi(() =>
-        {
-            Raise(nameof(IsProfileExperienceBusy));
-            RefreshProfileExperienceCanStates();
-        });
+        PostToUi(() => { Raise(nameof(IsProfileExperienceBusy)); RefreshProfileExperienceCanStates(); });
     }
 
     private void SetFriendActionBusy(bool value)
     {
         _isFriendActionBusy = value;
-        PostToUi(() =>
-        {
-            Raise(nameof(IsFriendActionBusy));
-            RefreshProfileExperienceCanStates();
-        });
+        PostToUi(() => { Raise(nameof(IsFriendActionBusy)); RefreshProfileExperienceCanStates(); });
     }
 
     private void SetClanBusy(bool value)
     {
         _isClanBusy = value;
-        PostToUi(() =>
-        {
-            Raise(nameof(IsClanBusy));
-            RefreshProfileExperienceCanStates();
-        });
+        PostToUi(() => { Raise(nameof(IsClanBusy)); RefreshProfileExperienceCanStates(); });
     }
 
     private void SetProgressionBusy(bool value)
@@ -681,27 +616,16 @@ public sealed partial class MainViewModel
 
     private void RaiseClanPresentation()
     {
-        Raise(nameof(ClanId));
-        Raise(nameof(ClanName));
-        Raise(nameof(ClanTag));
-        Raise(nameof(ClanRole));
-        Raise(nameof(ClanRoleText));
-        Raise(nameof(ClanAvatarUrl));
-        Raise(nameof(ClanMemberCount));
-        Raise(nameof(ClanTreasury));
-        Raise(nameof(HasClan));
-        Raise(nameof(CanLeaveClan));
+        Raise(nameof(ClanId)); Raise(nameof(ClanName)); Raise(nameof(ClanTag)); Raise(nameof(ClanRole));
+        Raise(nameof(ClanRoleText)); Raise(nameof(ClanAvatarUrl)); Raise(nameof(ClanMemberCount)); Raise(nameof(ClanTreasury));
+        Raise(nameof(HasClan)); Raise(nameof(CanLeaveClan));
         RefreshProfileExperienceCanStates();
     }
 
     private void RaiseProgressionPresentation()
     {
-        Raise(nameof(ProfileLevel));
-        Raise(nameof(ProfileXpTotal));
-        Raise(nameof(ProfileXpSeason));
-        Raise(nameof(ProfileXpIntoLevel));
-        Raise(nameof(ProfileXpForNext));
-        Raise(nameof(ProfileXpProgressPercent));
+        Raise(nameof(ProfileLevel)); Raise(nameof(ProfileXpTotal)); Raise(nameof(ProfileXpSeason));
+        Raise(nameof(ProfileXpIntoLevel)); Raise(nameof(ProfileXpForNext)); Raise(nameof(ProfileXpProgressPercent));
         Raise(nameof(ProfileXpLevelText));
     }
 
@@ -709,11 +633,8 @@ public sealed partial class MainViewModel
     {
         RaiseClanPresentation();
         RaiseProgressionPresentation();
-        Raise(nameof(SelectedSkinTitle));
-        Raise(nameof(SelectedSkinKey));
-        Raise(nameof(SkinPreviewUrl));
-        Raise(nameof(HasSelectedSkin));
-        Raise(nameof(SkinStatusText));
+        Raise(nameof(SelectedSkinTitle)); Raise(nameof(SelectedSkinKey)); Raise(nameof(SkinPreviewUrl));
+        Raise(nameof(HasSelectedSkin)); Raise(nameof(SkinStatusText));
     }
 
     private void RefreshProfileExperienceCanStates()
@@ -735,11 +656,9 @@ public sealed partial class MainViewModel
         {
             relative = (relative ?? "").Trim().TrimStart('/');
             var url = SitePublicUrlPrimary.TrimEnd('/') + "/" + relative;
-            Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps) return;
+            Process.Start(new ProcessStartInfo { FileName = uri.AbsoluteUri, UseShellExecute = true });
         }
-        catch (Exception ex)
-        {
-            AppendLog("Не удалось открыть сайт: " + ex.Message);
-        }
+        catch (Exception ex) { AppendLog("Не удалось открыть сайт: " + ex.Message); }
     }
 }
