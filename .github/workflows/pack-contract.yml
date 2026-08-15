@@ -1,0 +1,90 @@
+name: Pack distribution contract
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pack-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    name: Authoritative mirror and loader policy
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify launcher distribution ownership
+        shell: pwsh
+        run: |
+          $launch = Get-Content -Raw -Path "ViewModels/MainViewModel.Launch.cs"
+          $catalog = Get-Content -Raw -Path "Services/ServerCatalogService.cs"
+          $minecraft = Get-Content -Raw -Path "Launching/MinecraftService.cs"
+
+          foreach ($required in @(
+            'NormalizePackMirror',
+            'catalogMirrors',
+            's.PackBaseUrl',
+            's.PackMirrors',
+            'NeoForgeDistributionBootstrap.TryResolve',
+            'distribution.InstallerUrl'
+          )) {
+            if (-not $launch.Contains($required)) {
+              throw "Release pack contract token missing: $required"
+            }
+          }
+
+          foreach ($forbidden in @(
+            'DefaultPackFallbackMirrors',
+            'downloads.sourceforge.net/project/legendborn-neoforge',
+            'master.dl.sourceforge.net/project/legendborn-neoforge'
+          )) {
+            if ($launch.Contains($forbidden)) {
+              throw "Launcher reintroduced a hidden distribution fallback: $forbidden"
+            }
+          }
+
+          if ($launch -notmatch 'uri\.Scheme\s*!=\s*Uri\.UriSchemeHttps') {
+            throw "Pack mirror normalization must reject non-HTTPS URLs."
+          }
+
+          foreach ($required in @(
+            'CanonicalCatalogUrl',
+            'NormalizeHttpsBaseUrl',
+            'packMirrors',
+            'syncPack=true but no HTTPS pack mirrors'
+          )) {
+            if (-not $catalog.Contains($required)) {
+              throw "Authoritative server catalog safeguard missing: $required"
+            }
+          }
+
+          $regexOptions = [System.Text.RegularExpressions.RegexOptions]::Singleline
+          $autoPrune = [regex]::Match(
+            $minecraft,
+            'DefaultAutoPrunePrefixes\s*=\s*\{(?<body>.*?)\};',
+            $regexOptions)
+          if (-not $autoPrune.Success) {
+            throw "DefaultAutoPrunePrefixes policy missing."
+          }
+
+          $autoPruneBody = $autoPrune.Groups['body'].Value
+          foreach ($required in @('mods/', 'kubejs/', 'scripts/')) {
+            if (-not $autoPruneBody.Contains('"' + $required + '"')) {
+              throw "Destructive-managed pack root missing from auto-prune: $required"
+            }
+          }
+
+          foreach ($forbidden in @('config/', 'defaultconfigs/', 'resourcepacks/', 'shaderpacks/')) {
+            if ($autoPruneBody.Contains('"' + $forbidden + '"')) {
+              throw "User-owned/seed-only root must not be auto-pruned: $forbidden"
+            }
+          }
