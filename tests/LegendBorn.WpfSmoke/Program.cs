@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -12,6 +13,9 @@ internal static class Program
     [STAThread]
     private static int Main()
     {
+        Console.WriteLine($"WPF_SMOKE_ENVIRONMENT_VERSION={Environment.Version}");
+        Console.WriteLine($"WPF_SMOKE_FRAMEWORK={RuntimeInformation.FrameworkDescription}");
+
         var app = new Application
         {
             ShutdownMode = ShutdownMode.OnExplicitShutdown
