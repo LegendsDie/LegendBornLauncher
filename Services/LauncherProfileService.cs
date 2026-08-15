@@ -14,17 +14,11 @@ using LegendBorn.Launching;
 
 namespace LegendBorn.Services;
 
-/// <summary>
-/// Typed client for profile-adjacent launcher APIs already exposed by legendbornweb.
-/// Reads are bounded and may retry transient failures. State-changing POSTs are deliberately
-/// single-attempt so a client-side retry cannot accidentally duplicate a mutation.
-/// </summary>
 public sealed class LauncherProfileService
 {
     private const string SiteBaseUrl = "https://legendborn.xyz/";
     private const int MaxResponseBytes = 512 * 1024;
     private static readonly HttpClient Http = CreateHttp();
-
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -58,6 +52,12 @@ public sealed class LauncherProfileService
         [JsonPropertyName("image")] public string? Image { get; set; }
         [JsonPropertyName("colorHex")] public string? ColorHex { get; set; }
         [JsonPropertyName("membersCount")] public int MembersCount { get; set; }
+
+        [JsonIgnore] public string? Tag { get => Key; set => Key = value ?? ""; }
+        [JsonIgnore] public string? AvatarUrl { get => EmblemUrl ?? Image; set => EmblemUrl = value; }
+        [JsonIgnore] public long Treasury { get; set; }
+        [JsonIgnore] public string? Role { get; set; }
+        [JsonIgnore] public int MemberCount { get => MembersCount; set => MembersCount = value; }
     }
 
     public sealed class ClanRankDto
@@ -90,6 +90,25 @@ public sealed class LauncherProfileService
         [JsonPropertyName("rankLevel")] public int? RankLevel { get; set; }
         [JsonPropertyName("isLeader")] public bool IsLeader { get; set; }
         [JsonPropertyName("joinedAt")] public DateTimeOffset? JoinedAt { get; set; }
+
+        [JsonIgnore] public string Role => IsLeader ? "OWNER" : string.IsNullOrWhiteSpace(RankName) ? "MEMBER" : RankName!;
+        [JsonIgnore] public ClanMemberUserDto User => new()
+        {
+            PublicId = PublicId,
+            Nick = Name,
+            AvatarUrl = Image,
+            Presence = "offline"
+        };
+    }
+
+    public sealed class ClanMemberUserDto
+    {
+        public int? PublicId { get; set; }
+        public string? Nick { get; set; }
+        public string? AvatarUrl { get; set; }
+        public string? Presence { get; set; }
+        public string? PresenceServerKey { get; set; }
+        public DateTimeOffset? PresenceUpdatedAt { get; set; }
     }
 
     public sealed class ProgressionResponse : ApiResponse
@@ -104,8 +123,13 @@ public sealed class LauncherProfileService
         [JsonPropertyName("stats")] public Dictionary<string, JsonElement>? Stats { get; set; }
     }
 
-    public Task<ClanResponse> GetClanAsync(string accessToken, CancellationToken ct)
-        => GetAsync<ClanResponse>("api/launcher/clan", accessToken, ct);
+    public async Task<ClanResponse> GetClanAsync(string accessToken, CancellationToken ct)
+    {
+        var dto = await GetAsync<ClanResponse>("api/launcher/clan", accessToken, ct).ConfigureAwait(false);
+        if (dto.Clan is not null)
+            dto.Clan.Role = dto.IsLeader ? "OWNER" : dto.Rank?.Key ?? dto.Rank?.Name ?? "MEMBER";
+        return dto;
+    }
 
     public Task<ClanMembersResponse> GetClanMembersAsync(string accessToken, CancellationToken ct)
         => GetAsync<ClanMembersResponse>("api/launcher/clan/members", accessToken, ct);
@@ -113,14 +137,19 @@ public sealed class LauncherProfileService
     public async Task<ClanListResponse> SearchClansAsync(string accessToken, string? query, CancellationToken ct)
     {
         var dto = await GetAsync<ClanListResponse>("api/launcher/clan/list", accessToken, ct).ConfigureAwait(false);
+        dto.Clans ??= Array.Empty<ClanDto>();
         var q = (query ?? string.Empty).Trim();
         if (dto.Ok && q.Length > 0)
         {
-            dto.Clans = Array.FindAll(dto.Clans ?? Array.Empty<ClanDto>(), clan =>
-                (clan.Name ?? string.Empty).Contains(q, StringComparison.CurrentCultureIgnoreCase) ||
-                (clan.Key ?? string.Empty).Contains(q, StringComparison.OrdinalIgnoreCase));
+            dto.Clans = Array.FindAll(dto.Clans, clan =>
+                clan.Name.Contains(q, StringComparison.CurrentCultureIgnoreCase) ||
+                clan.Key.Contains(q, StringComparison.OrdinalIgnoreCase));
         }
-        dto.Clans ??= Array.Empty<ClanDto>();
+
+        // The join API accepts clanKey, while the list endpoint also exposes a database id.
+        // Normalize the UI action identifier to the public clan key so it can never send the DB id by mistake.
+        foreach (var clan in dto.Clans)
+            clan.Id = clan.Key;
         return dto;
     }
 
