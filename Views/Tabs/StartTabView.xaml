@@ -263,7 +263,7 @@
                 <ProgressBar Style="{StaticResource BottomStripProgressBarStyle}"
                              Minimum="0"
                              Maximum="100"
-                             Value="{Binding ProgressPercent}"/>
+                             Value="{Binding ProgressPercent, Mode=OneWay}"/>
 
             </Grid>
         </Border>
