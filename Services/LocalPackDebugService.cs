@@ -25,6 +25,14 @@ internal static class LocalPackDebugService
     internal const string GameDirEnvironmentVariable = "LEGENDBORN_DEV_GAME_DIR";
 
     private const long MaxTestModBytes = 1024L * 1024 * 1024;
+    private const long MaxLocalManifestBytes = 2L * 1024 * 1024;
+    private static readonly TimeSpan[] FinalizeRetryDelays =
+    {
+        TimeSpan.FromMilliseconds(50),
+        TimeSpan.FromMilliseconds(150),
+        TimeSpan.FromMilliseconds(400)
+    };
+
     private static readonly HttpClient Http = CreateHttp();
 
     internal static bool IsEnabled =>
@@ -71,6 +79,10 @@ internal static class LocalPackDebugService
         if (!File.Exists(manifestPath))
             throw new FileNotFoundException("Debug pack manifest not found.", manifestPath);
 
+        var manifestInfo = new FileInfo(manifestPath);
+        if (manifestInfo.Length <= 0 || manifestInfo.Length > MaxLocalManifestBytes)
+            throw new InvalidOperationException("Debug pack manifest size is outside the allowed range.");
+
         var json = await File.ReadAllTextAsync(manifestPath, ct).ConfigureAwait(false);
         var manifest = JsonSerializer.Deserialize<LocalManifest>(json, JsonOptions)
             ?? throw new InvalidOperationException("Debug pack manifest is empty or invalid.");
@@ -109,7 +121,7 @@ internal static class LocalPackDebugService
         Directory.CreateDirectory(modsDir);
 
         var destination = Path.GetFullPath(Path.Combine(gameRoot, rel.Replace('/', Path.DirectorySeparatorChar)));
-        var rootPrefix = gameRoot.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var rootPrefix = gameRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
         if (!destination.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Local pack smoke-test destination escaped the game directory.");
 
@@ -121,7 +133,7 @@ internal static class LocalPackDebugService
             try
             {
                 log?.Invoke($"DEV pack: download {rel} <- {mirror}");
-                await DownloadVerifiedAsync(url, destination, file.Size, file.Sha256, ct).ConfigureAwait(false);
+                await DownloadVerifiedAsync(url, destination, file.Size, file.Sha256, log, ct).ConfigureAwait(false);
                 PruneOtherMods(modsDir, destination, log);
                 log?.Invoke($"DEV pack: local manifest applied: {manifestPath}");
                 log?.Invoke($"DEV pack: isolated game dir: {gameRoot}");
@@ -146,6 +158,7 @@ internal static class LocalPackDebugService
         string destination,
         long expectedSize,
         string expectedSha256,
+        Action<string>? log,
         CancellationToken ct)
     {
         var dir = Path.GetDirectoryName(destination);
@@ -153,8 +166,9 @@ internal static class LocalPackDebugService
             throw new InvalidOperationException("Invalid local mod destination.");
         Directory.CreateDirectory(dir);
 
-        var tmp = destination + ".devtmp";
-        TryDelete(tmp);
+        // A unique sibling temp avoids collisions between a stale test process, antivirus scans and
+        // a new Debug launch. The stream is fully disposed before the final atomic rename on Windows.
+        var tempPath = destination + "." + Guid.NewGuid().ToString("N") + ".devtmp";
 
         try
         {
@@ -166,28 +180,34 @@ internal static class LocalPackDebugService
                 throw new InvalidOperationException($"Size mismatch in headers: expected {expectedSize}, got {contentLength}.");
 
             await using var input = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-            await using var output = new FileStream(
-                tmp,
-                FileMode.Create,
-                FileAccess.Write,
-                FileShare.None,
-                128 * 1024,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
             using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
             var buffer = ArrayPool<byte>.Shared.Rent(128 * 1024);
             long total = 0;
             try
             {
-                while (true)
+                await using (var output = new FileStream(
+                                 tempPath,
+                                 FileMode.CreateNew,
+                                 FileAccess.Write,
+                                 FileShare.None,
+                                 128 * 1024,
+                                 FileOptions.Asynchronous | FileOptions.SequentialScan))
                 {
-                    var read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
-                    if (read == 0) break;
-                    total += read;
-                    if (total > expectedSize)
-                        throw new InvalidOperationException("Downloaded mod exceeded manifest size.");
-                    sha.AppendData(buffer, 0, read);
-                    await output.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+                    while (true)
+                    {
+                        var read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
+                        if (read == 0) break;
+
+                        total += read;
+                        if (total > expectedSize)
+                            throw new InvalidOperationException("Downloaded mod exceeded manifest size.");
+
+                        sha.AppendData(buffer, 0, read);
+                        await output.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+                    }
+
+                    await output.FlushAsync(ct).ConfigureAwait(false);
                 }
             }
             finally
@@ -195,7 +215,6 @@ internal static class LocalPackDebugService
                 ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
             }
 
-            await output.FlushAsync(ct).ConfigureAwait(false);
             if (total != expectedSize)
                 throw new InvalidOperationException($"Size mismatch: expected {expectedSize}, got {total}.");
 
@@ -203,13 +222,44 @@ internal static class LocalPackDebugService
             if (!actual.Equals(expectedSha256.Trim(), StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("SHA-256 mismatch for local test mod.");
 
-            File.Move(tmp, destination, overwrite: true);
+            log?.Invoke("DEV pack: verified size + SHA-256; finalizing local mod.");
+            await FinalizeVerifiedDownloadAsync(tempPath, destination, ct).ConfigureAwait(false);
         }
         catch
         {
-            TryDelete(tmp);
+            TryDelete(tempPath);
             throw;
         }
+    }
+
+    private static async Task FinalizeVerifiedDownloadAsync(
+        string tempPath,
+        string destination,
+        CancellationToken ct)
+    {
+        Exception? last = null;
+        for (var attempt = 0; attempt <= FinalizeRetryDelays.Length; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                File.Move(tempPath, destination, overwrite: true);
+                return;
+            }
+            catch (IOException ex)
+            {
+                last = ex;
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                last = ex;
+            }
+
+            if (attempt < FinalizeRetryDelays.Length)
+                await Task.Delay(FinalizeRetryDelays[attempt], ct).ConfigureAwait(false);
+        }
+
+        throw new IOException($"Could not finalize verified local mod at '{destination}'. Close Minecraft/antivirus handles and retry.", last);
     }
 
     private static void PruneOtherMods(string modsDir, string wantedFile, Action<string>? log)
