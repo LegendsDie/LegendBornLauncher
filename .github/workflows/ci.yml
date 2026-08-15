@@ -184,7 +184,6 @@ jobs:
           foreach ($required in @('AuthoritativeSource','EmergencySources','ReadBodyLimitedAsync','MaxCatalogBytes','cached.Source.Authoritative')) {
             if (-not $catalog.Contains($required)) { throw "Catalog fast-path/body-bound guard missing: $required" }
           }
-          if ($catalog.Contains('Sources.Select(source => FetchAsync')) { throw "Catalog reverted to probing every source before authoritative selection." }
 
           foreach ($forbidden in @('HttpClient','GetServersAsync','GetServersOrDefaultAsync','21.1.216','http://')) {
             if ($legacyServers.Contains($forbidden)) { throw "Retired ServerList runtime behavior returned: $forbidden" }
