@@ -16,9 +16,9 @@ using System.Threading.Tasks;
 namespace LegendBorn.Services;
 
 /// <summary>
-/// Loads the live server catalog without baking mutable infrastructure into the launcher.
-/// The canonical website API is authoritative. Cached/static data is accepted only while it is
-/// temporally fresh enough to avoid surviving an endpoint migration.
+/// Authoritative server catalog loader. The live LegendBorn API is always tried first; static CDN
+/// snapshots are emergency fallbacks only. Every accepted catalog is freshness checked and bounded
+/// by actual bytes read, so chunked responses cannot bypass the response-size limit.
 /// </summary>
 public static class ServerCatalogService
 {
@@ -34,11 +34,14 @@ public static class ServerCatalogService
     private static readonly TimeSpan CatalogMaxAgeWithoutExpiry = TimeSpan.FromHours(24);
     private static readonly TimeSpan MaxExplicitCatalogLifetime = TimeSpan.FromHours(48);
     private static readonly TimeSpan FutureClockSkew = TimeSpan.FromMinutes(5);
+
     private const long MaxCatalogBytes = 2L * 1024 * 1024;
     private const long MaxCacheBytes = MaxCatalogBytes + 256L * 1024;
 
     private static readonly string CachePath = Path.Combine(LauncherPaths.CacheDir, "server_catalog_v2.json");
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(false);
+    private static readonly SemaphoreSlim Gate = new(1, 1);
+    private static readonly HttpClient Http = CreateHttp();
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -48,15 +51,12 @@ public static class ServerCatalogService
         WriteIndented = true
     };
 
-    private static readonly HttpClient Http = CreateHttp();
-    private static readonly SemaphoreSlim Gate = new(1, 1);
-
     private sealed record SourceSpec(string Url, int Rank, bool Authoritative, string Name);
 
     private static readonly SourceSpec AuthoritativeSource =
         new(CanonicalCatalogUrl, 0, true, "LegendBorn API");
 
-    private static readonly SourceSpec[] FallbackSources =
+    private static readonly SourceSpec[] EmergencySources =
     {
         new(SelectelCatalogUrl, 1, false, "Selectel"),
         new(CloudBucketCatalogUrl, 2, false, "LegendBorn CDN"),
@@ -105,7 +105,11 @@ public static class ServerCatalogService
         public CatalogEnvelope Catalog { get; set; } = new();
     }
 
-    private sealed record Candidate(CatalogEnvelope Catalog, SourceSpec Source, long ElapsedMs, bool FromCache = false);
+    private sealed record Candidate(
+        CatalogEnvelope Catalog,
+        SourceSpec Source,
+        long ElapsedMs,
+        bool FromCache = false);
 
     public static async Task<IReadOnlyList<ServerListService.ServerInfo>> GetServersAsync(
         Action<string>? log = null,
@@ -116,40 +120,30 @@ public static class ServerCatalogService
         {
             var cached = LoadCache(log);
 
-            // The API is authoritative and normally healthy. Do not make every launcher startup wait
-            // for emergency mirrors (or print their expected DNS/staleness failures) when the API won.
-            var authoritative = await FetchAsync(AuthoritativeSource, log, ct).ConfigureAwait(false);
-            if (authoritative is not null)
-                return FinalizeCandidate(authoritative, log);
+            var live = await FetchAsync(AuthoritativeSource, log, ct).ConfigureAwait(false);
+            if (live is not null)
+                return FinalizeCandidate(live, log);
 
-            // A fresh authoritative cache is safer than a static mirror after an endpoint migration.
-            if (cached is { Source.Authoritative: true } && IsCacheUsable(cached.Catalog))
+            if (cached is not null && cached.Source.Authoritative && IsCatalogUsable(cached.Catalog, out _))
             {
                 log?.Invoke("server catalog: authoritative API unavailable; using fresh authoritative cache.");
                 return FinalizeCandidate(cached, log);
             }
 
             log?.Invoke("server catalog: authoritative API unavailable; probing emergency mirrors.");
-            var fetchTasks = FallbackSources.Select(source => FetchAsync(source, log, ct)).ToArray();
-            Candidate?[] fetched;
-            try
-            {
-                fetched = await Task.WhenAll(fetchTasks).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
+            var fetched = await Task.WhenAll(
+                    EmergencySources.Select(source => FetchAsync(source, log, ct)))
+                .ConfigureAwait(false);
 
-            var fallbacks = fetched
+            var candidates = fetched
                 .Where(static candidate => candidate is not null)
                 .Select(static candidate => candidate!)
                 .ToList();
 
-            if (cached is not null && IsCacheUsable(cached.Catalog))
-                fallbacks.Add(cached);
+            if (cached is not null && IsCatalogUsable(cached.Catalog, out _))
+                candidates.Add(cached);
 
-            var selected = fallbacks
+            var selected = candidates
                 .OrderByDescending(static candidate => Math.Max(0, candidate.Catalog.Version))
                 .ThenByDescending(static candidate => candidate.Catalog.GeneratedAtUnix)
                 .ThenBy(static candidate => candidate.Source.Rank)
@@ -159,7 +153,7 @@ public static class ServerCatalogService
             if (selected is null)
             {
                 throw new InvalidOperationException(
-                    "Не удалось получить актуальный каталог серверов. Лаунчер не будет использовать старый IP или протухший distribution contract.");
+                    "Не удалось получить актуальный каталог серверов. Старый IP или протухший distribution contract использоваться не будут.");
             }
 
             return FinalizeCandidate(selected, log);
@@ -186,6 +180,7 @@ public static class ServerCatalogService
             $"server catalog: selected {selected.Source.Name}, revision={selected.Catalog.Version}, " +
             $"generated={selected.Catalog.GeneratedAtUnix}, validUntil={selected.Catalog.ValidUntilUnix}, " +
             $"servers={normalized.Count}" + (selected.FromCache ? " (cache)" : ""));
+
         return normalized;
     }
 
@@ -199,39 +194,49 @@ public static class ServerCatalogService
             if (!Uri.TryCreate(source.Url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
                 return null;
 
-            using var reqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            reqCts.CancelAfter(RequestTimeout);
-            using var req = new HttpRequestMessage(HttpMethod.Get, uri);
-            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-            req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
-            TrySetUserAgent(req);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(RequestTimeout);
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            request.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
+            TrySetUserAgent(request);
 
             var sw = Stopwatch.StartNew();
-            using var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, reqCts.Token)
+            using var response = await Http.SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    timeout.Token)
                 .ConfigureAwait(false);
 
-            if (!resp.IsSuccessStatusCode)
+            if (!response.IsSuccessStatusCode)
             {
-                log?.Invoke($"server catalog: {source.Name} -> HTTP {(int)resp.StatusCode}");
+                log?.Invoke($"server catalog: {source.Name} -> HTTP {(int)response.StatusCode}");
                 return null;
             }
 
-            var media = resp.Content.Headers.ContentType?.MediaType ?? "";
-            if (media.Contains("text/html", StringComparison.OrdinalIgnoreCase))
+            if (response.RequestMessage?.RequestUri is { } finalUri && finalUri.Scheme != Uri.UriSchemeHttps)
+            {
+                log?.Invoke($"server catalog: {source.Name} rejected — non-HTTPS redirect");
+                return null;
+            }
+
+            var mediaType = response.Content.Headers.ContentType?.MediaType ?? "";
+            if (mediaType.Contains("text/html", StringComparison.OrdinalIgnoreCase))
             {
                 log?.Invoke($"server catalog: {source.Name} rejected — HTML response");
                 return null;
             }
 
-            var length = resp.Content.Headers.ContentLength;
-            if (length.HasValue && (length.Value <= 0 || length.Value > MaxCatalogBytes))
+            var declaredLength = response.Content.Headers.ContentLength;
+            if (declaredLength.HasValue &&
+                (declaredLength.Value <= 0 || declaredLength.Value > MaxCatalogBytes))
             {
                 log?.Invoke($"server catalog: {source.Name} rejected — invalid content length");
                 return null;
             }
 
-            var payload = await ReadBodyLimitedAsync(resp.Content, MaxCatalogBytes, reqCts.Token)
-                .ConfigureAwait(false);
+            var payload = await ReadBodyLimitedAsync(response.Content, timeout.Token).ConfigureAwait(false);
             sw.Stop();
 
             CatalogEnvelope? catalog;
@@ -269,13 +274,10 @@ public static class ServerCatalogService
         }
     }
 
-    private static async Task<byte[]> ReadBodyLimitedAsync(
-        HttpContent content,
-        long maxBytes,
-        CancellationToken ct)
+    private static async Task<byte[]> ReadBodyLimitedAsync(HttpContent content, CancellationToken ct)
     {
         await using var input = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-        using var memory = new MemoryStream(capacity: 16 * 1024);
+        using var output = new MemoryStream(capacity: 16 * 1024);
         var buffer = ArrayPool<byte>.Shared.Rent(16 * 1024);
         long total = 0;
 
@@ -287,10 +289,10 @@ public static class ServerCatalogService
                 if (read == 0) break;
 
                 total += read;
-                if (total > maxBytes)
-                    throw new InvalidOperationException($"Catalog response exceeds {maxBytes} bytes.");
+                if (total > MaxCatalogBytes)
+                    throw new InvalidOperationException("Catalog response exceeds the safety byte limit.");
 
-                memory.Write(buffer, 0, read);
+                output.Write(buffer, 0, read);
             }
         }
         finally
@@ -301,7 +303,7 @@ public static class ServerCatalogService
         if (total <= 0)
             throw new InvalidOperationException("Catalog response is empty.");
 
-        return memory.ToArray();
+        return output.ToArray();
     }
 
     private static bool IsCatalogUsable(CatalogEnvelope? catalog, out string reason)
@@ -314,13 +316,14 @@ public static class ServerCatalogService
         }
 
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var futureSkew = (long)FutureClockSkew.TotalSeconds;
+        var skew = (long)FutureClockSkew.TotalSeconds;
+
         if (catalog.GeneratedAtUnix <= 0)
         {
             reason = "generatedAtUnix missing";
             return false;
         }
-        if (catalog.GeneratedAtUnix > now + futureSkew)
+        if (catalog.GeneratedAtUnix > now + skew)
         {
             reason = "generatedAtUnix too far in the future";
             return false;
@@ -338,7 +341,8 @@ public static class ServerCatalogService
                 reason = "validUntilUnix precedes generatedAtUnix";
                 return false;
             }
-            if (catalog.ValidUntilUnix - catalog.GeneratedAtUnix > (long)MaxExplicitCatalogLifetime.TotalSeconds)
+            if (catalog.ValidUntilUnix - catalog.GeneratedAtUnix >
+                (long)MaxExplicitCatalogLifetime.TotalSeconds)
             {
                 reason = "explicit lifetime exceeds safety bound";
                 return false;
@@ -353,8 +357,6 @@ public static class ServerCatalogService
         return true;
     }
 
-    private static bool IsCacheUsable(CatalogEnvelope catalog) => IsCatalogUsable(catalog, out _);
-
     private static List<ServerListService.ServerInfo> NormalizeServers(
         IEnumerable<CatalogServer> servers,
         Action<string>? log)
@@ -368,7 +370,9 @@ public static class ServerCatalogService
             var name = (source.Name ?? "").Trim();
             var address = NormalizeServerAddress(source.Address);
             var minecraftVersion = (source.MinecraftVersion ?? "").Trim();
-            if (id.Length == 0 || name.Length == 0 || address.Length == 0 || minecraftVersion.Length == 0 || !ids.Add(id))
+
+            if (id.Length == 0 || name.Length == 0 || address.Length == 0 ||
+                minecraftVersion.Length == 0 || !ids.Add(id))
                 continue;
 
             var loader = source.Loader ?? new CatalogLoader
@@ -376,6 +380,7 @@ public static class ServerCatalogService
                 Type = source.LoaderName ?? "vanilla",
                 Version = source.LoaderVersion ?? ""
             };
+
             var loaderType = (loader.Type ?? "vanilla").Trim().ToLowerInvariant();
             if (loaderType is not ("vanilla" or "neoforge"))
                 continue;
@@ -394,6 +399,7 @@ public static class ServerCatalogService
                     .Where(static value => value.Length > 0)
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToArray();
+
                 if (installerMirrors.Length == 0)
                 {
                     log?.Invoke($"server catalog: skipped {id}, NeoForge installerMirrors is empty");
@@ -428,6 +434,7 @@ public static class ServerCatalogService
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(MirrorRank)
                 .ToArray();
+
             if (source.SyncPack && packMirrors.Length == 0)
             {
                 log?.Invoke($"server catalog: skipped {id}, syncPack=true but no HTTPS pack mirrors");
@@ -448,7 +455,9 @@ public static class ServerCatalogService
                 },
                 LoaderName = source.LoaderName,
                 LoaderVersion = source.LoaderVersion,
-                ClientVersionId = string.IsNullOrWhiteSpace(source.ClientVersionId) ? null : source.ClientVersionId.Trim(),
+                ClientVersionId = string.IsNullOrWhiteSpace(source.ClientVersionId)
+                    ? null
+                    : source.ClientVersionId.Trim(),
                 PackBaseUrl = packMirrors.FirstOrDefault() ?? "",
                 PackMirrors = packMirrors,
                 SyncPack = source.SyncPack
@@ -458,44 +467,20 @@ public static class ServerCatalogService
         return result;
     }
 
-    private static int MirrorRank(string url)
-    {
-        if (url.Contains("selstorage.ru", StringComparison.OrdinalIgnoreCase) ||
-            url.Contains("selcloud.ru", StringComparison.OrdinalIgnoreCase)) return 0;
-        if (url.Contains("pack.legendborn.ru", StringComparison.OrdinalIgnoreCase)) return 1;
-        if (url.Contains("master.dl.sourceforge.net", StringComparison.OrdinalIgnoreCase)) return 2;
-        if (url.Contains("downloads.sourceforge.net", StringComparison.OrdinalIgnoreCase)) return 3;
-        if (url.Contains("sourceforge.net", StringComparison.OrdinalIgnoreCase)) return 4;
-        return 5;
-    }
-
-    private static string NormalizeServerAddress(string? value)
-    {
-        var address = (value ?? "").Trim();
-        if (address.Length == 0 || address.Length > 255) return "";
-        if (address.Contains('/') || address.Contains('\\') || address.Any(char.IsWhiteSpace) ||
-            address.Contains("://", StringComparison.Ordinal)) return "";
-        return address;
-    }
-
-    private static string NormalizeHttpsUrl(string? value) => NeoForgeDistributionBootstrap.NormalizeHttpsUrl(value);
-    private static string NormalizeHttpsBaseUrl(string? value) => NeoForgeDistributionBootstrap.NormalizeHttpsBase(value);
-
     private static Candidate? LoadCache(Action<string>? log)
     {
         try
         {
             if (!File.Exists(CachePath)) return null;
+
             var info = new FileInfo(CachePath);
             if (info.Length <= 0 || info.Length > MaxCacheBytes)
-            {
-                log?.Invoke("server catalog: cache ignored — invalid size");
                 return null;
-            }
 
             var json = File.ReadAllText(CachePath, Utf8NoBom);
             var cache = JsonSerializer.Deserialize<CacheEnvelope>(json, JsonOptions);
-            if (cache?.Catalog is null || !IsCacheUsable(cache.Catalog)) return null;
+            if (cache?.Catalog is null || !IsCatalogUsable(cache.Catalog, out _))
+                return null;
 
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             if (cache.SavedAtUnix <= 0 ||
@@ -503,12 +488,15 @@ public static class ServerCatalogService
                 now - cache.SavedAtUnix > (long)CacheMaxAge.TotalSeconds)
                 return null;
 
-            var spec = new SourceSpec(
-                cache.SourceUrl,
-                cache.Authoritative ? 0 : 50,
-                cache.Authoritative,
-                cache.Authoritative ? "LegendBorn API cache" : "mirror cache");
-            return new Candidate(cache.Catalog, spec, long.MaxValue, FromCache: true);
+            return new Candidate(
+                cache.Catalog,
+                new SourceSpec(
+                    cache.SourceUrl,
+                    cache.Authoritative ? 0 : 50,
+                    cache.Authoritative,
+                    cache.Authoritative ? "LegendBorn API cache" : "mirror cache"),
+                long.MaxValue,
+                FromCache: true);
         }
         catch (Exception ex)
         {
@@ -523,14 +511,15 @@ public static class ServerCatalogService
         try
         {
             LauncherPaths.EnsureDir(LauncherPaths.CacheDir);
-            var payload = new CacheEnvelope
+            var envelope = new CacheEnvelope
             {
                 SavedAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 Authoritative = candidate.Source.Authoritative,
                 SourceUrl = candidate.Source.Url,
                 Catalog = candidate.Catalog
             };
-            var json = JsonSerializer.Serialize(payload, JsonOptions);
+
+            var json = JsonSerializer.Serialize(envelope, JsonOptions);
             if (Utf8NoBom.GetByteCount(json) > MaxCacheBytes)
                 throw new InvalidOperationException("Catalog cache payload exceeds the safety bound.");
 
@@ -553,12 +542,39 @@ public static class ServerCatalogService
         }
     }
 
-    private static void TrySetUserAgent(HttpRequestMessage req)
+    private static int MirrorRank(string url)
+    {
+        if (url.Contains("selstorage.ru", StringComparison.OrdinalIgnoreCase) ||
+            url.Contains("selcloud.ru", StringComparison.OrdinalIgnoreCase)) return 0;
+        if (url.Contains("pack.legendborn.ru", StringComparison.OrdinalIgnoreCase)) return 1;
+        if (url.Contains("master.dl.sourceforge.net", StringComparison.OrdinalIgnoreCase)) return 2;
+        if (url.Contains("downloads.sourceforge.net", StringComparison.OrdinalIgnoreCase)) return 3;
+        if (url.Contains("sourceforge.net", StringComparison.OrdinalIgnoreCase)) return 4;
+        return 5;
+    }
+
+    private static string NormalizeServerAddress(string? value)
+    {
+        var address = (value ?? "").Trim();
+        if (address.Length == 0 || address.Length > 255) return "";
+        if (address.Contains('/') || address.Contains('\\') ||
+            address.Any(char.IsWhiteSpace) || address.Contains("://", StringComparison.Ordinal))
+            return "";
+        return address;
+    }
+
+    private static string NormalizeHttpsUrl(string? value)
+        => NeoForgeDistributionBootstrap.NormalizeHttpsUrl(value);
+
+    private static string NormalizeHttpsBaseUrl(string? value)
+        => NeoForgeDistributionBootstrap.NormalizeHttpsBase(value);
+
+    private static void TrySetUserAgent(HttpRequestMessage request)
     {
         try
         {
-            req.Headers.UserAgent.Clear();
-            req.Headers.UserAgent.ParseAdd(
+            request.Headers.UserAgent.Clear();
+            request.Headers.UserAgent.ParseAdd(
                 string.IsNullOrWhiteSpace(LauncherIdentity.UserAgent)
                     ? $"LegendBornLauncher/{LauncherIdentity.InformationalVersion}"
                     : LauncherIdentity.UserAgent);
@@ -580,6 +596,7 @@ public static class ServerCatalogService
             AllowAutoRedirect = true,
             MaxConnectionsPerServer = 8
         };
+
         return new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
     }
 }
