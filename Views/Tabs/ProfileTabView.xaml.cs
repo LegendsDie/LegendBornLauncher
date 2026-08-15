@@ -20,7 +20,14 @@ public partial class ProfileTabView : UserControl
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        if (DataContext is not MainViewModel vm || !vm.IsLoggedIn)
+        if (DataContext is not MainViewModel vm)
+            return;
+
+        // Once profile-only account data may be loaded, keep a logout observer for the lifetime
+        // of this launcher window so a second account can never inherit the first account's UI state.
+        vm.EnsureProfileExperienceAccountScope();
+
+        if (!vm.IsLoggedIn)
             return;
 
         var command = vm.RefreshProfileExperienceCommand;
