@@ -36,6 +36,11 @@
         </Page>
     </ItemGroup>
 
+    <!-- CI smoke-test sources belong to their own project and must never compile into Launcher. -->
+    <ItemGroup>
+        <Compile Remove="tests\**\*.cs" />
+    </ItemGroup>
+
     <ItemGroup>
         <Folder Include="Properties\" />
     </ItemGroup>
