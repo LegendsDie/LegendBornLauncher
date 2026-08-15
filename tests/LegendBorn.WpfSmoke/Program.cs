@@ -1,8 +1,8 @@
 using System;
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
-using LegendBorn;
 using LegendBorn.Views.Tabs;
 
 internal static class Program
@@ -15,8 +15,22 @@ internal static class Program
     [STAThread]
     private static int Main()
     {
-        var app = new App();
-        app.InitializeComponent();
+        // This is a separate executable assembly, so LegendBorn's App.xaml relative
+        // ResourceDictionary URIs would otherwise resolve against the smoke-test assembly.
+        // Load the exact production dictionaries explicitly from LegendBorn.dll.
+        var app = new Application();
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        {
+            Source = new Uri(
+                "pack://application:,,,/LegendBorn;component/Resources/Themes/LauncherTheme.xaml",
+                UriKind.Absolute)
+        });
+        app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        {
+            Source = new Uri(
+                "pack://application:,,,/LegendBorn;component/Resources/Themes/MainWindowLocal.xaml",
+                UriKind.Absolute)
+        });
 
         var view = new ProfileTabView
         {
