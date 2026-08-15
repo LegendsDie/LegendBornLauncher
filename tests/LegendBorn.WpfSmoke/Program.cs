@@ -12,10 +12,6 @@ internal static class Program
     [STAThread]
     private static int Main()
     {
-        // Make pack://application:,,,/... resolve exactly as it does when LegendBorn.exe
-        // is the entry assembly, even though this smoke test is a separate executable.
-        Application.ResourceAssembly = typeof(MainWindow).Assembly;
-
         var app = new Application
         {
             ShutdownMode = ShutdownMode.OnExplicitShutdown
