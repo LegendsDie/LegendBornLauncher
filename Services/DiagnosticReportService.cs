@@ -99,10 +99,12 @@ public static partial class DiagnosticReportService
             await File.WriteAllTextAsync(
                 Path.Combine(workDir, "PRIVACY.txt"),
                 "This diagnostic bundle intentionally excludes launcher.tokens.dat, auth.token, auth.json and .legendcore/session.json.\n" +
-                "Bearer/access/refresh/join-ticket shaped values found in copied text logs are redacted before archiving.\n",
+                "Bearer/access/refresh/join-ticket shaped values found in copied text logs are redacted before archiving.\n" +
+                "The Windows machine/computer name is intentionally not collected.\n",
                 Utf8NoBom,
                 ct).ConfigureAwait(false);
 
+            WriteContentsIndex(workDir, ct);
             ct.ThrowIfCancellationRequested();
 
             if (File.Exists(zipPath))
@@ -138,7 +140,6 @@ public static partial class DiagnosticReportService
             system = new
             {
                 os = RuntimeInformation.OSDescription,
-                machine = Environment.MachineName,
                 processorCount = Environment.ProcessorCount,
             },
             game = new
@@ -158,6 +159,7 @@ public static partial class DiagnosticReportService
                 tokenStoreIncluded = false,
                 legendCoreSessionIncluded = false,
                 legacyAuthFilesIncluded = false,
+                machineNameIncluded = false,
                 copiedTextLogsRedacted = true,
             }
         };
@@ -168,6 +170,31 @@ public static partial class DiagnosticReportService
             json,
             Utf8NoBom,
             ct).ConfigureAwait(false);
+    }
+
+    private static void WriteContentsIndex(string workDir, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        try
+        {
+            var root = Path.GetFullPath(workDir);
+            var lines = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                .Where(path => !Path.GetFileName(path).Equals("CONTENTS.txt", StringComparison.OrdinalIgnoreCase))
+                .Select(path => new FileInfo(path))
+                .OrderBy(file => file.FullName, StringComparer.OrdinalIgnoreCase)
+                .Select(file => $"{file.Length,10}  {Path.GetRelativePath(root, file.FullName).Replace('\\', '/')}")
+                .ToArray();
+
+            File.WriteAllLines(Path.Combine(root, "CONTENTS.txt"), lines, Utf8NoBom);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            // The index is convenience metadata only; diagnostics still remain useful without it.
+        }
     }
 
     private static HashSet<string> LoadEphemeralSecrets(string gameDir)

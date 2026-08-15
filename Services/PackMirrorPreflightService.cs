@@ -1,6 +1,8 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -21,9 +23,12 @@ namespace LegendBorn.Services;
 public static class PackMirrorPreflightService
 {
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(6);
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(20);
     private const long MaxManifestBytes = 5L * 1024 * 1024;
 
     private static readonly HttpClient Http = CreateHttp();
+    private static readonly object CacheLock = new();
+    private static CacheEntry? _cache;
 
     private sealed class ManifestHead
     {
@@ -39,6 +44,8 @@ public static class PackMirrorPreflightService
         long ElapsedMs,
         int OriginalIndex);
 
+    private sealed record CacheEntry(string Key, long SavedAtUnixMs, string[] OrderedMirrors);
+
     public static async Task<string[]> OrderByFreshnessAsync(
         IEnumerable<string>? mirrors,
         Action<string>? log = null,
@@ -53,10 +60,20 @@ public static class PackMirrorPreflightService
         if (normalized.Length <= 1)
             return normalized;
 
+        var cacheKey = string.Join("\n", normalized.Select(static value => value.ToLowerInvariant()));
+        if (TryGetCached(cacheKey, out var cached))
+        {
+            log?.Invoke("Pack mirrors: использую свежий preflight cache.");
+            return cached;
+        }
+
         var probes = await Task.WhenAll(normalized.Select((mirror, index) => ProbeAsync(mirror, index, ct)))
             .ConfigureAwait(false);
 
-        var successful = probes.Where(static result => result is not null).Select(static result => result!).ToList();
+        var successful = probes
+            .Where(static result => result is not null)
+            .Select(static result => result!)
+            .ToList();
         if (successful.Count == 0)
         {
             log?.Invoke("Pack mirrors: preflight не получил ни одного manifest; использую обычный fallback pipeline.");
@@ -79,15 +96,21 @@ public static class PackMirrorPreflightService
 
         // Successful mirrors are ordered by freshness first. Failed probes are retained afterwards:
         // they may still be useful for individual blobs if a manifest endpoint was temporarily slow.
-        return orderedSuccessful
+        var ordered = orderedSuccessful
             .Select(static result => result.BaseUrl)
             .Concat(normalized.Where(url => successful.All(result =>
                 !url.Equals(result.BaseUrl, StringComparison.OrdinalIgnoreCase))))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+
+        StoreCache(cacheKey, ordered);
+        return ordered;
     }
 
-    private static async Task<ProbeResult?> ProbeAsync(string baseUrl, int originalIndex, CancellationToken ct)
+    private static async Task<ProbeResult?> ProbeAsync(
+        string baseUrl,
+        int originalIndex,
+        CancellationToken ct)
     {
         try
         {
@@ -101,9 +124,11 @@ public static class PackMirrorPreflightService
             TrySetUserAgent(request);
 
             var sw = Stopwatch.StartNew();
-            using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestCts.Token)
+            using var response = await Http.SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    requestCts.Token)
                 .ConfigureAwait(false);
-            sw.Stop();
 
             if (!response.IsSuccessStatusCode) return null;
             if ((response.Content.Headers.ContentType?.MediaType ?? "")
@@ -112,17 +137,23 @@ public static class PackMirrorPreflightService
             var length = response.Content.Headers.ContentLength;
             if (length.HasValue && (length.Value <= 0 || length.Value > MaxManifestBytes)) return null;
 
-            await using var stream = await response.Content.ReadAsStreamAsync(requestCts.Token).ConfigureAwait(false);
-            var manifest = await JsonSerializer.DeserializeAsync<ManifestHead>(
-                    stream,
-                    new JsonSerializerOptions
-                    {
-                        PropertyNameCaseInsensitive = true,
-                        AllowTrailingCommas = true,
-                        ReadCommentHandling = JsonCommentHandling.Skip
-                    },
-                    requestCts.Token)
-                .ConfigureAwait(false);
+            var payload = await ReadBodyLimitedAsync(response.Content, requestCts.Token).ConfigureAwait(false);
+            sw.Stop();
+
+            ManifestHead? manifest;
+            try
+            {
+                manifest = JsonSerializer.Deserialize<ManifestHead>(payload, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    AllowTrailingCommas = true,
+                    ReadCommentHandling = JsonCommentHandling.Skip
+                });
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
 
             if (manifest is null) return null;
             if (string.IsNullOrWhiteSpace(manifest.PackId) &&
@@ -131,9 +162,15 @@ public static class PackMirrorPreflightService
                 !manifest.Build.HasValue)
                 return null;
 
-            var finalBase = response.RequestMessage?.RequestUri is { } finalUri
-                ? NormalizeBaseUrl(new Uri(finalUri, "./").ToString())
-                : baseUrl;
+            var finalBase = baseUrl;
+            if (response.RequestMessage?.RequestUri is { } finalUri)
+            {
+                if (finalUri.Scheme != Uri.UriSchemeHttps)
+                    return null;
+                finalBase = NormalizeBaseUrl(new Uri(finalUri, "./").ToString());
+                if (finalBase.Length == 0)
+                    return null;
+            }
 
             return new ProbeResult(finalBase, manifest, Math.Max(1, sw.ElapsedMilliseconds), originalIndex);
         }
@@ -144,6 +181,70 @@ public static class PackMirrorPreflightService
         catch
         {
             return null;
+        }
+    }
+
+    private static async Task<byte[]> ReadBodyLimitedAsync(HttpContent content, CancellationToken ct)
+    {
+        await using var input = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        using var memory = new MemoryStream(capacity: 16 * 1024);
+        var buffer = ArrayPool<byte>.Shared.Rent(16 * 1024);
+        long total = 0;
+
+        try
+        {
+            while (true)
+            {
+                var read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
+                if (read == 0) break;
+
+                total += read;
+                if (total > MaxManifestBytes)
+                    throw new InvalidOperationException("Pack manifest preflight response exceeded the safety bound.");
+
+                memory.Write(buffer, 0, read);
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
+        }
+
+        if (total <= 0)
+            throw new InvalidOperationException("Pack manifest preflight response was empty.");
+
+        return memory.ToArray();
+    }
+
+    private static bool TryGetCached(string key, out string[] ordered)
+    {
+        ordered = Array.Empty<string>();
+        lock (CacheLock)
+        {
+            var cache = _cache;
+            if (cache is null || !cache.Key.Equals(key, StringComparison.Ordinal))
+                return false;
+
+            var ageMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - cache.SavedAtUnixMs;
+            if (ageMs < 0 || ageMs > CacheTtl.TotalMilliseconds)
+            {
+                _cache = null;
+                return false;
+            }
+
+            ordered = cache.OrderedMirrors.ToArray();
+            return true;
+        }
+    }
+
+    private static void StoreCache(string key, string[] ordered)
+    {
+        lock (CacheLock)
+        {
+            _cache = new CacheEntry(
+                key,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ordered.ToArray());
         }
     }
 
@@ -197,7 +298,9 @@ public static class PackMirrorPreflightService
                     ? $"LegendBornLauncher/{LauncherIdentity.InformationalVersion}"
                     : LauncherIdentity.UserAgent);
         }
-        catch { }
+        catch
+        {
+        }
     }
 
     private static HttpClient CreateHttp()
