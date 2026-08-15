@@ -1,11 +1,11 @@
 using System;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
-using System.Windows.Data;
 using System.Windows.Input;
+using System.Windows.Threading;
 using LegendBorn.ViewModels;
 
 namespace LegendBorn.Views.Tabs;
@@ -13,38 +13,82 @@ namespace LegendBorn.Views.Tabs;
 public partial class ProfileTabView : UserControl
 {
     private const string SiteBaseUrl = "https://legendborn.xyz";
+    private MainViewModel? _profileProgressOwner;
 
     public ProfileTabView()
     {
         InitializeComponent();
-        InstallProfileProgressBinding();
+        DataContextChanged += OnDataContextChanged;
         Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
     }
 
     /// <summary>
-    /// RangeBase.Value binds TwoWay by default. Keep the XP presentation property read-only
-    /// and install its display-only binding in code so compiled BAML never owns a binding that
-    /// can fall back to RangeBase.Value's TwoWay default during runtime attachment.
+    /// ProfileXpProgressPercent is intentionally read-only server-owned presentation state.
+    /// RangeBase.Value binds TwoWay by default, and the real launcher has reproduced a WPF
+    /// read-only-source crash even after an explicit OneWay binding was installed. Do not put
+    /// this property through the WPF binding engine at all: mirror it into ProgressBar.Value
+    /// from MainViewModel.PropertyChanged instead.
     /// </summary>
-    private void InstallProfileProgressBinding()
+    private void AttachProfileProgressOwner(MainViewModel? owner)
     {
-        BindingOperations.SetBinding(
-            ProfileXpProgressBar,
-            RangeBase.ValueProperty,
-            new Binding(nameof(MainViewModel.ProfileXpProgressPercent))
-            {
-                Mode = BindingMode.OneWay
-            });
+        if (ReferenceEquals(_profileProgressOwner, owner))
+        {
+            UpdateProfileProgressValue();
+            return;
+        }
 
-        var installed = BindingOperations.GetBinding(ProfileXpProgressBar, RangeBase.ValueProperty);
-        if (installed?.Mode != BindingMode.OneWay)
-            throw new InvalidOperationException("Profile XP progress binding was not installed as OneWay.");
+        if (_profileProgressOwner is not null)
+            _profileProgressOwner.PropertyChanged -= OnProfileProgressPropertyChanged;
+
+        _profileProgressOwner = owner;
+
+        if (_profileProgressOwner is not null)
+            _profileProgressOwner.PropertyChanged += OnProfileProgressPropertyChanged;
+
+        UpdateProfileProgressValue();
+    }
+
+    private void OnDataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
+        => AttachProfileProgressOwner(e.NewValue as MainViewModel);
+
+    private void OnProfileProgressPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (!string.IsNullOrEmpty(e.PropertyName) &&
+            !string.Equals(e.PropertyName, nameof(MainViewModel.ProfileXpProgressPercent), StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        UpdateProfileProgressValue();
+    }
+
+    private void UpdateProfileProgressValue()
+    {
+        void Apply()
+        {
+            var value = _profileProgressOwner?.ProfileXpProgressPercent ?? 0.0;
+            ProfileXpProgressBar.Value = Math.Clamp(value, 0.0, 100.0);
+        }
+
+        if (Dispatcher.CheckAccess())
+        {
+            Apply();
+            return;
+        }
+
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.DataBind, (Action)Apply);
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         if (DataContext is not MainViewModel vm)
+        {
+            AttachProfileProgressOwner(null);
             return;
+        }
+
+        AttachProfileProgressOwner(vm);
 
         // Once profile-only account data may be loaded, keep a logout observer for the lifetime
         // of this launcher window so a second account can never inherit the first account's UI state.
@@ -57,6 +101,9 @@ public partial class ProfileTabView : UserControl
         if (command.CanExecute(null))
             command.Execute(null);
     }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+        => AttachProfileProgressOwner(null);
 
     private void OpenSite_OnClick(object sender, RoutedEventArgs e)
         => OpenUrl(SiteBaseUrl + "/profile");
