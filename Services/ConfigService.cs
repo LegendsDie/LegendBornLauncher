@@ -75,14 +75,15 @@ public sealed class ConfigService : IDisposable
                 Current = cfg;
 
                 var canonical = Serialize(Current);
-                _lastSavedJson = canonical;
+                var alreadyCanonical = string.Equals(jsonOnDisk, canonical, StringComparison.Ordinal);
+                _lastSavedJson = alreadyCanonical ? canonical : null;
                 _dirty = false;
                 _firstDirtyTick = 0;
                 CancelTimer_NoLock();
 
-                // Persist schema migrations/normalization immediately. Previously a normalized
-                // in-memory config could diverge from the broken/stale file indefinitely.
-                if (!string.Equals(jsonOnDisk, canonical, StringComparison.Ordinal))
+                // Persist schema migrations/normalization immediately. If the write fails, the
+                // saved-json cache stays null so the retry cannot falsely decide the disk is current.
+                if (!alreadyCanonical)
                 {
                     MarkDirty_NoLock();
                     if (!SaveNowInternal(force: true))
@@ -100,7 +101,7 @@ public sealed class ConfigService : IDisposable
 
     private LauncherConfig RecoverBrokenConfig_NoLock(string reason)
     {
-        _ = reason; // Kept for debugger clarity; ConfigService itself has no logger dependency.
+        _ = reason;
         TryBackupBrokenConfig();
 
         Current = new LauncherConfig();
@@ -116,10 +117,6 @@ public sealed class ConfigService : IDisposable
         return Current;
     }
 
-    /// <summary>
-    /// Mark the config dirty and schedule persistence. A failed immediate write is retried instead
-    /// of silently clearing the save request.
-    /// </summary>
     public void Save()
     {
         lock (_sync)
@@ -129,7 +126,6 @@ public sealed class ConfigService : IDisposable
         }
     }
 
-    /// <summary>Force persistence now (used during process shutdown).</summary>
     public void Flush()
     {
         lock (_sync)
@@ -259,6 +255,7 @@ public sealed class ConfigService : IDisposable
         catch
         {
             TryDeleteQuiet(tmp);
+            _lastSavedJson = null;
             _dirty = true;
             if (_firstDirtyTick == 0)
                 _firstDirtyTick = Environment.TickCount64;
@@ -351,7 +348,6 @@ public sealed class ConfigService : IDisposable
             }
             catch (IOException)
             {
-                // Fall through to Move(overwrite). If that also fails, propagate to the retry loop.
             }
             catch (UnauthorizedAccessException)
             {
@@ -362,6 +358,7 @@ public sealed class ConfigService : IDisposable
             }
         }
 
+        // Do not swallow this failure: SaveNowInternal must keep the config dirty and retry.
         File.Move(sourceTmp, destPath, overwrite: true);
     }
 
