@@ -79,7 +79,7 @@ jobs:
             if (-not $debugPack.Contains($required)) { throw "Debug local pack safeguard missing: $required" }
           }
           foreach ($required in @('LocalPackDebugService.IsEnabled','LocalPackDebugService.ApplyAsync','syncProductionPack = false')) {
-            if (-not $launch.Contains($required)) { throw "Debug launch integration missing: $required" }
+            if (-not $launch.Contains($required)) { throw "Debug local pack integration missing: $required" }
           }
           if ($debugPack.Contains('manifest-presign') -or $debugPack.Contains('liveUploadUrl')) { throw "Debug local pack path must never publish a live manifest." }
 
@@ -175,6 +175,9 @@ jobs:
           $preflight = Get-Content -Raw -Path "Services/PackMirrorPreflightService.cs"
           $config = Get-Content -Raw -Path "Services/ConfigService.cs"
           $diagnostics = Get-Content -Raw -Path "Services/DiagnosticReportService.cs"
+          $profileXaml = Get-Content -Raw -Path "Views/Tabs/ProfileTabView.xaml"
+          $profileCode = Get-Content -Raw -Path "Views/Tabs/ProfileTabView.xaml.cs"
+          $startXaml = Get-Content -Raw -Path "Views/Tabs/StartTabView.xaml"
 
           foreach ($required in @('MaxLocalManifestBytes','Guid.NewGuid().ToString("N")','await using (var output = new FileStream(','FinalizeVerifiedDownloadAsync','File.Move(tempPath, destination, overwrite: true)')) {
             if (-not $debugPack.Contains($required)) { throw "Debug pack Windows-finalization guard missing: $required" }
@@ -202,6 +205,22 @@ jobs:
             if (-not $diagnostics.Contains($required)) { throw "Diagnostics privacy guard missing: $required" }
           }
 
+          if (-not $profileXaml.Contains('x:Name="ProfileXpProgressBar"')) {
+            throw "Profile XP progress control must keep its explicit manual-update target name."
+          }
+          if ($profileXaml.Contains('ProfileXpProgressPercent')) {
+            throw "ProfileXpProgressPercent must never return to compiled XAML/BAML."
+          }
+          foreach ($required in @('DataContextChanged += OnDataContextChanged','PropertyChanged += OnProfileProgressPropertyChanged','PropertyChanged -= OnProfileProgressPropertyChanged','ProfileXpProgressBar.Value =','nameof(MainViewModel.ProfileXpProgressPercent)')) {
+            if (-not $profileCode.Contains($required)) { throw "Manual profile XP presentation guard missing: $required" }
+          }
+          foreach ($forbidden in @('BindingOperations.SetBinding','new Binding(nameof(MainViewModel.ProfileXpProgressPercent))','RangeBase.ValueProperty')) {
+            if ($profileCode.Contains($forbidden)) { throw "Profile XP must not use WPF BindingEngine: $forbidden" }
+          }
+          if (-not $startXaml.Contains('Value="{Binding ProgressPercent, Mode=OneWay}"')) {
+            throw "Start progress binding must remain explicitly OneWay."
+          }
+
       - name: Cache NuGet
         uses: actions/cache@v5
         with:
@@ -211,10 +230,21 @@ jobs:
             ${{ runner.os }}-nuget-
 
       - name: Restore win-x64
-        run: dotnet restore LegendBorn.csproj -r win-x64
+        shell: pwsh
+        run: |
+          dotnet restore LegendBorn.csproj -r win-x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet restore tests/LegendBorn.WpfSmoke/LegendBorn.WpfSmoke.csproj -r win-x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Debug local-pack path (warnings are errors)
         run: dotnet build LegendBorn.csproj -c Debug -r win-x64 --no-restore -warnaserror
+
+      - name: Build WPF profile XP runtime smoke (warnings are errors)
+        run: dotnet build tests/LegendBorn.WpfSmoke/LegendBorn.WpfSmoke.csproj -c Debug -r win-x64 --no-restore -warnaserror
+
+      - name: Run WPF profile XP runtime smoke
+        run: dotnet run --project tests/LegendBorn.WpfSmoke/LegendBorn.WpfSmoke.csproj -c Debug -r win-x64 --no-build --no-restore
 
       - name: Build Release (warnings are errors)
         run: dotnet build LegendBorn.csproj -c Release -r win-x64 --no-restore -warnaserror
