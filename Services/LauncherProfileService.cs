@@ -28,7 +28,9 @@ public sealed class LauncherProfileService
 
     public class ApiResponse
     {
-        [JsonPropertyName("ok")] public bool Ok { get; set; }
+        // Nullable raw value lets us distinguish an omitted `ok` field from an explicit `ok:false`.
+        [JsonPropertyName("ok")] public bool? OkValue { get; set; }
+        [JsonIgnore] public bool Ok { get => OkValue == true; set => OkValue = value; }
         [JsonPropertyName("error")] public string? Error { get; set; }
         [JsonPropertyName("message")] public string? Message { get; set; }
     }
@@ -147,7 +149,6 @@ public sealed class LauncherProfileService
         }
 
         // The join API accepts clanKey, while the list endpoint also exposes a database id.
-        // Normalize the UI action identifier to the public clan key so it can never send the DB id by mistake.
         foreach (var clan in dto.Clans)
             clan.Id = clan.Key;
         return dto;
@@ -184,9 +185,14 @@ public sealed class LauncherProfileService
                     await Task.Delay(TimeSpan.FromMilliseconds(200 * attempt), ct).ConfigureAwait(false);
                     continue;
                 }
-                return await ReadResponseAsync<T>(response, ct).ConfigureAwait(false);
+
+                // Keep the same deadline active through the body read, not only until headers arrive.
+                return await ReadResponseAsync<T>(response, timeout.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex) when (attempt < 3)
             {
                 last = ex;
@@ -202,7 +208,8 @@ public sealed class LauncherProfileService
         timeout.CancelAfter(TimeSpan.FromSeconds(25));
         using var request = CreateRequest(HttpMethod.Post, path, token, payload);
         using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
-        return await ReadResponseAsync<T>(response, ct).ConfigureAwait(false);
+        // Mutations remain single-attempt, but the timeout covers the complete response body as well.
+        return await ReadResponseAsync<T>(response, timeout.Token).ConfigureAwait(false);
     }
 
     private static HttpRequestMessage CreateRequest(HttpMethod method, string path, string token, object? payload)
@@ -225,15 +232,27 @@ public sealed class LauncherProfileService
     {
         var body = await ReadBodyLimitedAsync(response, ct).ConfigureAwait(false);
         T dto;
-        try { dto = JsonSerializer.Deserialize<T>(body, JsonOptions) ?? new T(); }
-        catch { dto = new T { Ok = false, Error = "Сервер вернул некорректный JSON." }; }
+        try
+        {
+            dto = JsonSerializer.Deserialize<T>(body, JsonOptions) ?? new T();
+        }
+        catch
+        {
+            dto = new T { Ok = false, Error = "Сервер вернул некорректный JSON." };
+        }
 
         if (!response.IsSuccessStatusCode)
         {
             dto.Ok = false;
-            if (string.IsNullOrWhiteSpace(dto.Error)) dto.Error = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
+            if (string.IsNullOrWhiteSpace(dto.Error))
+                dto.Error = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
         }
-        else if (!dto.Ok && string.IsNullOrWhiteSpace(dto.Error)) dto.Ok = true;
+        else if (dto.OkValue is null)
+        {
+            // Compatibility for simple 2xx endpoints that omit `ok`; never overwrite an explicit false.
+            dto.Ok = string.IsNullOrWhiteSpace(dto.Error);
+        }
+
         return dto;
     }
 
@@ -251,12 +270,16 @@ public sealed class LauncherProfileService
             {
                 var read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
                 if (read == 0) break;
-                if (output.Length + read > MaxResponseBytes) throw new InvalidOperationException("Ответ сервера слишком большой.");
+                if (output.Length + read > MaxResponseBytes)
+                    throw new InvalidOperationException("Ответ сервера слишком большой.");
                 output.Write(buffer, 0, read);
             }
             return Encoding.UTF8.GetString(output.GetBuffer(), 0, checked((int)output.Length));
         }
-        finally { ArrayPool<byte>.Shared.Return(buffer); }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 
     private static bool IsTransient(HttpStatusCode code)
