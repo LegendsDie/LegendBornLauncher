@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -6,6 +7,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Threading;
 using LegendBorn;
+using LegendBorn.ViewModels;
 using LegendBorn.Views.Tabs;
 
 internal static class Program
@@ -55,31 +57,46 @@ internal static class Program
                 throw new InvalidOperationException(
                     "ProfileXpProgressBar was not found in the production profile view namescope.");
 
-            var binding = BindingOperations.GetBinding(progress, RangeBase.ValueProperty)
-                          ?? throw new InvalidOperationException(
-                              "Profile XP progress binding is missing at runtime.");
-
-            if (binding.Mode != BindingMode.OneWay)
-                throw new InvalidOperationException(
-                    $"Profile XP progress binding mode is {binding.Mode}, expected OneWay.");
-
-            if (!string.Equals(
-                    binding.Path?.Path,
-                    "ProfileXpProgressPercent",
-                    StringComparison.Ordinal))
+            // Regression contract: ProfileXpProgressPercent must never enter WPF's BindingEngine.
+            if (BindingOperations.GetBinding(progress, RangeBase.ValueProperty) is not null ||
+                BindingOperations.GetBindingExpression(progress, RangeBase.ValueProperty) is not null)
             {
                 throw new InvalidOperationException(
-                    $"Profile XP progress binding path is '{binding.Path?.Path}', expected ProfileXpProgressPercent.");
+                    "Profile XP progress unexpectedly has a WPF BindingExpression; read-only XP must be mirrored manually.");
             }
 
-            var expression = BindingOperations.GetBindingExpression(progress, RangeBase.ValueProperty)
-                             ?? throw new InvalidOperationException(
-                                 "Profile XP progress BindingExpression is missing at runtime.");
+            if (host.DataContext is not MainViewModel vm)
+                throw new InvalidOperationException("Production MainWindow did not expose MainViewModel as DataContext.");
 
-            // Force the same binding/layout work that was present in the real crash stack.
-            expression.UpdateTarget();
-            host.UpdateLayout();
+            var applyProgression = typeof(MainViewModel).GetMethod(
+                "ApplyProgression",
+                BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("MainViewModel.ApplyProgression was not found for smoke setup.");
+
+            // Drive the real ViewModel progression path. ApplyProgression raises
+            // PropertyChanged(ProfileXpProgressPercent); ProfileTabView must mirror that into
+            // ProgressBar.Value without creating any BindingExpression.
+            applyProgression.Invoke(vm, new object[]
+            {
+                2,
+                375L,
+                100L,
+                37L,
+                100L,
+                37.5,
+                0L
+            });
+
             host.Dispatcher.Invoke(static () => { }, DispatcherPriority.DataBind);
+            host.UpdateLayout();
+
+            if (Math.Abs(progress.Value - 37.5) > 0.001)
+                throw new InvalidOperationException(
+                    $"Profile XP progress target value is {progress.Value}, expected 37.5 after PropertyChanged.");
+
+            if (BindingOperations.GetBindingExpression(progress, RangeBase.ValueProperty) is not null)
+                throw new InvalidOperationException(
+                    "Profile XP progress gained a WPF BindingExpression after progression update.");
 
             return 0;
         }
