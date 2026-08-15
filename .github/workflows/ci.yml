@@ -175,6 +175,8 @@ jobs:
           $preflight = Get-Content -Raw -Path "Services/PackMirrorPreflightService.cs"
           $config = Get-Content -Raw -Path "Services/ConfigService.cs"
           $diagnostics = Get-Content -Raw -Path "Services/DiagnosticReportService.cs"
+          $profileXaml = Get-Content -Raw -Path "Views/Tabs/ProfileTabView.xaml"
+          $startXaml = Get-Content -Raw -Path "Views/Tabs/StartTabView.xaml"
 
           foreach ($required in @('MaxLocalManifestBytes','Guid.NewGuid().ToString("N")','await using (var output = new FileStream(','FinalizeVerifiedDownloadAsync','File.Move(tempPath, destination, overwrite: true)')) {
             if (-not $debugPack.Contains($required)) { throw "Debug pack Windows-finalization guard missing: $required" }
@@ -200,6 +202,13 @@ jobs:
           if ($diagnostics.Contains('Environment.MachineName')) { throw "Diagnostics must not collect raw machine name." }
           foreach ($required in @('machineNameIncluded = false','CONTENTS.txt','copiedTextLogsRedacted = true')) {
             if (-not $diagnostics.Contains($required)) { throw "Diagnostics privacy guard missing: $required" }
+          }
+
+          if (-not $profileXaml.Contains('Value="{Binding ProfileXpProgressPercent, Mode=OneWay}"')) {
+            throw "Profile progress binding must remain OneWay; RangeBase.Value defaults can write back and crash on read-only properties."
+          }
+          if (-not $startXaml.Contains('Value="{Binding ProgressPercent, Mode=OneWay}"')) {
+            throw "Start progress binding must remain explicitly OneWay."
           }
 
       - name: Cache NuGet
