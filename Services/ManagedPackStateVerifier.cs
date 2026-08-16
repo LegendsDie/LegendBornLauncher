@@ -13,6 +13,8 @@ namespace LegendBorn.Services;
 /// authoritative manifest. It derives the exact managed path set from the pack_state.json written
 /// by that same sync run, so cleanup cannot race a second manifest request or use a different CDN
 /// revision. A managed .pending file means the new revision is not active yet and launch is blocked.
+/// NeoForge's technical config is sanitized separately so stale dependencyOverrides cannot survive
+/// merely because normal config/ files are intentionally user-owned.
 /// </summary>
 public static class ManagedPackStateVerifier
 {
@@ -35,6 +37,10 @@ public static class ManagedPackStateVerifier
                 wanted,
                 ct)
             .ConfigureAwait(false);
+
+        // config/ stays user-owned, but config/fml.toml is NeoForge loader state. Remove only
+        // dependencyOverrides whose target mod no longer exists; all unrelated settings survive.
+        await FmlConfigHygieneService.SanitizeAsync(gameDir, log, ct).ConfigureAwait(false);
 
         var pending = FindManagedPendingFiles(gameDir).Take(8).ToArray();
         if (pending.Length > 0)
