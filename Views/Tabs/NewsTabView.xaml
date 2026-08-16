@@ -26,7 +26,6 @@
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
 
-                        <!-- Header -->
                         <Grid Grid.Row="0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -64,7 +63,6 @@
                             </StackPanel>
                         </Grid>
 
-                        <!-- Content -->
                         <ScrollViewer Grid.Row="2"
                                       VerticalScrollBarVisibility="Auto"
                                       HorizontalScrollBarVisibility="Disabled"
@@ -78,8 +76,6 @@
                                 </Grid.ColumnDefinitions>
 
                                 <StackPanel Grid.Column="1">
-
-                                    <!-- Intro -->
                                     <Border Background="#0C000000"
                                             BorderBrush="{StaticResource StrokeGlow}"
                                             BorderThickness="1"
@@ -99,7 +95,7 @@
                                                 <TextBlock Margin="0,4,0,0"
                                                            Foreground="{StaticResource TextDimLocal}"
                                                            FontSize="11"
-                                                           Text="Источник: legendborn.ru"/>
+                                                           Text="Источник: legendborn.xyz"/>
                                             </StackPanel>
 
                                             <Border Grid.Column="1"
@@ -113,13 +109,10 @@
                                         </Grid>
                                     </Border>
 
-                                    <!-- News list -->
                                     <ItemsControl>
                                         <ItemsControl.ItemsSource>
                                             <PriorityBinding>
-                                                <!-- VM -->
                                                 <Binding Path="ProjectNews"/>
-                                                <!-- fallback: Window-level коллекция (если вдруг так) -->
                                                 <Binding RelativeSource="{RelativeSource AncestorType=Window}" Path="ProjectNews"/>
                                             </PriorityBinding>
                                         </ItemsControl.ItemsSource>
@@ -145,7 +138,6 @@
                                                                 <RowDefinition Height="Auto"/>
                                                             </Grid.RowDefinitions>
 
-                                                            <!-- Title + date -->
                                                             <Grid Grid.Row="0">
                                                                 <Grid.ColumnDefinitions>
                                                                     <ColumnDefinition Width="*"/>
@@ -171,7 +163,6 @@
                                                                 </Border>
                                                             </Grid>
 
-                                                            <!-- Summary -->
                                                             <Border Grid.Row="2"
                                                                     Background="#0C000000"
                                                                     BorderBrush="#2A2F49"
@@ -186,7 +177,6 @@
                                                                            Text="{Binding Summary}"/>
                                                             </Border>
 
-                                                            <!-- CTA -->
                                                             <Grid Grid.Row="4">
                                                                 <Grid.ColumnDefinitions>
                                                                     <ColumnDefinition Width="Auto"/>
@@ -211,7 +201,6 @@
                                                                            Text="↗"
                                                                            VerticalAlignment="Center"/>
                                                             </Grid>
-
                                                         </Grid>
                                                     </Border>
                                                 </Button>
@@ -220,11 +209,9 @@
                                     </ItemsControl>
 
                                     <Border Height="10" Background="Transparent"/>
-
                                 </StackPanel>
                             </Grid>
                         </ScrollViewer>
-
                     </Grid>
                 </Border>
             </Grid>
