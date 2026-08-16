@@ -7,6 +7,7 @@ using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using LegendBorn.Views;
 using Velopack;
 using Velopack.Sources;
 
@@ -21,11 +22,15 @@ public static class UpdateService
 
     private static readonly TimeSpan CheckTimeoutPerSource = TimeSpan.FromSeconds(14);
     private static readonly TimeSpan DownloadTimeout = TimeSpan.FromMinutes(10);
-
     private static readonly SemaphoreSlim Gate = new(1, 1);
 
     private sealed record UpdateSourceSpec(string Name, int Priority, Func<UpdateManager> CreateManager);
     private sealed record AvailableUpdate(string Name, int Priority, UpdateManager Manager, UpdateInfo Info);
+
+    private static string CurrentVersion
+        => string.IsNullOrWhiteSpace(LauncherIdentity.InformationalVersion)
+            ? "—"
+            : LauncherIdentity.InformationalVersion.Trim();
 
     private static UpdateOptions CreateOptions() => new()
     {
@@ -45,8 +50,8 @@ public static class UpdateService
 
     private static UpdateSourceSpec[] CreateSources() => new[]
     {
-        // Russia-friendly static S3-compatible feed first; GitHub remains an independent fallback.
-        new UpdateSourceSpec("LegendBorn Selectel", 0, CreateSelectelManager),
+        // Russia-friendly first-party static feed first; GitHub remains an independent fallback.
+        new UpdateSourceSpec("LegendBorn CDN", 0, CreateSelectelManager),
         new UpdateSourceSpec("GitHub Releases", 1, CreateGitHubManager)
     };
 
@@ -102,6 +107,8 @@ public static class UpdateService
             return;
         }
 
+        LauncherUpdateDialog? progressDialog = null;
+
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -112,19 +119,25 @@ public static class UpdateService
             if (!localManager.IsInstalled)
             {
                 if (!silent && showNoUpdates)
-                    ShowInfo("Лаунчер запущен без установки (Velopack не активен). Обновления недоступны.");
+                {
+                    ShowInfo(
+                        "Обновления недоступны",
+                        "Эта копия лаунчера запущена как portable/debug-сборка. Установленная версия LegendBorn обновляется автоматически.");
+                }
                 return;
             }
 
             // Pending package is local state; it does not matter which remote source created it.
             if (localManager.UpdatePendingRestart is VelopackAsset pending)
             {
-                if (!silent)
+                if (!silent && !ConfirmUpdate(
+                        "Обновление готово",
+                        "Пакет уже скачан и проверен. Осталось применить его и перезапустить лаунчер.",
+                        pending.Version.ToString(),
+                        "Локальный пакет",
+                        "Установить"))
                 {
-                    var ask = ShowYesNo(
-                        "Обновление уже скачано и готово к установке.\n\nПрименить сейчас? Лаунчер перезапустится.");
-                    if (ask != MessageBoxResult.Yes)
-                        return;
+                    return;
                 }
 
                 StartUpdaterAndExit(localManager, pending, silent, restart: true);
@@ -139,39 +152,53 @@ public static class UpdateService
                 if (successfulSources == 0)
                 {
                     if (!silent)
-                        ShowError(BuildAllSourcesFailedError(errors));
+                        ShowError("Не удалось проверить обновления", BuildAllSourcesFailedError(errors));
                     return;
                 }
 
                 if (!silent && showNoUpdates)
-                    ShowInfo("Обновлений лаунчера нет.");
+                {
+                    ShowInfo(
+                        "У тебя актуальная версия",
+                        $"LegendBorn Launcher {CurrentVersion} уже обновлён. Новых версий сейчас нет.");
+                }
                 return;
             }
 
             var target = best.Info.TargetFullRelease;
-            if (!silent)
+            if (!silent && !ConfirmUpdate(
+                    "Доступно обновление",
+                    "Новая версия будет скачана в фоне, проверена Velopack и применена после закрытия текущего окна.",
+                    target.Version.ToString(),
+                    best.Name,
+                    "Обновить"))
             {
-                var ask = ShowYesNo(
-                    $"Доступно обновление лаунчера: {target.Version}\n" +
-                    $"Источник: {best.Name}\n\n" +
-                    "Обновить сейчас? Лаунчер перезапустится.");
-
-                if (ask != MessageBoxResult.Yes)
-                    return;
+                return;
             }
+
+            if (!silent)
+                progressDialog = ShowProgress(target.Version.ToString(), best.Name);
 
             try
             {
                 using var dlCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 dlCts.CancelAfter(DownloadTimeout);
 
-                await best.Manager.DownloadUpdatesAsync(best.Info, progress: null, cancelToken: dlCts.Token)
+                await best.Manager.DownloadUpdatesAsync(
+                        best.Info,
+                        progress: progressDialog is null
+                            ? null
+                            : value => SetProgress(progressDialog, value, "Загружаю обновление…"),
+                        cancelToken: dlCts.Token)
                     .ConfigureAwait(false);
             }
             catch (Exception firstDownloadError) when (!IsCancellation(firstDownloadError, ct))
             {
                 // The selected source can disappear between feed read and asset download. If the
                 // same-or-newer release exists on the other source, retry there before failing.
+                if (progressDialog is not null)
+                    SetProgress(progressDialog, 0, "Основной источник недоступен. Переключаюсь на резервный…");
+
                 var fallback = await FindDownloadFallbackAsync(
                         sources,
                         best,
@@ -181,20 +208,34 @@ public static class UpdateService
 
                 if (fallback is null)
                 {
+                    CloseProgress(progressDialog);
+                    progressDialog = null;
                     if (!silent)
-                        ShowError(BuildFriendlyError(
-                            $"Не удалось скачать обновление с {best.Name} и резервный источник не помог.",
-                            firstDownloadError));
+                    {
+                        ShowError(
+                            "Не удалось скачать обновление",
+                            BuildFriendlyError(
+                                $"Источник {best.Name} не ответил, а резервный источник не смог отдать ту же версию.",
+                                firstDownloadError));
+                    }
                     return;
                 }
 
                 try
                 {
+                    if (progressDialog is not null)
+                    {
+                        SetProgressSource(progressDialog, fallback.Name);
+                        SetProgress(progressDialog, 0, "Загружаю с резервного источника…");
+                    }
+
                     using var fallbackCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     fallbackCts.CancelAfter(DownloadTimeout);
                     await fallback.Manager.DownloadUpdatesAsync(
                             fallback.Info,
-                            progress: null,
+                            progress: progressDialog is null
+                                ? null
+                                : value => SetProgress(progressDialog, value, "Загружаю с резервного источника…"),
                             cancelToken: fallbackCts.Token)
                         .ConfigureAwait(false);
                     best = fallback;
@@ -202,24 +243,35 @@ public static class UpdateService
                 }
                 catch (Exception fallbackError) when (!IsCancellation(fallbackError, ct))
                 {
+                    CloseProgress(progressDialog);
+                    progressDialog = null;
                     if (!silent)
-                        ShowError(BuildFriendlyError(
-                            "Не удалось скачать обновление ни через LegendBorn mirror, ни через GitHub.",
-                            new AggregateException(firstDownloadError, fallbackError)));
+                    {
+                        ShowError(
+                            "Не удалось скачать обновление",
+                            BuildFriendlyError(
+                                "Оба независимых источника обновления сейчас недоступны.",
+                                new AggregateException(firstDownloadError, fallbackError)));
+                    }
                     return;
                 }
             }
 
             ct.ThrowIfCancellationRequested();
+            if (progressDialog is not null)
+                SetProgress(progressDialog, 100, "Готово. Перезапускаю лаунчер…");
+
             StartUpdaterAndExit(best.Manager, target, silent, restart: true);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+            CloseProgress(progressDialog);
         }
         catch (Exception ex)
         {
+            CloseProgress(progressDialog);
             if (!silent)
-                ShowError(BuildFriendlyError("Ошибка обновления.", ex));
+                ShowError("Ошибка обновления", BuildFriendlyError("Не удалось завершить обновление лаунчера.", ex));
         }
         finally
         {
@@ -235,6 +287,8 @@ public static class UpdateService
         var errors = new List<Exception>();
         var successful = 0;
 
+        // Update feeds are tiny. Query both independent feeds so a stale mirror can never hide a
+        // newer release published to the other source.
         foreach (var source in sources.OrderBy(static item => item.Priority))
         {
             ct.ThrowIfCancellationRequested();
@@ -305,7 +359,6 @@ public static class UpdateService
             catch (Exception ex) when (!IsCancellation(ex, ct))
             {
                 _ = ex;
-                // Continue to the next independent source.
             }
         }
 
@@ -314,15 +367,10 @@ public static class UpdateService
 
     private static string BuildAllSourcesFailedError(IReadOnlyCollection<Exception> errors)
     {
-        var details = errors.Count == 0
-            ? "Источники обновлений не ответили."
-            : string.Join("\n\n", errors.Select(static error => error.Message));
-
-        return
-            "Не удалось проверить обновления ни через зеркало LegendBorn/Selectel, ни через GitHub.\n\n" +
-            "Проверь интернет, системный прокси/DNS или попробуй другую сеть. Для пользователей из РФ " +
-            "лаунчер сначала использует независимое Selectel-зеркало, поэтому GitHub не является обязательным.\n\n" +
-            details;
+        var last = errors.LastOrDefault()?.Message;
+        return string.IsNullOrWhiteSpace(last)
+            ? "Не удалось связаться с источниками обновлений. Проверь интернет и попробуй ещё раз."
+            : "Не удалось связаться с источниками обновлений. Проверь интернет и попробуй ещё раз.\n\n" + last;
     }
 
     private static void StartUpdaterAndExit(UpdateManager manager, VelopackAsset toApply, bool silent, bool restart)
@@ -336,7 +384,7 @@ public static class UpdateService
         catch (Exception ex)
         {
             if (!silent)
-                ShowError(BuildFriendlyError("Не удалось применить обновление.", ex));
+                ShowError("Не удалось применить обновление", BuildFriendlyError("Пакет скачан, но updater не смог его применить.", ex));
         }
     }
 
@@ -360,7 +408,7 @@ public static class UpdateService
     private static async Task<T> RunWithTimeout<T>(Func<Task<T>> action, TimeSpan timeout, CancellationToken ct)
     {
         var task = action();
-        var delayTask = Task.Delay(timeout);
+        var delayTask = Task.Delay(timeout, ct);
         var finished = await Task.WhenAny(task, delayTask).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
 
@@ -405,28 +453,32 @@ public static class UpdateService
     private static string BuildFriendlyError(string title, Exception ex)
     {
         var kind = ClassifyNetworkError(ex);
-
         var hint = kind switch
         {
             NetworkErrorKind.DnsOrHostNotFound =>
-                "Система не может найти один из хостов обновления (DNS/фильтрация). " +
-                "Лаунчер пробует и LegendBorn/Selectel, и GitHub. Проверь системный DNS, прокси/VPN или другую сеть.",
-
+                "Не удалось найти сервер обновлений. Проверь DNS, прокси/VPN или попробуй другую сеть.",
             NetworkErrorKind.TlsOrSsl =>
-                "Ошибка защищённого соединения (TLS/SSL). Проверь дату/время Windows, HTTPS-сканирование антивируса, " +
-                "системный прокси и корневые сертификаты.",
-
+                "Windows не смог установить защищённое соединение. Проверь дату и время системы, антивирус и системный прокси.",
             NetworkErrorKind.Timeout =>
-                "Истекло время ожидания. Возможны нестабильная сеть или фильтрация. Лаунчер использует два независимых источника обновлений.",
-
+                "Сервер отвечает слишком долго. Лаунчер автоматически пробует независимый резервный источник.",
             NetworkErrorKind.ConnectionRefusedOrReset =>
-                "Соединение было сброшено/отклонено. Проверь другую сеть, системный прокси/VPN и сетевые фильтры.",
-
+                "Соединение было сброшено. Проверь сеть или попробуй ещё раз через несколько минут.",
             _ =>
-                "Проверь соединение с интернетом. Лаунчер использует LegendBorn/Selectel как основной источник и GitHub как резервный."
+                "Проверь соединение с интернетом и повтори попытку."
         };
 
-        return $"{title}\n\n{hint}\n\nТехнические детали:\n{ex}";
+        var detail = FindUsefulMessage(ex);
+        return string.IsNullOrWhiteSpace(detail)
+            ? $"{title}\n\n{hint}"
+            : $"{title}\n\n{hint}\n\n{detail}";
+    }
+
+    private static string FindUsefulMessage(Exception ex)
+    {
+        var current = ex;
+        while (current.InnerException is not null)
+            current = current.InnerException;
+        return (current.Message ?? string.Empty).Trim();
     }
 
     private enum NetworkErrorKind
@@ -451,10 +503,8 @@ public static class UpdateService
                 {
                     if (socket.SocketErrorCode is SocketError.HostNotFound or SocketError.NoData or SocketError.TryAgain)
                         return NetworkErrorKind.DnsOrHostNotFound;
-
                     if (socket.SocketErrorCode == SocketError.TimedOut)
                         return NetworkErrorKind.Timeout;
-
                     if (socket.SocketErrorCode is SocketError.ConnectionRefused or SocketError.ConnectionReset or
                         SocketError.NetworkReset or SocketError.HostUnreachable or SocketError.NetworkUnreachable)
                         return NetworkErrorKind.ConnectionRefusedOrReset;
@@ -481,57 +531,123 @@ public static class UpdateService
         return NetworkErrorKind.Unknown;
     }
 
-    private static void ShowInfo(string text)
+    private static bool ConfirmUpdate(
+        string title,
+        string message,
+        string targetVersion,
+        string source,
+        string primaryText)
     {
         try
         {
             var app = Application.Current;
-            if (app?.Dispatcher is null) return;
+            if (app?.Dispatcher is null) return false;
 
-            if (app.Dispatcher.CheckAccess())
-            {
-                MessageBox.Show(text, "Обновление лаунчера", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
+            bool Show() => LauncherUpdateDialog.Confirm(
+                app.MainWindow,
+                title,
+                message,
+                CurrentVersion,
+                targetVersion,
+                source,
+                primaryText);
 
-            app.Dispatcher.Invoke(() => ShowInfo(text));
-        }
-        catch { }
-    }
-
-    private static void ShowError(string text)
-    {
-        try
-        {
-            var app = Application.Current;
-            if (app?.Dispatcher is null) return;
-
-            if (app.Dispatcher.CheckAccess())
-            {
-                MessageBox.Show(text, "Обновление лаунчера", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
-            app.Dispatcher.Invoke(() => ShowError(text));
-        }
-        catch { }
-    }
-
-    private static MessageBoxResult ShowYesNo(string text)
-    {
-        try
-        {
-            var app = Application.Current;
-            if (app?.Dispatcher is null) return MessageBoxResult.No;
-
-            if (app.Dispatcher.CheckAccess())
-                return MessageBox.Show(text, "Обновление лаунчера", MessageBoxButton.YesNo, MessageBoxImage.Information);
-
-            return app.Dispatcher.Invoke(() => ShowYesNo(text));
+            return app.Dispatcher.CheckAccess() ? Show() : app.Dispatcher.Invoke(Show);
         }
         catch
         {
-            return MessageBoxResult.No;
+            return false;
         }
+    }
+
+    private static LauncherUpdateDialog? ShowProgress(string targetVersion, string source)
+    {
+        try
+        {
+            var app = Application.Current;
+            if (app?.Dispatcher is null) return null;
+
+            LauncherUpdateDialog CreateAndShow()
+            {
+                var dialog = LauncherUpdateDialog.CreateProgress(
+                    app.MainWindow,
+                    CurrentVersion,
+                    targetVersion,
+                    source);
+                dialog.Show();
+                return dialog;
+            }
+
+            return app.Dispatcher.CheckAccess()
+                ? CreateAndShow()
+                : app.Dispatcher.Invoke(CreateAndShow);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void SetProgress(LauncherUpdateDialog dialog, int value, string status)
+    {
+        try
+        {
+            if (dialog.Dispatcher.CheckAccess())
+                dialog.SetProgress(value, status);
+            else
+                _ = dialog.Dispatcher.BeginInvoke(() => dialog.SetProgress(value, status));
+        }
+        catch { }
+    }
+
+    private static void SetProgressSource(LauncherUpdateDialog dialog, string source)
+    {
+        try
+        {
+            if (dialog.Dispatcher.CheckAccess())
+                dialog.SetSource(source);
+            else
+                _ = dialog.Dispatcher.BeginInvoke(() => dialog.SetSource(source));
+        }
+        catch { }
+    }
+
+    private static void CloseProgress(LauncherUpdateDialog? dialog)
+    {
+        if (dialog is null) return;
+        try
+        {
+            if (dialog.Dispatcher.CheckAccess())
+                dialog.Close();
+            else
+                dialog.Dispatcher.Invoke(dialog.Close);
+        }
+        catch { }
+    }
+
+    private static void ShowInfo(string title, string text)
+        => ShowMessage(title, text, error: false);
+
+    private static void ShowError(string title, string text)
+        => ShowMessage(title, text, error: true);
+
+    private static void ShowMessage(string title, string text, bool error)
+    {
+        try
+        {
+            var app = Application.Current;
+            if (app?.Dispatcher is null) return;
+
+            void Show() => LauncherUpdateDialog.ShowMessage(
+                app.MainWindow,
+                title,
+                text,
+                CurrentVersion,
+                error: error);
+
+            if (app.Dispatcher.CheckAccess()) Show();
+            else app.Dispatcher.Invoke(Show);
+        }
+        catch { }
     }
 }
