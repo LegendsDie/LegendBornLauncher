@@ -17,6 +17,11 @@ public sealed partial class MainViewModel
     private const string DefaultPackBaseUrl =
         "https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/pack/";
 
+    // MinecraftService currently owns an 8-connection HTTP pool. Matching that limit lets a
+    // first install process more small content-addressed blobs concurrently without creating an
+    // unbounded request storm on slower regional networks.
+    private const int PreferredPackParallelism = 8;
+
     private MinecraftService? _runningMinecraftService;
     private string? _runningMinecraftGameDir;
 
@@ -115,8 +120,9 @@ public sealed partial class MainViewModel
         try
         {
             IsBusy = true;
-            StatusText = "Проверка обновлений сборки...";
+            StatusText = "Проверяю CDN и сборку…";
             ProgressPercent = 0;
+            _mc.MaxParallelDownloads = PreferredPackParallelism;
 
             var mirrors = await PackMirrorPreflightService.OrderByFreshnessAsync(
                 BuildPackMirrors(s),
@@ -134,8 +140,9 @@ public sealed partial class MainViewModel
         }
         catch (Exception ex)
         {
-            StatusText = "Ошибка проверки сборки.";
-            AppendLog(ex.ToString());
+            StatusText = "Не удалось проверить сборку.";
+            AppendLog("Сборка: " + ex.Message);
+            try { _log.Error("Pack check failed", ex); } catch { }
         }
         finally
         {
@@ -178,6 +185,10 @@ public sealed partial class MainViewModel
         }
 #endif
 
+        // Keep pack work bounded to the HTTP pool. This improves first-install throughput while
+        // avoiding the hundreds of simultaneous requests that previously hurt weak networks.
+        launchMc.MaxParallelDownloads = PreferredPackParallelism;
+
         try
         {
             CleanupLegacyGameAuthFiles(launchGameDir);
@@ -209,7 +220,7 @@ public sealed partial class MainViewModel
             }
 
             IsBusy = true;
-            StatusText = $"Подготовка {BuildDisplayName}...";
+            StatusText = $"Подготовка {BuildDisplayName}…";
             ProgressPercent = 0;
 
             var configuredMirrors = BuildPackMirrors(s);
@@ -220,7 +231,7 @@ public sealed partial class MainViewModel
             if (LocalPackDebugService.IsEnabled)
             {
                 mirrors = configuredMirrors;
-                StatusText = "Применяем локальный manifest одного мода...";
+                StatusText = "Применяем локальный manifest одного мода…";
                 await LocalPackDebugService.ApplyAsync(
                     launchGameDir,
                     mirrors,
@@ -231,6 +242,7 @@ public sealed partial class MainViewModel
             else
 #endif
             {
+                StatusText = "Выбираю ближайший доступный CDN…";
                 mirrors = await PackMirrorPreflightService.OrderByFreshnessAsync(
                     configuredMirrors,
                     log: AppendLog,
@@ -238,6 +250,7 @@ public sealed partial class MainViewModel
             }
 
             var loader = CreateLoaderSpecFromServer(s);
+            StatusText = "Проверяю файлы и загружаю изменения…";
 
             var launchVersionId = await launchMc.PrepareAsync(
                 minecraftVersion: s.MinecraftVersion,
@@ -257,7 +270,7 @@ public sealed partial class MainViewModel
 
             if (!string.IsNullOrWhiteSpace(s.Id))
             {
-                StatusText = "Подготовка безопасной игровой сессии...";
+                StatusText = "Подготовка безопасной игровой сессии…";
 
                 var link = await _site.LinkMinecraftAsync(
                     accessToken: token,
@@ -332,7 +345,7 @@ public sealed partial class MainViewModel
             {
             }
 
-            StatusText = "Запуск игры...";
+            StatusText = "Запуск игры…";
 
             _runningProcess = await launchMc.BuildAndLaunchAsync(
                 version: launchVersionId,
@@ -364,7 +377,8 @@ public sealed partial class MainViewModel
         catch (Exception ex)
         {
             StatusText = "Ошибка запуска.";
-            AppendLog(ex.ToString());
+            AppendLog("Запуск: " + ex.Message);
+            try { _log.Error("Minecraft launch failed", ex); } catch { }
         }
         finally
         {
@@ -452,7 +466,8 @@ public sealed partial class MainViewModel
         }
         catch (Exception ex)
         {
-            AppendLog(ex.ToString());
+            AppendLog("Папка игры: " + ex.Message);
+            try { _log.Error("Open game directory failed", ex); } catch { }
         }
     }
 
@@ -468,7 +483,8 @@ public sealed partial class MainViewModel
         }
         catch (Exception ex)
         {
-            AppendLog(ex.ToString());
+            AppendLog("Остановка игры: " + ex.Message);
+            try { _log.Error("Stop game failed", ex); } catch { }
         }
         finally
         {

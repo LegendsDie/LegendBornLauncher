@@ -36,7 +36,7 @@ internal static class Program
         });
 
         // Use the real production window and real MainViewModel. This reproduces the exact
-        // DataContext inheritance path used by MainWindow -> TabControl -> ProfileTabView.
+        // DataContext inheritance path used by MainWindow -> TabControl -> profile/start views.
         var host = new MainWindow
         {
             ShowInTaskbar = false,
@@ -49,6 +49,10 @@ internal static class Program
             host.UpdateLayout();
             host.Dispatcher.Invoke(static () => { }, DispatcherPriority.DataBind);
 
+            if (host.ResizeMode == ResizeMode.NoResize)
+                throw new InvalidOperationException(
+                    "Production MainWindow unexpectedly disables resizing; the refreshed shell must remain resizable.");
+
             var profileView = FindLogicalDescendant<ProfileTabView>(host)
                               ?? throw new InvalidOperationException(
                                   "ProfileTabView was not found inside the production MainWindow logical tree.");
@@ -56,6 +60,22 @@ internal static class Program
             if (profileView.FindName("ProfileXpProgressBar") is not ProgressBar progress)
                 throw new InvalidOperationException(
                     "ProfileXpProgressBar was not found in the production profile view namescope.");
+
+            if (profileView.FindName("FriendsList") is not ListBox friendsList)
+                throw new InvalidOperationException(
+                    "FriendsList was not found in the refreshed profile view namescope.");
+
+            if (ScrollViewer.GetVerticalScrollBarVisibility(friendsList) != ScrollBarVisibility.Disabled)
+                throw new InvalidOperationException(
+                    "FriendsList owns a nested vertical scrollbar; profile should have a single outer scroll owner.");
+
+            var startView = FindLogicalDescendant<StartTabView>(host)
+                            ?? throw new InvalidOperationException(
+                                "StartTabView was not found inside the production MainWindow logical tree.");
+
+            if (startView.FindName("PackProgressBar") is not ProgressBar)
+                throw new InvalidOperationException(
+                    "PackProgressBar was not found in the refreshed start view namescope.");
 
             // Regression contract: ProfileXpProgressPercent must never enter WPF's BindingEngine.
             if (BindingOperations.GetBinding(progress, RangeBase.ValueProperty) is not null ||

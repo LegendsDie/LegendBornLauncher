@@ -1,4 +1,4 @@
-﻿<!-- File: /MainWindow.xaml -->
+<!-- File: /MainWindow.xaml -->
 <Window x:Class="LegendBorn.MainWindow"
         x:Name="RootWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -7,14 +7,14 @@
         xmlns:tabs="clr-namespace:LegendBorn.Views.Tabs"
         Title="LegendBorn"
         Icon="pack://application:,,,/Resources/Assets/logolauncher.png"
-        Width="1100" Height="740"
-        MinWidth="920" MinHeight="600"
+        Width="1240" Height="800"
+        MinWidth="1000" MinHeight="680"
         WindowStartupLocation="CenterScreen"
-        Background="#0B0F1A"
+        Background="#080A14"
         Foreground="#EAF0FF"
         FontFamily="Segoe UI"
         WindowStyle="None"
-        ResizeMode="NoResize"
+        ResizeMode="CanResize"
         SnapsToDevicePixels="True"
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Display"
@@ -22,77 +22,73 @@
 
     <shell:WindowChrome.WindowChrome>
         <shell:WindowChrome CaptionHeight="0"
-                            CornerRadius="16"
+                            CornerRadius="18"
                             GlassFrameThickness="0"
-                            ResizeBorderThickness="0"
+                            ResizeBorderThickness="6"
                             UseAeroCaptionButtons="False"/>
     </shell:WindowChrome.WindowChrome>
-
-    <!-- ВАЖНО:
-         Ресурсы (LauncherTheme + MainWindowLocal) теперь подключены в App.xaml.
-         Здесь Window.Resources НЕ нужны и НЕ должны дублировать словари.
-    -->
 
     <Border x:Name="RootBorder">
         <Border.Style>
             <Style TargetType="Border" BasedOn="{StaticResource RootBorderStyle}">
+                <Setter Property="BorderBrush" Value="#3B2364"/>
+                <Setter Property="BorderThickness" Value="1"/>
                 <Style.Triggers>
                     <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=WindowState}"
                                  Value="Maximized">
                         <Setter Property="CornerRadius" Value="0"/>
                         <Setter Property="Margin" Value="0"/>
+                        <Setter Property="BorderThickness" Value="0"/>
                     </DataTrigger>
                 </Style.Triggers>
             </Style>
         </Border.Style>
 
         <Grid>
+            <Rectangle>
+                <Rectangle.Fill>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                        <GradientStop Color="#070815" Offset="0"/>
+                        <GradientStop Color="#0B0E1A" Offset="0.52"/>
+                        <GradientStop Color="#080A12" Offset="1"/>
+                    </LinearGradientBrush>
+                </Rectangle.Fill>
+            </Rectangle>
 
-            <!-- Background -->
-            <Grid>
-                <Rectangle>
-                    <Rectangle.Fill>
-                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-                            <GradientStop Color="#060718" Offset="0"/>
-                            <GradientStop Color="#0B0F1A" Offset="1"/>
-                        </LinearGradientBrush>
-                    </Rectangle.Fill>
-                </Rectangle>
+            <Ellipse Width="620" Height="620"
+                     Opacity="0.12"
+                     HorizontalAlignment="Left"
+                     VerticalAlignment="Top"
+                     Margin="-260,-300,0,0">
+                <Ellipse.Fill>
+                    <RadialGradientBrush>
+                        <GradientStop Color="#A855F7" Offset="0"/>
+                        <GradientStop Color="#007C3AED" Offset="1"/>
+                    </RadialGradientBrush>
+                </Ellipse.Fill>
+            </Ellipse>
 
-                <Ellipse Width="560" Height="560"
-                         Opacity="0.10"
-                         HorizontalAlignment="Left"
-                         Margin="-180,-180,0,0">
-                    <Ellipse.Fill>
-                        <RadialGradientBrush>
-                            <GradientStop Color="#A855F7" Offset="0"/>
-                            <GradientStop Color="#00A855F7" Offset="1"/>
-                        </RadialGradientBrush>
-                    </Ellipse.Fill>
-                </Ellipse>
+            <Ellipse Width="520" Height="520"
+                     Opacity="0.09"
+                     HorizontalAlignment="Right"
+                     VerticalAlignment="Bottom"
+                     Margin="0,0,-220,-300">
+                <Ellipse.Fill>
+                    <RadialGradientBrush>
+                        <GradientStop Color="#6D5CFF" Offset="0"/>
+                        <GradientStop Color="#006D5CFF" Offset="1"/>
+                    </RadialGradientBrush>
+                </Ellipse.Fill>
+            </Ellipse>
 
-                <Ellipse Width="640" Height="640"
-                         Opacity="0.08"
-                         HorizontalAlignment="Right"
-                         Margin="0,-240,-240,0">
-                    <Ellipse.Fill>
-                        <RadialGradientBrush>
-                            <GradientStop Color="#7C3AED" Offset="0"/>
-                            <GradientStop Color="#007C3AED" Offset="1"/>
-                        </RadialGradientBrush>
-                    </Ellipse.Fill>
-                </Ellipse>
-            </Grid>
-
-            <Grid Margin="16">
+            <Grid Margin="12">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="52"/>
-                    <RowDefinition Height="14"/>
+                    <RowDefinition Height="56"/>
+                    <RowDefinition Height="12"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
-                <!-- TopBar -->
-                <Border Grid.Row="0" Style="{StaticResource TopBarStyle}">
+                <Border Grid.Row="0" Style="{StaticResource TopBarStyle}" Padding="12,7" CornerRadius="15">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
@@ -100,49 +96,46 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
-                        <!-- Brand -->
                         <Button Grid.Column="0"
                                 Style="{StaticResource BrandButtonStyle}"
                                 ToolTip="Главная"
                                 Command="{Binding OpenStartCommand}">
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                 <Border Width="34" Height="34"
-                                        CornerRadius="12"
-                                        Background="#22FFFFFF"
-                                        VerticalAlignment="Center">
+                                        CornerRadius="11"
+                                        Background="#281A46"
+                                        BorderBrush="#5F3A92"
+                                        BorderThickness="1">
                                     <Image Source="pack://application:,,,/Resources/Assets/logolauncher.png"
                                            Stretch="Uniform"
-                                           Margin="5"
+                                           Margin="4"
                                            RenderOptions.BitmapScalingMode="HighQuality"/>
                                 </Border>
 
-                                <StackPanel Margin="12,0,0,0">
+                                <StackPanel Margin="11,0,0,0" VerticalAlignment="Center">
                                     <TextBlock Text="LEGENDBORN"
                                                FontWeight="SemiBold"
                                                FontSize="12"
                                                Foreground="{StaticResource TextStrongLocal}"/>
-
-                                    <StackPanel Orientation="Horizontal" Opacity="0.80">
+                                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
                                         <TextBlock Text="Launcher"
-                                                   Foreground="{StaticResource TextDim}"
-                                                   FontSize="11"/>
-                                        <TextBlock Text="  •  "
-                                                   Foreground="{StaticResource TextDim}"
-                                                   FontSize="11"/>
-                                        <TextBlock Text="{Binding LauncherVersion}"
-                                                   Foreground="{StaticResource TextDim}"
-                                                   FontSize="11"/>
+                                                   Foreground="{StaticResource TextDimLocal}"
+                                                   FontSize="10"/>
+                                        <Border Margin="7,0,0,0" Padding="6,1" CornerRadius="8"
+                                                Background="#241638" BorderBrush="#3F285E" BorderThickness="1">
+                                            <TextBlock Text="{Binding LauncherVersion}"
+                                                       Foreground="#CDB9F4"
+                                                       FontSize="9"/>
+                                        </Border>
                                     </StackPanel>
                                 </StackPanel>
                             </StackPanel>
                         </Button>
 
-                        <!-- Drag area -->
                         <Border Grid.Column="1"
                                 Background="Transparent"
                                 MouseLeftButtonDown="TitleBar_OnMouseLeftButtonDown"/>
 
-                        <!-- Right controls -->
                         <StackPanel Grid.Column="2"
                                     Orientation="Horizontal"
                                     VerticalAlignment="Center">
@@ -151,32 +144,11 @@
                                     ToolTip="Новости"
                                     Click="OpenNewsTab_OnClick">
                                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                    <Viewbox Width="16" Height="16" Margin="0,0,8,0">
-                                        <Canvas Width="16" Height="16">
-                                            <Rectangle Width="14" Height="14" Canvas.Left="1" Canvas.Top="1"
-                                                       RadiusX="2" RadiusY="2"
-                                                       Stroke="{StaticResource TextDimLocal}"
-                                                       StrokeThickness="1"
-                                                       Opacity="0.9"/>
-                                            <Rectangle Width="4" Height="5" Canvas.Left="3" Canvas.Top="4"
-                                                       Stroke="{StaticResource TextDimLocal}"
-                                                       StrokeThickness="1"
-                                                       Opacity="0.9"/>
-                                            <Line X1="8" Y1="5" X2="13" Y2="5"
-                                                  Stroke="{StaticResource TextDimLocal}"
-                                                  StrokeThickness="1"
-                                                  Opacity="0.9"/>
-                                            <Line X1="8" Y1="7" X2="13" Y2="7"
-                                                  Stroke="{StaticResource TextDimLocal}"
-                                                  StrokeThickness="1"
-                                                  Opacity="0.9"/>
-                                            <Line X1="3" Y1="11" X2="13" Y2="11"
-                                                  Stroke="{StaticResource TextDimLocal}"
-                                                  StrokeThickness="1"
-                                                  Opacity="0.9"/>
-                                        </Canvas>
-                                    </Viewbox>
-
+                                    <TextBlock FontFamily="Segoe MDL2 Assets"
+                                               Text="&#xE8F2;"
+                                               FontSize="14"
+                                               Foreground="{StaticResource TextDimLocal}"
+                                               Margin="0,0,7,0"/>
                                     <TextBlock Text="Новости"
                                                Foreground="{StaticResource TextStrongLocal}"
                                                VerticalAlignment="Center"/>
@@ -184,7 +156,7 @@
                             </Button>
 
                             <Button Style="{StaticResource ProfileButton}"
-                                    Margin="0,0,10,0"
+                                    Margin="0,0,8,0"
                                     Visibility="{Binding IsLoggedIn, Converter={StaticResource BoolToVis}}"
                                     Command="{Binding OpenProfileCommand}">
                                 <Grid>
@@ -195,14 +167,16 @@
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
 
-                                    <Border Width="24" Height="24"
-                                            CornerRadius="10"
+                                    <Border Width="25" Height="25"
+                                            CornerRadius="9"
                                             ClipToBounds="True"
-                                            Background="#24324B">
+                                            Background="#24324B"
+                                            BorderBrush="#57377F"
+                                            BorderThickness="1">
                                         <Grid>
                                             <TextBlock Text="{Binding UserInitial}"
                                                        FontWeight="Bold"
-                                                       FontSize="12"
+                                                       FontSize="11"
                                                        Foreground="{StaticResource TextStrongLocal}"
                                                        HorizontalAlignment="Center"
                                                        VerticalAlignment="Center"/>
@@ -218,7 +192,7 @@
 
                                     <TextBlock Grid.Column="3"
                                                Margin="8,0,0,0"
-                                               Foreground="{StaticResource TextDim}"
+                                               Foreground="{StaticResource TextDimLocal}"
                                                Text="▾"
                                                VerticalAlignment="Center"/>
                                 </Grid>
@@ -235,7 +209,6 @@
                                 </Button.ContextMenu>
                             </Button>
 
-                            <!-- ✅ Настройки: toggle -->
                             <Button Style="{StaticResource WinCtlButton}"
                                     ToolTip="Настройки"
                                     Click="OpenSettingsTab_OnClick">
@@ -253,41 +226,22 @@
                                     Click="Close_OnClick">
                                 <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8BB;" FontSize="14"/>
                             </Button>
-
                         </StackPanel>
                     </Grid>
                 </Border>
 
-                <!-- Tabs -->
                 <TabControl x:Name="MainTabs"
                             Grid.Row="2"
                             Style="{StaticResource HiddenTabsStyle}"
                             Focusable="False"
                             KeyboardNavigation.TabNavigation="None"
                             SelectedIndex="{Binding SelectedMenuIndex, Mode=TwoWay}">
-
-                    <TabItem>
-                        <tabs:AuthTabView/>
-                    </TabItem>
-
-                    <TabItem>
-                        <tabs:StartTabView/>
-                    </TabItem>
-
-                    <TabItem>
-                        <tabs:ProfileTabView/>
-                    </TabItem>
-
-                    <TabItem>
-                        <tabs:SettingsTabView/>
-                    </TabItem>
-
-                    <TabItem>
-                        <tabs:NewsTabView/>
-                    </TabItem>
-
+                    <TabItem><tabs:AuthTabView/></TabItem>
+                    <TabItem><tabs:StartTabView/></TabItem>
+                    <TabItem><tabs:ProfileTabView/></TabItem>
+                    <TabItem><tabs:SettingsTabView/></TabItem>
+                    <TabItem><tabs:NewsTabView/></TabItem>
                 </TabControl>
-
             </Grid>
         </Grid>
     </Border>
