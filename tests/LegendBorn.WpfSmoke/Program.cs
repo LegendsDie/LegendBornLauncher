@@ -31,8 +31,11 @@ internal static class Program
         AssertCanonicalLegendBornOrigins();
         AssertManagedCleanupContract();
 
-        if (!LauncherIdentity.InformationalVersion.StartsWith("0.4.1", StringComparison.Ordinal))
-            throw new InvalidOperationException($"Launcher 0.4.1 smoke is running against {LauncherIdentity.InformationalVersion}.");
+        var launcherInfoVersion = typeof(MainWindow).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion ?? string.Empty;
+        if (!launcherInfoVersion.StartsWith("0.4.1", StringComparison.Ordinal))
+            throw new InvalidOperationException($"Launcher 0.4.1 smoke is running against {launcherInfoVersion}.");
 
         var app = new Application
         {
@@ -104,6 +107,9 @@ internal static class Program
             if (profileTabItems.Length != 2 || profileTabItems[0].Margin.Right < 10)
                 throw new InvalidOperationException(
                     "Status and Community tabs no longer have a clear visual gap between them.");
+
+            if (ContainsTextFragment(profileView, "РЕЗОН"))
+                throw new InvalidOperationException("Legacy РЕЗОН abbreviation is still visible in the profile.");
 
             if (profileView.FindName("StatusCharacterCard") is not Border characterCard ||
                 profileView.FindName("StatusSkinCard") is not Border skinCard)
