@@ -18,6 +18,8 @@ internal static class Program
         Console.WriteLine($"WPF_SMOKE_ENVIRONMENT_VERSION={Environment.Version}");
         Console.WriteLine($"WPF_SMOKE_FRAMEWORK={RuntimeInformation.FrameworkDescription}");
 
+        AssertCanonicalLegendBornOrigins();
+
         var app = new Application
         {
             ShutdownMode = ShutdownMode.OnExplicitShutdown
@@ -124,6 +126,30 @@ internal static class Program
         {
             host.Close();
             app.Shutdown();
+        }
+    }
+
+    private static void AssertCanonicalLegendBornOrigins()
+    {
+        const string canonicalOrigin = "https://legendborn.xyz";
+        var names = new[]
+        {
+            "SiteBaseUrl",
+            "SitePublicUrlPrimary",
+            "SitePublicUrlFallback"
+        };
+
+        foreach (var name in names)
+        {
+            var field = typeof(MainViewModel).GetField(name, BindingFlags.Static | BindingFlags.NonPublic)
+                        ?? throw new InvalidOperationException($"MainViewModel.{name} origin constant was not found.");
+
+            var value = field.GetRawConstantValue() as string;
+            if (!string.Equals(value, canonicalOrigin, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"MainViewModel.{name} must resolve to the canonical LegendBorn origin {canonicalOrigin}, got {value ?? "<null>"}.");
+            }
         }
     }
 
