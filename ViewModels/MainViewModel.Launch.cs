@@ -130,15 +130,17 @@ public sealed partial class MainViewModel
 
             if (s.SyncPack)
             {
-                StatusText = "Убираю устаревшие файлы сборки…";
-                await ManagedPackCleanupService.ReconcileAsync(
-                    _gameDir,
-                    mirrors,
-                    log: AppendLog,
-                    ct: _lifetimeCts.Token).ConfigureAwait(false);
-
                 StatusText = "Проверяю и докачиваю изменения…";
                 await _mc.SyncPackAsync(mirrors, _lifetimeCts.Token);
+
+                // MinecraftService has now written pack_state.json from the exact manifest used by
+                // this sync. Reconcile managed roots from that local state instead of downloading a
+                // second manifest, then fail closed if a .pending file means an old revision is active.
+                StatusText = "Финальная сверка файлов сборки…";
+                await ManagedPackStateVerifier.ReconcileAsync(
+                    _gameDir,
+                    log: AppendLog,
+                    ct: _lifetimeCts.Token).ConfigureAwait(false);
             }
 
             StatusText = "Сборка актуальна.";
@@ -256,18 +258,6 @@ public sealed partial class MainViewModel
                     ct: _lifetimeCts.Token);
             }
 
-            if (syncProductionPack)
-            {
-                // Destructive pack ownership is reconciled before normal download/hash work.
-                // This makes stale mods/kubejs/scripts fail closed instead of silently mixing builds.
-                StatusText = "Очищаю старые файлы сборки…";
-                await ManagedPackCleanupService.ReconcileAsync(
-                    launchGameDir,
-                    mirrors,
-                    log: AppendLog,
-                    ct: _lifetimeCts.Token).ConfigureAwait(false);
-            }
-
             var loader = CreateLoaderSpecFromServer(s);
             StatusText = "Проверяю файлы и загружаю изменения…";
 
@@ -277,6 +267,18 @@ public sealed partial class MainViewModel
                 packMirrors: mirrors,
                 syncPack: syncProductionPack,
                 ct: _lifetimeCts.Token);
+
+            if (syncProductionPack)
+            {
+                // This final pass is based on the exact pack_state produced by Prepare/Sync. It
+                // catches stale mods/kubejs/scripts that legacy prune code could not delete and
+                // refuses to start while a replacement is still only present as .pending.
+                StatusText = "Финальная сверка файлов сборки…";
+                await ManagedPackStateVerifier.ReconcileAsync(
+                    launchGameDir,
+                    log: AppendLog,
+                    ct: _lifetimeCts.Token).ConfigureAwait(false);
+            }
 
             InvokeOnUi(() =>
             {

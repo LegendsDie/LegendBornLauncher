@@ -18,6 +18,7 @@ using LegendBorn;
 using LegendBorn.Controls;
 using LegendBorn.Services;
 using LegendBorn.ViewModels;
+using LegendBorn.Views;
 using LegendBorn.Views.Tabs;
 
 internal static class Program
@@ -30,12 +31,13 @@ internal static class Program
 
         AssertCanonicalLegendBornOrigins();
         AssertManagedCleanupContract();
+        AssertPackStateFinalReconciliation();
 
         var launcherInfoVersion = typeof(MainWindow).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
             .InformationalVersion ?? string.Empty;
-        if (!launcherInfoVersion.StartsWith("0.4.1", StringComparison.Ordinal))
-            throw new InvalidOperationException($"Launcher 0.4.1 smoke is running against {launcherInfoVersion}.");
+        if (!launcherInfoVersion.StartsWith("0.4.2", StringComparison.Ordinal))
+            throw new InvalidOperationException($"Launcher 0.4.2 smoke is running against {launcherInfoVersion}.");
 
         var app = new Application
         {
@@ -73,8 +75,6 @@ internal static class Program
             if (host.DataContext is not MainViewModel vm)
                 throw new InvalidOperationException("Production MainWindow did not expose MainViewModel as DataContext.");
 
-            // Materialize the real profile visual tree so Loaded-time DPI/layout polish is tested,
-            // not merely the unselected TabItem's logical content.
             vm.SelectedMenuIndex = 2;
             host.UpdateLayout();
             host.Dispatcher.Invoke(static () => { }, DispatcherPriority.ApplicationIdle);
@@ -103,13 +103,25 @@ internal static class Program
                 throw new InvalidOperationException(
                     "Profile status/community tabs are missing or no longer contain exactly two sections.");
 
+            profileTabs.ApplyTemplate();
+            host.UpdateLayout();
             var profileTabItems = profileTabs.Items.OfType<TabItem>().ToArray();
-            if (profileTabItems.Length != 2 || profileTabItems[0].Margin.Right < 10)
+            if (profileTabItems.Length != 2 || profileTabItems[0].Margin.Right < 12)
                 throw new InvalidOperationException(
                     "Status and Community tabs no longer have a clear visual gap between them.");
 
+            var headerPanel = FindVisualDescendant<TabPanel>(profileTabs)
+                              ?? throw new InvalidOperationException("Profile TabPanel was not materialized.");
+            var headerParent = VisualTreeHelper.GetParent(headerPanel);
+            if (headerParent is Border)
+                throw new InvalidOperationException(
+                    "Profile tabs regained the shared Border rail that visually merges the two pills.");
+
             if (ContainsTextFragment(profileView, "РЕЗОН"))
                 throw new InvalidOperationException("Legacy РЕЗОН abbreviation is still visible in the profile.");
+
+            if (!ContainsTextFragment(profileView, "РЕЗ"))
+                throw new InvalidOperationException("Compact РЕЗ currency label was not rendered in the profile.");
 
             if (profileView.FindName("StatusCharacterCard") is not Border characterCard ||
                 profileView.FindName("StatusSkinCard") is not Border skinCard)
@@ -182,6 +194,31 @@ internal static class Program
             {
                 throw new InvalidOperationException(
                     "Technical implementation details or duplicate launcher version leaked into Settings.");
+            }
+
+            var updateDialog = new LauncherUpdateDialog(
+                "Доступно обновление",
+                "Smoke",
+                "0.4.1",
+                "0.4.2",
+                "LegendBorn CDN",
+                progressMode: true);
+            try
+            {
+                if (updateDialog.FindName("UpdateProgressBar") is not ProgressBar updateProgress ||
+                    updateDialog.FindName("ProgressArea") is not Grid progressArea ||
+                    progressArea.Visibility != Visibility.Visible)
+                {
+                    throw new InvalidOperationException("Branded launcher update progress UI was not materialized.");
+                }
+
+                updateDialog.SetProgress(64, "Smoke");
+                if (Math.Abs(updateProgress.Value - 64) > 0.001)
+                    throw new InvalidOperationException("Launcher update dialog does not expose real download progress.");
+            }
+            finally
+            {
+                updateDialog.Close();
             }
 
             if (BindingOperations.GetBinding(progress, RangeBase.ValueProperty) is not null ||
@@ -326,6 +363,46 @@ internal static class Program
         }
     }
 
+    private static void AssertPackStateFinalReconciliation()
+    {
+        var temp = Path.Combine(Path.GetTempPath(), "legendborn-pack-state-" + Guid.NewGuid().ToString("N"));
+        var mods = Path.Combine(temp, "mods");
+        var launcher = Path.Combine(temp, "launcher");
+        Directory.CreateDirectory(mods);
+        Directory.CreateDirectory(launcher);
+
+        try
+        {
+            File.WriteAllText(Path.Combine(mods, "current.jar"), "current");
+            File.WriteAllText(Path.Combine(mods, "old.jar"), "old");
+            File.WriteAllText(
+                Path.Combine(launcher, "pack_state.json"),
+                "{\"PackId\":\"smoke\",\"Files\":{\"mods/current.jar\":{\"Size\":7,\"Sha256\":\"x\",\"LastWriteUtcTicks\":0}}}");
+
+            ManagedPackStateVerifier.ReconcileAsync(temp).GetAwaiter().GetResult();
+
+            if (File.Exists(Path.Combine(mods, "old.jar")))
+                throw new InvalidOperationException("Final pack-state reconciliation left an old mod active.");
+            if (!File.Exists(Path.Combine(mods, "current.jar")))
+                throw new InvalidOperationException("Final pack-state reconciliation removed the current mod.");
+
+            File.WriteAllText(Path.Combine(mods, "current.jar.pending"), "replacement");
+            try
+            {
+                ManagedPackStateVerifier.ReconcileAsync(temp).GetAwaiter().GetResult();
+                throw new InvalidOperationException("A managed .pending file did not block mixed-version launch.");
+            }
+            catch (IOException)
+            {
+                // Expected: new bytes are downloaded but the active file could not be replaced.
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(temp, recursive: true); } catch { }
+        }
+    }
+
     private static void AssertCanonicalLegendBornOrigins()
     {
         const string canonicalOrigin = "https://legendborn.xyz";
@@ -389,6 +466,24 @@ internal static class Program
         }
 
         return false;
+    }
+
+    private static T? FindVisualDescendant<T>(DependencyObject root)
+        where T : DependencyObject
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T match)
+                return match;
+
+            var nested = FindVisualDescendant<T>(child);
+            if (nested is not null)
+                return nested;
+        }
+
+        return null;
     }
 
     private static T? FindLogicalDescendant<T>(DependencyObject root)
