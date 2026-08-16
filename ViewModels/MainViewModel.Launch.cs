@@ -17,9 +17,8 @@ public sealed partial class MainViewModel
     private const string DefaultPackBaseUrl =
         "https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/pack/";
 
-    // MinecraftService currently owns an 8-connection HTTP pool. Matching that limit lets a
-    // first install process more small content-addressed blobs concurrently without creating an
-    // unbounded request storm on slower regional networks.
+    // Match MinecraftService's bounded connection pool. Eight parallel content-addressed blobs
+    // keeps throughput high without turning unstable regional links into a request storm.
     private const int PreferredPackParallelism = 8;
 
     private MinecraftService? _runningMinecraftService;
@@ -130,7 +129,17 @@ public sealed partial class MainViewModel
                 ct: _lifetimeCts.Token);
 
             if (s.SyncPack)
+            {
+                StatusText = "Убираю устаревшие файлы сборки…";
+                await ManagedPackCleanupService.ReconcileAsync(
+                    _gameDir,
+                    mirrors,
+                    log: AppendLog,
+                    ct: _lifetimeCts.Token).ConfigureAwait(false);
+
+                StatusText = "Проверяю и докачиваю изменения…";
                 await _mc.SyncPackAsync(mirrors, _lifetimeCts.Token);
+            }
 
             StatusText = "Сборка актуальна.";
         }
@@ -185,8 +194,6 @@ public sealed partial class MainViewModel
         }
 #endif
 
-        // Keep pack work bounded to the HTTP pool. This improves first-install throughput while
-        // avoiding the hundreds of simultaneous requests that previously hurt weak networks.
         launchMc.MaxParallelDownloads = PreferredPackParallelism;
 
         try
@@ -247,6 +254,18 @@ public sealed partial class MainViewModel
                     configuredMirrors,
                     log: AppendLog,
                     ct: _lifetimeCts.Token);
+            }
+
+            if (syncProductionPack)
+            {
+                // Destructive pack ownership is reconciled before normal download/hash work.
+                // This makes stale mods/kubejs/scripts fail closed instead of silently mixing builds.
+                StatusText = "Очищаю старые файлы сборки…";
+                await ManagedPackCleanupService.ReconcileAsync(
+                    launchGameDir,
+                    mirrors,
+                    log: AppendLog,
+                    ct: _lifetimeCts.Token).ConfigureAwait(false);
             }
 
             var loader = CreateLoaderSpecFromServer(s);
