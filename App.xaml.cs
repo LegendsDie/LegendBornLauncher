@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 using System.Windows;
 using LegendBorn.Services;
 using Velopack;
@@ -8,6 +9,8 @@ namespace LegendBorn;
 
 public partial class App : Application
 {
+    private const string SingleInstanceMutexName = @"Local\LegendBornLauncher.SingleInstance.v1";
+
     public static ConfigService Config { get; private set; } = null!;
     public static TokenStore Tokens { get; private set; } = null!;
     public static LogService Log { get; private set; } = null!;
@@ -19,15 +22,86 @@ public partial class App : Application
         Exception? velopackInitError = null;
         try
         {
+            // Velopack bootstrap must run before normal launcher initialization.
             VelopackApp.Build().Run();
         }
         catch (Exception ex)
         {
-            // Logging is initialized a few lines below. Preserve the failure instead of
-            // swallowing it so update/bootstrap problems are diagnosable.
             velopackInitError = ex;
         }
 
+        Mutex? instanceMutex = null;
+        var ownsInstanceMutex = false;
+        try
+        {
+            if (!TryAcquireSingleInstance(out instanceMutex, out ownsInstanceMutex))
+            {
+                try
+                {
+                    MessageBox.Show(
+                        "LegendBorn Launcher уже запущен. Закрой первое окно перед повторным запуском.",
+                        "LegendBorn",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                }
+                catch
+                {
+                }
+                return;
+            }
+
+            RunLauncher(velopackInitError);
+        }
+        finally
+        {
+            if (ownsInstanceMutex)
+            {
+                try { instanceMutex?.ReleaseMutex(); } catch { }
+            }
+            try { instanceMutex?.Dispose(); } catch { }
+        }
+    }
+
+    private static bool TryAcquireSingleInstance(out Mutex? mutex, out bool ownsMutex)
+    {
+        mutex = null;
+        ownsMutex = false;
+
+        try
+        {
+            mutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out var createdNew);
+            if (createdNew)
+            {
+                ownsMutex = true;
+                return true;
+            }
+
+            try
+            {
+                ownsMutex = mutex.WaitOne(0);
+                return ownsMutex;
+            }
+            catch (AbandonedMutexException)
+            {
+                // The previous launcher crashed without releasing the OS mutex. Ownership is
+                // transferred to this process, so a stale process marker never blocks startup.
+                ownsMutex = true;
+                return true;
+            }
+        }
+        catch
+        {
+            // A mutex failure should not make the launcher unstartable. Pack/config writes still
+            // have their own atomic protections; this guard primarily prevents normal double-click races.
+            try { mutex?.Dispose(); } catch { }
+            mutex = null;
+            ownsMutex = false;
+            return true;
+        }
+    }
+
+    private static void RunLauncher(Exception? velopackInitError)
+    {
         string logPath;
         string configPath;
         string tokenPath;
@@ -156,8 +230,6 @@ public partial class App : Application
     {
         try { Log.Info("Launcher exiting."); } catch { }
 
-        // Save() is intentionally debounced. During process shutdown we must force the
-        // final write or a recently changed setting may be lost before the timer fires.
         try
         {
             Config?.Flush();
