@@ -37,6 +37,11 @@ public static partial class DiagnosticReportService
     [GeneratedRegex("\\b[a-fA-F0-9]{64}\\b")]
     private static partial Regex HexTokenRegex();
 
+    // Crash logs may contain absolute paths such as C:\Users\Alice\AppData\...
+    // Those paths are useful structurally, but the Windows account name is not.
+    [GeneratedRegex(@"(?i)\b([A-Z]:\\Users\\)[^\\\r\n]+")]
+    private static partial Regex WindowsUserPathRegex();
+
     public sealed record ReportContext(
         string GameDir,
         string? ServerId,
@@ -125,8 +130,10 @@ public static partial class DiagnosticReportService
                 Path.Combine(workDir, "PRIVACY.txt"),
                 "This diagnostic bundle intentionally excludes launcher.tokens.dat, auth.token, auth.json and .legendcore/session.json.\n" +
                 "Bearer/access/refresh/join-ticket shaped values found in copied text logs are redacted before archiving.\n" +
+                "Windows user-profile names embedded in absolute C:\\Users\\... paths are masked before archiving.\n" +
                 "The Windows machine/computer name is intentionally not collected.\n" +
-                "Pack inventories contain relative file names, sizes and timestamps only; user configs/saves are not copied.\n",
+                "Pack inventories contain relative file names, sizes and timestamps only; user configs/saves are not copied.\n" +
+                "Inventory traversal never follows junctions, symlinks or other reparse points outside managed roots.\n",
                 Utf8NoBom,
                 ct).ConfigureAwait(false);
 
@@ -185,6 +192,7 @@ public static partial class DiagnosticReportService
                 managedPackInventory = true,
                 quarantineInventory = true,
                 packStateIncludedWhenPresent = true,
+                inventoryFollowsReparsePoints = false,
             },
             security = new
             {
@@ -192,6 +200,7 @@ public static partial class DiagnosticReportService
                 legendCoreSessionIncluded = false,
                 legacyAuthFilesIncluded = false,
                 machineNameIncluded = false,
+                windowsUserProfilePathRedacted = true,
                 copiedTextLogsRedacted = true,
             }
         };
@@ -241,6 +250,8 @@ public static partial class DiagnosticReportService
             var normalizedGame = NormalizeDirectory(gameDir);
             if (normalizedGame is null) return;
 
+            var gamePrefix = normalizedGame.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                             + Path.DirectorySeparatorChar;
             var lines = new List<string>();
             var truncated = false;
 
@@ -258,13 +269,10 @@ public static partial class DiagnosticReportService
                 var rootPath = Path.GetFullPath(Path.Combine(
                     normalizedGame,
                     normalizedRelRoot.Replace('/', Path.DirectorySeparatorChar)));
-                var gamePrefix = normalizedGame.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                                 + Path.DirectorySeparatorChar;
-                if (!rootPath.StartsWith(gamePrefix, StringComparison.OrdinalIgnoreCase) || !Directory.Exists(rootPath))
+                if (!IsWithinGame(rootPath, gamePrefix) || !Directory.Exists(rootPath))
                     continue;
 
-                foreach (var path in Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories)
-                             .OrderBy(static x => x, StringComparer.OrdinalIgnoreCase))
+                foreach (var path in EnumerateInventoryFiles(rootPath, gamePrefix, ct))
                 {
                     ct.ThrowIfCancellationRequested();
 
@@ -307,6 +315,107 @@ public static partial class DiagnosticReportService
         catch
         {
             // Inventory is supplementary diagnostics only.
+        }
+    }
+
+    private static IEnumerable<string> EnumerateInventoryFiles(
+        string rootPath,
+        string gamePrefix,
+        CancellationToken ct)
+    {
+        var stack = new Stack<string>();
+        stack.Push(rootPath);
+
+        while (stack.Count > 0)
+        {
+            ct.ThrowIfCancellationRequested();
+            var current = stack.Pop();
+
+            try
+            {
+                var currentInfo = new DirectoryInfo(current);
+                if (!currentInfo.Exists || (currentInfo.Attributes & FileAttributes.ReparsePoint) != 0)
+                    continue;
+            }
+            catch
+            {
+                continue;
+            }
+
+            string[] files;
+            string[] directories;
+            try
+            {
+                files = Directory.GetFiles(current, "*", SearchOption.TopDirectoryOnly);
+                directories = Directory.GetDirectories(current, "*", SearchOption.TopDirectoryOnly);
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (var path in files.OrderBy(static x => x, StringComparer.OrdinalIgnoreCase))
+            {
+                ct.ThrowIfCancellationRequested();
+
+                string full;
+                try
+                {
+                    full = Path.GetFullPath(path);
+                    if (!IsWithinGame(full, gamePrefix))
+                        continue;
+
+                    var info = new FileInfo(full);
+                    if ((info.Attributes & FileAttributes.ReparsePoint) != 0)
+                        continue;
+                }
+                catch
+                {
+                    continue;
+                }
+
+                yield return full;
+            }
+
+            // Stack is LIFO: push descending so traversal itself stays ascending and deterministic.
+            foreach (var path in directories.OrderByDescending(static x => x, StringComparer.OrdinalIgnoreCase))
+            {
+                ct.ThrowIfCancellationRequested();
+
+                try
+                {
+                    var full = Path.GetFullPath(path);
+                    if (!IsWithinGame(full, gamePrefix))
+                        continue;
+
+                    var info = new DirectoryInfo(full);
+                    if (!info.Exists || (info.Attributes & FileAttributes.ReparsePoint) != 0)
+                        continue;
+
+                    stack.Push(full);
+                }
+                catch
+                {
+                    // Disappearing/inaccessible directories are simply omitted from diagnostics.
+                }
+            }
+        }
+    }
+
+    private static bool IsWithinGame(string path, string gamePrefix)
+    {
+        try
+        {
+            var full = Path.GetFullPath(path);
+            return full.StartsWith(gamePrefix, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(
+                       full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                       gamePrefix.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                       StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -439,6 +548,7 @@ public static partial class DiagnosticReportService
         result = JsonSecretRegex().Replace(result, "$1<REDACTED>$2");
         result = NamedSecretRegex().Replace(result, "$1<REDACTED>");
         result = HexTokenRegex().Replace(result, "<REDACTED_64HEX>");
+        result = WindowsUserPathRegex().Replace(result, "$1<USER>");
         return result;
     }
 

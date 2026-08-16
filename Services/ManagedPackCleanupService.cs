@@ -44,6 +44,8 @@ public static class ManagedPackCleanupService
         public string? Path { get; set; }
     }
 
+    private sealed record ManagedTreeSnapshot(string[] Files, string[] Directories);
+
     public sealed record CleanupResult(int RemovedFiles, int RemovedDirectories, int WantedManagedFiles);
 
     public static async Task<CleanupResult> ReconcileAsync(
@@ -102,20 +104,17 @@ public static class ManagedPackCleanupService
             if (!IsUnder(rootPath, gameFull) || !Directory.Exists(rootPath))
                 continue;
 
-            if ((File.GetAttributes(rootPath) & FileAttributes.ReparsePoint) != 0)
-                throw new IOException($"Папка сборки является reparse point: {root}");
-
-            string[] files;
+            ManagedTreeSnapshot tree;
             try
             {
-                files = Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories).ToArray();
+                tree = ScanManagedTreeStrict(rootPath, root, gameFull, ct);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                throw new IOException($"Не удалось просканировать папку сборки {root}: {ex.Message}", ex);
+                throw new IOException($"Не удалось безопасно просканировать папку сборки {root}: {ex.Message}", ex);
             }
 
-            foreach (var file in files)
+            foreach (var file in tree.Files)
             {
                 ct.ThrowIfCancellationRequested();
 
@@ -138,58 +137,58 @@ public static class ManagedPackCleanupService
                     failures.Add(rel);
             }
 
-            try
+            // The tree was collected without traversing reparse points. Remove only directories
+            // from that trusted snapshot, deepest first, so a junction/symlink can never make the
+            // launcher walk outside the game directory while pruning an old pack.
+            foreach (var dir in tree.Directories.OrderByDescending(static p => p.Length))
             {
-                var dirs = Directory.EnumerateDirectories(rootPath, "*", SearchOption.AllDirectories)
-                    .OrderByDescending(static p => p.Length)
-                    .ToArray();
-
-                foreach (var dir in dirs)
+                ct.ThrowIfCancellationRequested();
+                try
                 {
-                    ct.ThrowIfCancellationRequested();
-                    try
-                    {
-                        var info = new DirectoryInfo(dir);
-                        if ((info.Attributes & FileAttributes.ReparsePoint) != 0)
-                            continue;
+                    if (!Directory.Exists(dir))
+                        continue;
 
-                        if (!Directory.EnumerateFileSystemEntries(dir).Any())
-                        {
-                            Directory.Delete(dir, recursive: false);
-                            removedDirs++;
-                        }
-                    }
-                    catch
+                    var attrs = File.GetAttributes(dir);
+                    if ((attrs & FileAttributes.ReparsePoint) != 0)
+                        throw new IOException($"Обнаружена ссылка/reparse point внутри управляемой сборки: {dir}");
+
+                    if (!Directory.EnumerateFileSystemEntries(dir).Any())
                     {
-                        // Empty-directory cleanup is cosmetic. Remaining stale files are verified below.
+                        Directory.Delete(dir, recursive: false);
+                        removedDirs++;
                     }
                 }
-            }
-            catch
-            {
-                // Remaining stale files are verified below.
+                catch (IOException)
+                {
+                    // Empty-directory cleanup is cosmetic. The strict verification pass below
+                    // decides whether active pack content is safe enough to launch.
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
             }
         }
 
-        // Verify after quarantine. Silent stale managed content is not allowed.
+        // Verify after quarantine. Silent stale managed content or filesystem links are not allowed.
         foreach (var root in ManagedRoots)
         {
-            var rootPath = Path.Combine(gameDir, root.TrimEnd('/'));
+            var rootPath = Path.GetFullPath(Path.Combine(gameDir, root.TrimEnd('/')));
             if (!Directory.Exists(rootPath))
                 continue;
 
-            IEnumerable<string> files;
+            ManagedTreeSnapshot tree;
             try
             {
-                files = Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories);
+                tree = ScanManagedTreeStrict(rootPath, root, gameFull, ct);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 throw new IOException($"Не удалось проверить папку сборки {root}: {ex.Message}", ex);
             }
 
-            foreach (var file in files)
+            foreach (var file in tree.Files)
             {
+                ct.ThrowIfCancellationRequested();
                 var rel = NormalizeRel(Path.GetRelativePath(gameDir, file));
                 if (rel.Length > 0 && !ShouldKeep(rel, wantedManaged))
                     failures.Add(rel);
@@ -211,6 +210,62 @@ public static class ManagedPackCleanupService
         }
 
         return new CleanupResult(removedFiles, removedDirs, wantedManaged.Count);
+    }
+
+    private static ManagedTreeSnapshot ScanManagedTreeStrict(
+        string rootPath,
+        string logicalRoot,
+        string gameRootWithSeparator,
+        CancellationToken ct)
+    {
+        var normalizedRoot = Path.GetFullPath(rootPath);
+        if (!IsUnder(normalizedRoot, gameRootWithSeparator))
+            throw new IOException($"Управляемая папка вышла за пределы game dir: {logicalRoot}");
+
+        var rootAttributes = File.GetAttributes(normalizedRoot);
+        if ((rootAttributes & FileAttributes.ReparsePoint) != 0)
+            throw new IOException($"Папка сборки является ссылкой/reparse point: {logicalRoot}");
+
+        var files = new List<string>();
+        var directories = new List<string>();
+        var pending = new Stack<string>();
+        pending.Push(normalizedRoot);
+
+        while (pending.Count > 0)
+        {
+            ct.ThrowIfCancellationRequested();
+            var current = pending.Pop();
+
+            foreach (var entry in Directory.EnumerateFileSystemEntries(current, "*", SearchOption.TopDirectoryOnly))
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var full = Path.GetFullPath(entry);
+                if (!IsUnder(full, gameRootWithSeparator))
+                    throw new IOException($"Путь управляемой сборки вышел за пределы game dir: {entry}");
+
+                var attrs = File.GetAttributes(full);
+                if ((attrs & FileAttributes.ReparsePoint) != 0)
+                {
+                    var rel = NormalizeRel(Path.GetRelativePath(rootPath, full));
+                    throw new IOException(
+                        $"В {logicalRoot} обнаружена ссылка/reparse point ({rel}). " +
+                        "Автоматическая очистка остановлена, чтобы не затронуть файлы вне сборки.");
+                }
+
+                if ((attrs & FileAttributes.Directory) != 0)
+                {
+                    directories.Add(full);
+                    pending.Push(full);
+                }
+                else
+                {
+                    files.Add(full);
+                }
+            }
+        }
+
+        return new ManagedTreeSnapshot(files.ToArray(), directories.ToArray());
     }
 
     private static string CreateQuarantineRoot(string gameDir)
@@ -244,6 +299,8 @@ public static class ManagedPackCleanupService
                     return true;
 
                 var attrs = File.GetAttributes(sourcePath);
+                if ((attrs & FileAttributes.ReparsePoint) != 0)
+                    return false;
                 if ((attrs & FileAttributes.ReadOnly) != 0)
                     File.SetAttributes(sourcePath, attrs & ~FileAttributes.ReadOnly);
 

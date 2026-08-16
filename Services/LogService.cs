@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -13,8 +14,8 @@ public enum LogLevel
 {
     Trace = 0,
     Debug = 1,
-    Info  = 2,
-    Warn  = 3,
+    Info = 2,
+    Warn = 3,
     Error = 4,
     Fatal = 5
 }
@@ -26,6 +27,7 @@ public sealed class LogService : IDisposable
 
     private readonly ConcurrentQueue<string> _queue = new();
     private readonly AutoResetEvent _signal = new(false);
+    private readonly SemaphoreSlim _flushGate = new(1, 1);
 
     private CancellationTokenSource? _cts;
     private Task? _writerTask;
@@ -47,7 +49,6 @@ public sealed class LogService : IDisposable
     {
         _logFilePath = logFilePath ?? throw new ArgumentNullException(nameof(logFilePath));
         _maxBytes = maxBytes < 64 * 1024 ? 64 * 1024 : maxBytes;
-
         _enabled = true;
 
         try
@@ -69,7 +70,6 @@ public sealed class LogService : IDisposable
     {
         _logFilePath = "";
         _maxBytes = 0;
-
         _enabled = false;
         MinimumLevel = LogLevel.Fatal;
     }
@@ -92,20 +92,16 @@ public sealed class LogService : IDisposable
 
     public void Trace(string message) => Write(LogLevel.Trace, message, null);
     public void Debug(string message) => Write(LogLevel.Debug, message, null);
-    public void Info (string message) => Write(LogLevel.Info,  message, null);
-    public void Warn (string message) => Write(LogLevel.Warn,  message, null);
-
+    public void Info(string message) => Write(LogLevel.Info, message, null);
+    public void Warn(string message) => Write(LogLevel.Warn, message, null);
     public void Error(string message, Exception? ex = null) => Write(LogLevel.Error, message, ex);
     public void Fatal(string message, Exception? ex = null) => Write(LogLevel.Fatal, message, ex);
 
     public void Write(LogLevel level, string message, Exception? ex = null)
     {
-        if (_disposed) return;
-        if (!_enabled) return;
-        if (level < MinimumLevel) return;
+        if (_disposed || !_enabled || level < MinimumLevel) return;
 
         var line = FormatLine(level, message, ex);
-
         _queue.Enqueue(line);
         var cnt = Interlocked.Increment(ref _queueCount);
 
@@ -128,17 +124,14 @@ public sealed class LogService : IDisposable
 
     public void Flush()
     {
-        if (_disposed) return;
-        if (!_enabled) return;
-
+        if (_disposed || !_enabled) return;
         try { _signal.Set(); } catch { }
         TryFlushOnce();
     }
 
     public bool TryFlush()
     {
-        if (_disposed) return false;
-        if (!_enabled) return false;
+        if (_disposed || !_enabled) return false;
         return TryFlushOnce();
     }
 
@@ -146,7 +139,6 @@ public sealed class LogService : IDisposable
     {
         var ts = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture);
         var lvl = level.ToString().ToUpperInvariant();
-
         var msg = (message ?? "").Replace("\r", " ").Replace("\n", " ").Trim();
 
         if (ex is null)
@@ -169,7 +161,7 @@ public sealed class LogService : IDisposable
             depth++;
             sb.AppendLine();
             sb.Append("Inner").Append(depth).Append(": ")
-              .Append(inner.GetType().Name).Append(": ").Append(inner.Message);
+                .Append(inner.GetType().Name).Append(": ").Append(inner.Message);
 
             if (!string.IsNullOrWhiteSpace(inner.StackTrace))
             {
@@ -191,7 +183,6 @@ public sealed class LogService : IDisposable
             {
                 _signal.WaitOne(250);
                 if (ct.IsCancellationRequested) break;
-
                 await FlushOnceAsync(CancellationToken.None).ConfigureAwait(false);
             }
         }
@@ -200,7 +191,10 @@ public sealed class LogService : IDisposable
         }
         finally
         {
-            try { await FlushOnceAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
+            if (!_disposed)
+            {
+                try { await FlushOnceAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
+            }
         }
     }
 
@@ -219,53 +213,73 @@ public sealed class LogService : IDisposable
 
     private async Task FlushOnceAsync(CancellationToken ct)
     {
-        if (_disposed) return;
-        if (!_enabled) return;
+        if (_disposed || !_enabled) return;
 
-        if (_queue.IsEmpty)
-        {
-            var dropped0 = Interlocked.Exchange(ref _droppedLines, 0);
-            if (dropped0 > 0)
-            {
-                _queue.Enqueue(FormatLine(LogLevel.Warn, $"Log queue overflow: dropped {dropped0} lines.", null));
-                Interlocked.Increment(ref _queueCount);
-            }
-            else
-            {
-                return;
-            }
-        }
-
+        await _flushGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            EnsureLogDir();
-            RotateIfNeeded();
-            CleanupOldLogsSafe(maxKeep: 10);
+            if (_disposed || !_enabled) return;
 
-            var sb = new StringBuilder(FlushChunkMaxChars);
-
-            var dropped = Interlocked.Exchange(ref _droppedLines, 0);
-            if (dropped > 0)
+            if (_queue.IsEmpty)
             {
-                sb.AppendLine(FormatLine(LogLevel.Warn, $"Log queue overflow: dropped {dropped} lines.", null));
+                var dropped0 = Interlocked.Exchange(ref _droppedLines, 0);
+                if (dropped0 > 0)
+                {
+                    _queue.Enqueue(FormatLine(LogLevel.Warn, $"Log queue overflow: dropped {dropped0} lines.", null));
+                    Interlocked.Increment(ref _queueCount);
+                }
+                else
+                {
+                    return;
+                }
             }
 
-            while (_queue.TryDequeue(out var line))
+            var drained = new List<string>();
+            var dropped = 0;
+
+            try
             {
-                Interlocked.Decrement(ref _queueCount);
-                sb.AppendLine(line);
+                EnsureLogDir();
+                RotateIfNeeded();
+                CleanupOldLogsSafe(maxKeep: 10);
 
-                if (sb.Length >= FlushChunkMaxChars)
-                    break;
+                var sb = new StringBuilder(FlushChunkMaxChars);
+                dropped = Interlocked.Exchange(ref _droppedLines, 0);
+                if (dropped > 0)
+                    sb.AppendLine(FormatLine(LogLevel.Warn, $"Log queue overflow: dropped {dropped} lines.", null));
+
+                while (_queue.TryDequeue(out var line))
+                {
+                    Interlocked.Decrement(ref _queueCount);
+                    drained.Add(line);
+                    sb.AppendLine(line);
+                    if (sb.Length >= FlushChunkMaxChars)
+                        break;
+                }
+
+                var text = sb.ToString();
+                if (string.IsNullOrEmpty(text)) return;
+
+                await File.AppendAllTextAsync(_logFilePath, text, Encoding.UTF8, ct).ConfigureAwait(false);
             }
+            catch
+            {
+                // A transient disk/locking error must not silently consume log entries. Requeue the
+                // drained lines for the next flush. Their exact order relative to newly queued lines
+                // is less important than preserving diagnostics at all.
+                if (dropped > 0)
+                    Interlocked.Add(ref _droppedLines, dropped);
 
-            var text = sb.ToString();
-            if (string.IsNullOrEmpty(text)) return;
-
-            await File.AppendAllTextAsync(_logFilePath, text, Encoding.UTF8, ct).ConfigureAwait(false);
+                foreach (var line in drained)
+                {
+                    _queue.Enqueue(line);
+                    Interlocked.Increment(ref _queueCount);
+                }
+            }
         }
-        catch
+        finally
         {
+            _flushGate.Release();
         }
     }
 
@@ -285,8 +299,7 @@ public sealed class LogService : IDisposable
         try
         {
             var fi = new FileInfo(_logFilePath);
-            if (!fi.Exists) return;
-            if (fi.Length < _maxBytes) return;
+            if (!fi.Exists || fi.Length < _maxBytes) return;
 
             var dir = fi.DirectoryName ?? Path.GetDirectoryName(_logFilePath);
             if (string.IsNullOrWhiteSpace(dir)) return;
@@ -304,7 +317,6 @@ public sealed class LogService : IDisposable
         try
         {
             maxKeep = Math.Clamp(maxKeep, 3, 50);
-
             var dir = Path.GetDirectoryName(_logFilePath);
             if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir)) return;
 
@@ -327,16 +339,15 @@ public sealed class LogService : IDisposable
     public void Dispose()
     {
         if (_disposed) return;
-        _disposed = true;
 
-        try
+        // Flush while the service is still alive. Previously _disposed was set first, which made
+        // the final Flush() return immediately and could drop the last shutdown diagnostics.
+        if (_enabled)
         {
-            if (_enabled)
-            {
-                try { Flush(); } catch { }
-            }
+            try { Flush(); } catch { }
         }
-        catch { }
+
+        _disposed = true;
 
         try { _cts?.Cancel(); } catch { }
         try { _signal.Set(); } catch { }
@@ -350,6 +361,11 @@ public sealed class LogService : IDisposable
 
         try { _signal.Dispose(); } catch { }
         try { _cts?.Dispose(); } catch { }
+
+        // Do not dispose _flushGate during process shutdown. If a very slow filesystem write keeps
+        // the writer alive beyond the short join timeout, disposing the gate underneath its finally
+        // block can create a late ObjectDisposedException. The process is exiting, so retaining this
+        // tiny synchronization object is safer than racing its disposal.
 
         _cts = null;
         _writerTask = null;
