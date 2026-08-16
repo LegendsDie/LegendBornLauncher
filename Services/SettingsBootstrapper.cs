@@ -10,8 +10,8 @@ namespace LegendBorn.Services;
 
 internal static class SettingsBootstrapper
 {
-    // ✅ единый источник правды
     private const string ConfigSchemaVersion = LauncherConfig.CurrentSchemaVersion;
+    private const long MaxConfigBytes = 1024L * 1024;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -31,10 +31,7 @@ internal static class SettingsBootstrapper
         try
         {
             Directory.CreateDirectory(ConfigDir);
-
             var cfg = ReadOrCreateDefault(out var needSave);
-
-            // ensure schema + migrations + normalize (может изменить cfg)
             var changed = EnsureSchemaVersionAndNormalize(cfg);
 
             if (needSave || changed)
@@ -42,19 +39,18 @@ internal static class SettingsBootstrapper
         }
         catch
         {
-            // release-safe: при любой проблеме пробуем восстановить
             try
             {
                 ResetCorruptedConfig();
                 Directory.CreateDirectory(ConfigDir);
 
                 var cfg = CreateDefaultConfig();
-                _ = EnsureSchemaVersionAndNormalize(cfg); // нормализуем и проставим версию схемы
+                _ = EnsureSchemaVersionAndNormalize(cfg);
                 SaveSafe(cfg);
             }
             catch
             {
-                // не валим запуск
+                // Bootstrap must never make the launcher unstartable.
             }
         }
     }
@@ -71,10 +67,16 @@ internal static class SettingsBootstrapper
 
         try
         {
+            var info = new FileInfo(ConfigPath);
+            if (info.Length <= 0 || info.Length > MaxConfigBytes)
+            {
+                ResetCorruptedConfig();
+                needSave = true;
+                return CreateDefaultConfig();
+            }
+
             var json = File.ReadAllText(ConfigPath, Utf8NoBom);
             var cfg = JsonSerializer.Deserialize<LauncherConfig>(json, JsonOpts);
-
-            // если cfg null -> дефолт
             if (cfg is null)
             {
                 needSave = true;
@@ -91,16 +93,11 @@ internal static class SettingsBootstrapper
         }
     }
 
-    /// <summary>
-    /// Возвращает true, если cfg был изменён (версия схемы/миграции/Normalize).
-    /// </summary>
     private static bool EnsureSchemaVersionAndNormalize(LauncherConfig cfg)
     {
         if (cfg is null) return false;
 
         var changed = false;
-
-        // ===== Version parsing (semver-ish) =====
         var currentRaw = (cfg.ConfigSchemaVersion ?? "").Trim();
         if (string.IsNullOrWhiteSpace(currentRaw))
             currentRaw = "0.0.0";
@@ -111,20 +108,8 @@ internal static class SettingsBootstrapper
 
         var targetVer = TryParseSchemaVersion(ConfigSchemaVersion, out var parsedTarget)
             ? parsedTarget
-            : currentVer; // fallback: если вдруг константа странная
+            : currentVer;
 
-        // ===== Migrations go here (based on currentVer) =====
-        // IMPORTANT: миграции должны быть ИДЕМПОТЕНТНЫМИ
-        //
-        // Пример:
-        // if (currentVer < new Version(0,2,8))
-        // {
-        //     // migrate...
-        //     changed = true;
-        // }
-
-        // ===== Schema version policy =====
-        // Не даунгрейдим схему, если у пользователя версия новее (например, откатил лаунчер)
         if (currentVer < targetVer)
         {
             cfg.ConfigSchemaVersion = ConfigSchemaVersion;
@@ -132,41 +117,33 @@ internal static class SettingsBootstrapper
         }
         else if (string.IsNullOrWhiteSpace(cfg.ConfigSchemaVersion))
         {
-            // если строка пустая, но Version уже >= target (редкий кейс) — всё равно проставим
             cfg.ConfigSchemaVersion = ConfigSchemaVersion;
             changed = true;
         }
 
-        // ===== Normalize (может менять поля) =====
         try
         {
             var before = SafeSerialize(cfg);
-
             cfg.Normalize();
-
             var after = SafeSerialize(cfg);
             if (!string.Equals(before, after, StringComparison.Ordinal))
                 changed = true;
         }
         catch
         {
-            // если Normalize упал — не валим запуск, но и не считаем changed
         }
 
         return changed;
     }
 
     private static LauncherConfig CreateDefaultConfig()
-    {
-        // ✅ дефолт: AUTO RAM (0), а не принудительно 4096
-        // пользователь потом сам выставит, но мы не «ломаем» конфиг
-        return new LauncherConfig
+        => new()
         {
             ConfigSchemaVersion = ConfigSchemaVersion,
             LastServerId = null,
             AutoLogin = true,
             GameRootPath = null,
-            RamMb = 0, // AUTO
+            RamMb = 0,
             JavaPath = null,
             LastServerIp = null,
             LastSuccessfulLoginUtc = null,
@@ -174,38 +151,39 @@ internal static class SettingsBootstrapper
             LastUpdateCheckUtc = null,
             LastLauncherVersion = null
         };
-    }
 
     private static void SaveSafe(LauncherConfig cfg)
     {
-        // Пишем только если можем создать директорию
         try { Directory.CreateDirectory(ConfigDir); } catch { }
 
         var tmp = ConfigPath + ".tmp";
 
         try
         {
-            // Снижаем лишние записи: если файл уже идентичен — ничего не делаем
             var json = JsonSerializer.Serialize(cfg, JsonOpts);
+            if (Utf8NoBom.GetByteCount(json) > MaxConfigBytes)
+                return;
 
             try
             {
                 if (File.Exists(ConfigPath))
                 {
-                    var existing = File.ReadAllText(ConfigPath, Utf8NoBom);
-                    if (!string.IsNullOrWhiteSpace(existing) && string.Equals(existing, json, StringComparison.Ordinal))
-                        return;
+                    var existingInfo = new FileInfo(ConfigPath);
+                    if (existingInfo.Length is > 0 and <= MaxConfigBytes)
+                    {
+                        var existing = File.ReadAllText(ConfigPath, Utf8NoBom);
+                        if (string.Equals(existing, json, StringComparison.Ordinal))
+                            return;
+                    }
                 }
             }
             catch
             {
-                // игнор — перезапишем
             }
 
             TryDeleteQuiet(tmp);
 
-            // ✅ надёжная запись tmp (UTF8 no-BOM) + flush to disk
-            using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (var fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             using (var sw = new StreamWriter(fs, Utf8NoBom))
             {
                 sw.Write(json);
@@ -217,7 +195,6 @@ internal static class SettingsBootstrapper
         }
         catch
         {
-            // игнор в релизе
         }
         finally
         {
@@ -227,35 +204,31 @@ internal static class SettingsBootstrapper
 
     private static void ReplaceOrMoveAtomic(string sourceTmp, string destPath)
     {
-        try
+        if (OperatingSystem.IsWindows() && File.Exists(destPath))
         {
-            if (OperatingSystem.IsWindows() && File.Exists(destPath))
-            {
-                // можно включить backup при желании:
-                // var backup = destPath + ".bak";
-                // File.Replace(sourceTmp, destPath, backup, ignoreMetadataErrors: true);
-
-                File.Replace(sourceTmp, destPath, destinationBackupFileName: null, ignoreMetadataErrors: true);
-                return;
-            }
-
-            File.Move(sourceTmp, destPath, overwrite: true);
-        }
-        catch
-        {
-            // fallback: старый способ
+            var backup = destPath + ".bootstrap.bak";
+            TryDeleteQuiet(backup);
             try
             {
-                if (File.Exists(destPath))
-                    File.Delete(destPath);
-
-                File.Move(sourceTmp, destPath);
+                File.Replace(sourceTmp, destPath, backup, ignoreMetadataErrors: true);
+                return;
             }
-            catch
+            catch (IOException)
             {
-                // ignore
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+            finally
+            {
+                TryDeleteQuiet(backup);
             }
         }
+
+        // Keep the existing config intact until the replacement move itself succeeds. Never delete
+        // the destination first: a crash or access error in between used to turn a recoverable write
+        // failure into a lost config.
+        File.Move(sourceTmp, destPath, overwrite: true);
     }
 
     private static void ResetCorruptedConfig()
@@ -266,17 +239,24 @@ internal static class SettingsBootstrapper
                 return;
 
             Directory.CreateDirectory(ConfigDir);
-
             var ts = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
             var bak = Path.Combine(ConfigDir, $"launcher.config.broken.{ts}.json");
 
-            try { File.Copy(ConfigPath, bak, overwrite: true); } catch { }
+            // Do not duplicate an unexpectedly huge file during recovery.
+            try
+            {
+                var info = new FileInfo(ConfigPath);
+                if (info.Length is > 0 and <= MaxConfigBytes)
+                    File.Copy(ConfigPath, bak, overwrite: true);
+            }
+            catch
+            {
+            }
 
             try { File.Delete(ConfigPath); } catch { }
         }
         catch
         {
-            // ignore
         }
     }
 
@@ -291,10 +271,6 @@ internal static class SettingsBootstrapper
         catch { return ""; }
     }
 
-    /// <summary>
-    /// Пытается распарсить версию схемы (semver-ish).
-    /// Поддерживает "0.2.8" и "0.2.8-beta" (суффикс отрезаем).
-    /// </summary>
     private static bool TryParseSchemaVersion(string? input, out Version version)
     {
         version = new Version(0, 0, 0);
@@ -303,22 +279,18 @@ internal static class SettingsBootstrapper
         if (string.IsNullOrWhiteSpace(s))
             return false;
 
-        // отрезаем pre-release/metadata: 0.2.8-beta+123 -> 0.2.8
         var dash = s.IndexOf('-');
         if (dash >= 0) s = s[..dash];
 
         var plus = s.IndexOf('+');
         if (plus >= 0) s = s[..plus];
 
-        // Version требует минимум major.minor, но 0.0.0 тоже ок
         if (Version.TryParse(s, out var v))
         {
             version = v;
             return true;
         }
 
-        // fallback: пытаемся дополнить до major.minor.build
-        // например "0.2" => "0.2.0"
         var parts = s.Split('.', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 2 && int.TryParse(parts[0], out var a) && int.TryParse(parts[1], out var b))
         {
