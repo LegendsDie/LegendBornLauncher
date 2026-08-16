@@ -15,20 +15,24 @@ using System.Windows.Media.Media3D;
 namespace LegendBorn.Controls;
 
 /// <summary>
-/// Native WPF Minecraft skin preview. The atlas is cropped into independent nearest-neighbour
-/// face textures before it reaches WPF 3D, and the real Minecraft outer layer (hat/jacket/
-/// sleeves/trousers) is rendered as a second shell instead of being discarded.
+/// Lightweight native WPF Minecraft skin renderer.
+/// The atlas is cropped into individual pixel-perfect face textures and rendered with the
+/// real Minecraft second layer (hat/jacket/sleeves/trousers), so transparent overlays are
+/// not lost and the preview stays sharp instead of being bilinear-filtered.
 /// </summary>
 public sealed class Skin3DView : UserControl
 {
     private const long MaxSkinBytes = 4L * 1024 * 1024;
     private const int MaxCachedSkinUrls = 32;
+
     private static readonly HttpClient Http = CreateHttp();
-    private static readonly ConcurrentDictionary<string, WeakReference<BitmapSource>> SkinCache = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, WeakReference<BitmapSource>> SkinCache =
+        new(StringComparer.Ordinal);
 
     private readonly Viewport3D _viewport = new();
     private readonly Border _placeholder;
     private readonly Model3DGroup _scene = new();
+
     private CancellationTokenSource? _loadCts;
     private AxisAngleRotation3D? _rotation;
     private Point _dragStart;
@@ -134,7 +138,8 @@ public sealed class Skin3DView : UserControl
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
             return;
 
-        if (TryGetCachedSkin(uri.AbsoluteUri, out var cached))
+        var cached = TryGetCachedSkin(uri.AbsoluteUri);
+        if (cached is not null)
         {
             BuildPlayer(cached);
             return;
@@ -157,7 +162,10 @@ public sealed class Skin3DView : UserControl
                 Version = HttpVersion.Version20,
                 VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
             };
-            using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token)
+            using var response = await Http.SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    timeout.Token)
                 .ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
@@ -168,7 +176,7 @@ public sealed class Skin3DView : UserControl
                 return;
 
             var bytes = await response.Content.ReadAsByteArrayAsync(timeout.Token).ConfigureAwait(false);
-            if (bytes.Length <= 0 || (long)bytes.Length > MaxSkinBytes)
+            if (bytes.Length <= 0 || bytes.LongLength > MaxSkinBytes)
                 return;
 
             var image = CreateBitmap(bytes);
@@ -178,7 +186,10 @@ public sealed class Skin3DView : UserControl
             CacheSkin(uri.AbsoluteUri, image);
             await Dispatcher.InvokeAsync(() => BuildPlayer(image));
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException)
+        {
+            // Normal when the URL changes or the control leaves the visual tree.
+        }
         catch
         {
             // Rendering is presentation-only; profile/game flow must never depend on the preview.
@@ -186,7 +197,10 @@ public sealed class Skin3DView : UserControl
         finally
         {
             if (!ct.IsCancellationRequested)
-                Interlocked.Exchange(ref _loadCts, null)?.Dispose();
+            {
+                var completed = Interlocked.Exchange(ref _loadCts, null);
+                completed?.Dispose();
+            }
         }
     }
 
@@ -222,81 +236,69 @@ public sealed class Skin3DView : UserControl
         var modern = skin.PixelHeight == skin.PixelWidth;
         var player = new Model3DGroup();
 
-        // Base layer.
+        // Base head/body.
         player.Children.Add(CreateCuboid(skin, 0, 17, 0, 8, 8, 8,
-            front: R(8, 8, 8, 8), back: R(24, 8, 8, 8),
-            left: R(16, 8, 8, 8), right: R(0, 8, 8, 8),
-            top: R(8, 0, 8, 8), bottom: R(16, 0, 8, 8)));
-
+            R(8, 8, 8, 8), R(24, 8, 8, 8), R(16, 8, 8, 8), R(0, 8, 8, 8),
+            R(8, 0, 8, 8), R(16, 0, 8, 8)));
         player.Children.Add(CreateCuboid(skin, 0, 7, 0, 8, 12, 4,
-            front: R(20, 20, 8, 12), back: R(32, 20, 8, 12),
-            left: R(28, 20, 4, 12), right: R(16, 20, 4, 12),
-            top: R(20, 16, 8, 4), bottom: R(28, 16, 8, 4)));
+            R(20, 20, 8, 12), R(32, 20, 8, 12), R(28, 20, 4, 12), R(16, 20, 4, 12),
+            R(20, 16, 8, 4), R(28, 16, 8, 4)));
 
+        // Base arms. Modern skins have a dedicated left-arm region; legacy skins mirror the right arm.
         player.Children.Add(CreateCuboid(skin, -6, 7, 0, 4, 12, 4,
-            front: modern ? R(36, 52, 4, 12) : R(44, 20, 4, 12),
-            back: modern ? R(44, 52, 4, 12) : R(52, 20, 4, 12),
-            left: modern ? R(40, 52, 4, 12) : R(48, 20, 4, 12),
-            right: modern ? R(32, 52, 4, 12) : R(40, 20, 4, 12),
-            top: modern ? R(36, 48, 4, 4) : R(44, 16, 4, 4),
-            bottom: modern ? R(40, 48, 4, 4) : R(48, 16, 4, 4)));
-
+            modern ? R(36, 52, 4, 12) : R(44, 20, 4, 12),
+            modern ? R(44, 52, 4, 12) : R(52, 20, 4, 12),
+            modern ? R(40, 52, 4, 12) : R(48, 20, 4, 12),
+            modern ? R(32, 52, 4, 12) : R(40, 20, 4, 12),
+            modern ? R(36, 48, 4, 4) : R(44, 16, 4, 4),
+            modern ? R(40, 48, 4, 4) : R(48, 16, 4, 4)));
         player.Children.Add(CreateCuboid(skin, 6, 7, 0, 4, 12, 4,
-            front: R(44, 20, 4, 12), back: R(52, 20, 4, 12),
-            left: R(48, 20, 4, 12), right: R(40, 20, 4, 12),
-            top: R(44, 16, 4, 4), bottom: R(48, 16, 4, 4)));
+            R(44, 20, 4, 12), R(52, 20, 4, 12), R(48, 20, 4, 12), R(40, 20, 4, 12),
+            R(44, 16, 4, 4), R(48, 16, 4, 4)));
 
+        // Base legs. Modern skins have a dedicated left-leg region; legacy skins mirror the right leg.
         player.Children.Add(CreateCuboid(skin, -2, -5, 0, 4, 12, 4,
-            front: modern ? R(20, 52, 4, 12) : R(4, 20, 4, 12),
-            back: modern ? R(28, 52, 4, 12) : R(12, 20, 4, 12),
-            left: modern ? R(24, 52, 4, 12) : R(8, 20, 4, 12),
-            right: modern ? R(16, 52, 4, 12) : R(0, 20, 4, 12),
-            top: modern ? R(20, 48, 4, 4) : R(4, 16, 4, 4),
-            bottom: modern ? R(24, 48, 4, 4) : R(8, 16, 4, 4)));
-
+            modern ? R(20, 52, 4, 12) : R(4, 20, 4, 12),
+            modern ? R(28, 52, 4, 12) : R(12, 20, 4, 12),
+            modern ? R(24, 52, 4, 12) : R(8, 20, 4, 12),
+            modern ? R(16, 52, 4, 12) : R(0, 20, 4, 12),
+            modern ? R(20, 48, 4, 4) : R(4, 16, 4, 4),
+            modern ? R(24, 48, 4, 4) : R(8, 16, 4, 4)));
         player.Children.Add(CreateCuboid(skin, 2, -5, 0, 4, 12, 4,
-            front: R(4, 20, 4, 12), back: R(12, 20, 4, 12),
-            left: R(8, 20, 4, 12), right: R(0, 20, 4, 12),
-            top: R(4, 16, 4, 4), bottom: R(8, 16, 4, 4)));
+            R(4, 20, 4, 12), R(12, 20, 4, 12), R(8, 20, 4, 12), R(0, 20, 4, 12),
+            R(4, 16, 4, 4), R(8, 16, 4, 4)));
 
-        // Minecraft's second skin layer. The legacy layout still has the head/hat shell;
-        // jacket, sleeves and trouser shells exist on the modern 64x64 layout only.
+        // Second layer: the hat exists in both 64x32 and 64x64 layouts.
         player.Children.Add(CreateCuboid(skin, 0, 17, 0, 9, 9, 9,
-            front: R(40, 8, 8, 8), back: R(56, 8, 8, 8),
-            left: R(48, 8, 8, 8), right: R(32, 8, 8, 8),
-            top: R(40, 0, 8, 8), bottom: R(48, 0, 8, 8)));
+            R(40, 8, 8, 8), R(56, 8, 8, 8), R(48, 8, 8, 8), R(32, 8, 8, 8),
+            R(40, 0, 8, 8), R(48, 0, 8, 8)));
 
         if (modern)
         {
+            // Jacket.
             player.Children.Add(CreateCuboid(skin, 0, 7, 0, 8.5, 12.5, 4.5,
-                front: R(20, 36, 8, 12), back: R(32, 36, 8, 12),
-                left: R(28, 36, 4, 12), right: R(16, 36, 4, 12),
-                top: R(20, 32, 8, 4), bottom: R(28, 32, 8, 4)));
+                R(20, 36, 8, 12), R(32, 36, 8, 12), R(28, 36, 4, 12), R(16, 36, 4, 12),
+                R(20, 32, 8, 4), R(28, 32, 8, 4)));
 
+            // Left/right sleeves.
             player.Children.Add(CreateCuboid(skin, -6, 7, 0, 4.5, 12.5, 4.5,
-                front: R(52, 52, 4, 12), back: R(60, 52, 4, 12),
-                left: R(56, 52, 4, 12), right: R(48, 52, 4, 12),
-                top: R(52, 48, 4, 4), bottom: R(56, 48, 4, 4)));
-
+                R(52, 52, 4, 12), R(60, 52, 4, 12), R(56, 52, 4, 12), R(48, 52, 4, 12),
+                R(52, 48, 4, 4), R(56, 48, 4, 4)));
             player.Children.Add(CreateCuboid(skin, 6, 7, 0, 4.5, 12.5, 4.5,
-                front: R(44, 36, 4, 12), back: R(52, 36, 4, 12),
-                left: R(48, 36, 4, 12), right: R(40, 36, 4, 12),
-                top: R(44, 32, 4, 4), bottom: R(48, 32, 4, 4)));
+                R(44, 36, 4, 12), R(52, 36, 4, 12), R(48, 36, 4, 12), R(40, 36, 4, 12),
+                R(44, 32, 4, 4), R(48, 32, 4, 4)));
 
+            // Left/right trouser layers.
             player.Children.Add(CreateCuboid(skin, -2, -5, 0, 4.5, 12.5, 4.5,
-                front: R(4, 52, 4, 12), back: R(12, 52, 4, 12),
-                left: R(8, 52, 4, 12), right: R(0, 52, 4, 12),
-                top: R(4, 48, 4, 4), bottom: R(8, 48, 4, 4)));
-
+                R(4, 52, 4, 12), R(12, 52, 4, 12), R(8, 52, 4, 12), R(0, 52, 4, 12),
+                R(4, 48, 4, 4), R(8, 48, 4, 4)));
             player.Children.Add(CreateCuboid(skin, 2, -5, 0, 4.5, 12.5, 4.5,
-                front: R(4, 36, 4, 12), back: R(12, 36, 4, 12),
-                left: R(8, 36, 4, 12), right: R(0, 36, 4, 12),
-                top: R(4, 32, 4, 4), bottom: R(8, 32, 4, 4)));
+                R(4, 36, 4, 12), R(12, 36, 4, 12), R(8, 36, 4, 12), R(0, 36, 4, 12),
+                R(4, 32, 4, 4), R(8, 32, 4, 4)));
         }
 
         _rotation = new AxisAngleRotation3D(new Vector3D(0, 1, 0), -18);
         player.Transform = new RotateTransform3D(_rotation, new Point3D(0, 4, 0));
-
         _scene.Children.Add(player);
         _placeholder.Visibility = Visibility.Collapsed;
     }
@@ -340,9 +342,18 @@ public sealed class Skin3DView : UserControl
 
     private static Model3DGroup CreateCuboid(
         BitmapSource skin,
-        double cx, double cy, double cz,
-        double width, double height, double depth,
-        Int32Rect front, Int32Rect back, Int32Rect left, Int32Rect right, Int32Rect top, Int32Rect bottom)
+        double cx,
+        double cy,
+        double cz,
+        double width,
+        double height,
+        double depth,
+        Int32Rect front,
+        Int32Rect back,
+        Int32Rect left,
+        Int32Rect right,
+        Int32Rect top,
+        Int32Rect bottom)
     {
         var x0 = cx - width / 2.0;
         var x1 = cx + width / 2.0;
@@ -370,7 +381,10 @@ public sealed class Skin3DView : UserControl
     private static GeometryModel3D CreateFace(
         BitmapSource skin,
         Int32Rect logicalRegion,
-        Point3D p0, Point3D p1, Point3D p2, Point3D p3)
+        Point3D p0,
+        Point3D p1,
+        Point3D p2,
+        Point3D p3)
     {
         var material = CreateFaceMaterial(skin, logicalRegion);
         var mesh = new MeshGeometry3D
@@ -386,7 +400,11 @@ public sealed class Skin3DView : UserControl
             TriangleIndices = new Int32Collection { 0, 1, 2, 0, 2, 3 }
         };
         mesh.Freeze();
-        return new GeometryModel3D(mesh, material) { BackMaterial = material };
+
+        return new GeometryModel3D(mesh, material)
+        {
+            BackMaterial = material
+        };
     }
 
     private static Material CreateFaceMaterial(BitmapSource skin, Int32Rect logicalRegion)
@@ -402,11 +420,11 @@ public sealed class Skin3DView : UserControl
             region.X + region.Width > skin.PixelWidth ||
             region.Y + region.Height > skin.PixelHeight)
         {
-            var fallback = new SolidColorBrush(Color.FromRgb(120, 104, 146));
+            var fallbackBrush = new SolidColorBrush(Color.FromRgb(120, 104, 146));
+            fallbackBrush.Freeze();
+            var fallback = new DiffuseMaterial(fallbackBrush);
             fallback.Freeze();
-            var fallbackMaterial = new DiffuseMaterial(fallback);
-            fallbackMaterial.Freeze();
-            return fallbackMaterial;
+            return fallback;
         }
 
         var crop = new CroppedBitmap(skin, region);
@@ -430,19 +448,23 @@ public sealed class Skin3DView : UserControl
     private static Int32Rect R(int x, int y, int width, int height)
         => new(x, y, width, height);
 
-    private static bool TryGetCachedSkin(string key, out BitmapSource skin)
+    private static BitmapSource? TryGetCachedSkin(string key)
     {
-        skin = null!;
-        if (!SkinCache.TryGetValue(key, out var reference)) return false;
-        if (reference.TryGetTarget(out skin)) return true;
+        if (!SkinCache.TryGetValue(key, out var reference))
+            return null;
+
+        if (reference.TryGetTarget(out var target) && target is not null)
+            return target;
+
         SkinCache.TryRemove(key, out _);
-        return false;
+        return null;
     }
 
     private static void CacheSkin(string key, BitmapSource skin)
     {
         if (SkinCache.Count >= MaxCachedSkinUrls)
             SkinCache.Clear();
+
         SkinCache[key] = new WeakReference<BitmapSource>(skin);
     }
 
@@ -466,6 +488,9 @@ public sealed class Skin3DView : UserControl
             AllowAutoRedirect = true
         };
 
-        return new HttpClient(handler) { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
+        return new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        };
     }
 }
