@@ -4,269 +4,356 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              mc:Ignorable="d"
-             d:DesignHeight="640"
-             d:DesignWidth="980">
+             d:DesignHeight="700"
+             d:DesignWidth="1180">
+
+    <UserControl.Resources>
+        <Style x:Key="StartPanel" TargetType="Border">
+            <Setter Property="Background" Value="#A80B0E19"/>
+            <Setter Property="BorderBrush" Value="#34314A"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="15"/>
+            <Setter Property="Padding" Value="16"/>
+        </Style>
+        <Style x:Key="StartDim" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#8F9AB0"/>
+            <Setter Property="FontSize" Value="11"/>
+        </Style>
+    </UserControl.Resources>
 
     <Grid>
         <Border Style="{StaticResource ScreenFrameStyle}">
             <Grid>
-
                 <Image Source="pack://application:,,,/Resources/Assets/legendcraft.jpg"
                        Stretch="UniformToFill"
-                       Opacity="0.42"
+                       Opacity="0.34"
                        RenderOptions.BitmapScalingMode="HighQuality"/>
 
-                <Rectangle Fill="#9A060718"/>
+                <Rectangle Fill="#A2080A13"/>
 
                 <Rectangle>
                     <Rectangle.Fill>
                         <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
-                            <GradientStop Color="#E0121228" Offset="0"/>
-                            <GradientStop Color="#84121228" Offset="0.55"/>
-                            <GradientStop Color="#B0060718" Offset="1"/>
+                            <GradientStop Color="#F00C0D1D" Offset="0"/>
+                            <GradientStop Color="#C80C0D1D" Offset="0.48"/>
+                            <GradientStop Color="#8A0A0B17" Offset="1"/>
                         </LinearGradientBrush>
                     </Rectangle.Fill>
                 </Rectangle>
 
-                <TextBlock FontFamily="Segoe MDL2 Assets"
-                           Text="&#xE73E;"
-                           FontSize="16"
-                           Foreground="{StaticResource TextDimLocal}"
-                           Opacity="0.18"
-                           HorizontalAlignment="Right"
-                           VerticalAlignment="Top"
-                           Margin="0,12,14,0"
-                           ToolTip="Официальный сервер"/>
+                <Grid Margin="26,24,26,22">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="18"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="16"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
 
-                <Border Background="#00000000" Padding="26,26,26,44">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="1.55*"/>
-                                <ColumnDefinition Width="26"/>
-                                <ColumnDefinition Width="340"/>
-                            </Grid.ColumnDefinitions>
+                    <!-- Hero -->
+                    <Grid Grid.Row="0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="22"/>
+                            <ColumnDefinition Width="300"/>
+                        </Grid.ColumnDefinitions>
 
-                            <!-- Left column -->
-                            <StackPanel Grid.Column="0"
-                                        VerticalAlignment="Top"
-                                        Margin="0,12,0,0">
-
-                                <StackPanel Margin="0,0,0,14">
-                                    <TextBlock Text="{Binding PackName}"
-                                               Foreground="{StaticResource TextStrongLocal}"
-                                               FontSize="26"
-                                               FontWeight="Bold"
-                                               TextTrimming="CharacterEllipsis"/>
-                                    <TextBlock Margin="0,6,0,0"
-                                               Text="{Binding BuildDisplayName}"
-                                               Foreground="{StaticResource TextDimLocal}"
-                                               FontSize="13"
-                                               TextTrimming="CharacterEllipsis"/>
-                                    <TextBlock Margin="0,8,0,0"
-                                               Text="TechMagicRPG сервер, где начнётся твой путь"
-                                               Foreground="{StaticResource TextDimLocal}"
-                                               FontSize="12"
-                                               Opacity="0.92"
-                                               TextTrimming="CharacterEllipsis"/>
+                        <StackPanel VerticalAlignment="Center">
+                            <Border HorizontalAlignment="Left"
+                                    Padding="9,4"
+                                    CornerRadius="10"
+                                    Background="#24163B"
+                                    BorderBrush="#5A3B7B"
+                                    BorderThickness="1">
+                                <StackPanel Orientation="Horizontal">
+                                    <Ellipse Width="6" Height="6" Fill="#7BF1A8" VerticalAlignment="Center"/>
+                                    <TextBlock Margin="7,0,0,0"
+                                               Text="ОФИЦИАЛЬНАЯ СБОРКА"
+                                               Foreground="#CBB6F5"
+                                               FontSize="9"
+                                               FontWeight="SemiBold"/>
                                 </StackPanel>
+                            </Border>
 
-                                <Border Style="{StaticResource FieldCardStyle}">
+                            <TextBlock Margin="0,12,0,0"
+                                       Text="{Binding PackName}"
+                                       Foreground="{StaticResource TextStrongLocal}"
+                                       FontSize="34"
+                                       FontWeight="Bold"
+                                       TextTrimming="CharacterEllipsis"/>
+
+                            <TextBlock Margin="0,7,0,0"
+                                       Text="{Binding BuildDisplayName}"
+                                       Foreground="#B1BBD0"
+                                       FontSize="13"
+                                       TextTrimming="CharacterEllipsis"/>
+
+                            <TextBlock Margin="0,10,0,0"
+                                       MaxWidth="650"
+                                       Text="TechMagicRPG сервер, где прогресс, история и сообщество живут в одной экосистеме LegendBorn."
+                                       Foreground="#8994A9"
+                                       FontSize="12"
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+
+                        <Image Grid.Column="2"
+                               Source="pack://application:,,,/Resources/Assets/legendcraft.png"
+                               Height="150"
+                               MaxWidth="285"
+                               Stretch="Uniform"
+                               HorizontalAlignment="Right"
+                               VerticalAlignment="Center"
+                               SnapsToDevicePixels="True"
+                               RenderOptions.BitmapScalingMode="HighQuality">
+                            <Image.Effect>
+                                <DropShadowEffect Color="#9B5CFF"
+                                                  BlurRadius="28"
+                                                  ShadowDepth="0"
+                                                  Opacity="0.30"/>
+                            </Image.Effect>
+                        </Image>
+                    </Grid>
+
+                    <!-- Main content -->
+                    <Grid Grid.Row="2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1.18*"/>
+                            <ColumnDefinition Width="14"/>
+                            <ColumnDefinition Width="0.82*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0">
+                            <Border Style="{StaticResource StartPanel}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="1*"/>
+                                        <ColumnDefinition Width="12"/>
+                                        <ColumnDefinition Width="1.2*"/>
+                                    </Grid.ColumnDefinitions>
+
                                     <StackPanel>
-                                        <TextBlock Text="Ник (Minecraft)"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{StaticResource TextStrongLocal}"/>
-
-                                        <TextBox Margin="0,12,0,0"
+                                        <TextBlock Text="MINECRAFT НИК" Style="{StaticResource StartDim}"/>
+                                        <TextBox Margin="0,7,0,0"
+                                                 Height="40"
                                                  Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"/>
-
-                                        <TextBlock Margin="0,10,0,0"
-                                                   Text="{Binding StatusText, FallbackValue='Готов к запуску.'}"
-                                                   Foreground="{StaticResource TextDimLocal}"
-                                                   FontSize="12"
-                                                   TextTrimming="CharacterEllipsis"/>
                                     </StackPanel>
-                                </Border>
 
-                                <Border Margin="0,16,0,0"
-                                        Style="{StaticResource FieldCardStyle}">
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="СОСТОЯНИЕ" Style="{StaticResource StartDim}"/>
+                                        <Border Margin="0,7,0,0"
+                                                Height="40"
+                                                Background="#77101522"
+                                                BorderBrush="#343A54"
+                                                BorderThickness="1"
+                                                CornerRadius="12"
+                                                Padding="12,0">
+                                            <TextBlock VerticalAlignment="Center"
+                                                       Text="{Binding StatusText, FallbackValue='Готов к запуску.'}"
+                                                       Foreground="#C6CEE0"
+                                                       FontSize="11"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                        </Border>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+
+                            <Border Margin="0,12,0,0" Style="{StaticResource StartPanel}">
+                                <StackPanel>
                                     <Grid>
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto"/>
-                                            <RowDefinition Height="10"/>
-                                            <RowDefinition Height="*"/>
-                                        </Grid.RowDefinitions>
-
-                                        <Grid Grid.Row="0">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*"/>
-                                                <ColumnDefinition Width="Auto"/>
-                                            </Grid.ColumnDefinitions>
-
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
                                             <TextBlock Text="Новости сервера"
-                                                       FontWeight="Bold"
                                                        Foreground="{StaticResource TextStrongLocal}"
-                                                       FontSize="13"/>
-
-                                            <!-- IMPORTANT: handler must exist in StartTabView.xaml.cs -->
-                                            <Button Grid.Column="1"
-                                                    Style="{StaticResource GhostButton}"
-                                                    Content="Все"
-                                                    Height="30"
-                                                    Padding="12,0"
-                                                    Click="OpenNewsTab_OnClick"/>
-                                        </Grid>
-
-                                        <ItemsControl Grid.Row="2">
-                                            <ItemsControl.ItemsSource>
-                                                <PriorityBinding>
-                                                    <Binding Path="ServerNewsTop2"/>
-                                                    <!-- fallback to RootWindow property if you keep it there -->
-                                                    <Binding ElementName="RootWindow" Path="ServerNewsTop2"/>
-                                                </PriorityBinding>
-                                            </ItemsControl.ItemsSource>
-
-                                            <ItemsControl.ItemsPanel>
-                                                <ItemsPanelTemplate>
-                                                    <StackPanel/>
-                                                </ItemsPanelTemplate>
-                                            </ItemsControl.ItemsPanel>
-
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate>
-                                                    <!-- IMPORTANT: handler must exist in StartTabView.xaml.cs -->
-                                                    <Button Style="{StaticResource NewsCardButtonStyle}"
-                                                            Tag="{Binding Url}"
-                                                            Click="OpenNewsItem_OnClick">
-                                                        <Border Background="#101329"
-                                                                BorderBrush="{StaticResource StrokeGlow}"
-                                                                BorderThickness="1"
-                                                                CornerRadius="14"
-                                                                Padding="12">
-                                                            <Grid>
-                                                                <Grid.RowDefinitions>
-                                                                    <RowDefinition Height="Auto"/>
-                                                                    <RowDefinition Height="6"/>
-                                                                    <RowDefinition Height="Auto"/>
-                                                                </Grid.RowDefinitions>
-
-                                                                <Grid>
-                                                                    <Grid.ColumnDefinitions>
-                                                                        <ColumnDefinition Width="*"/>
-                                                                        <ColumnDefinition Width="Auto"/>
-                                                                    </Grid.ColumnDefinitions>
-
-                                                                    <TextBlock Text="{Binding Title}"
-                                                                               Foreground="{StaticResource TextStrongLocal}"
-                                                                               FontWeight="SemiBold"
-                                                                               FontSize="12"
-                                                                               TextTrimming="CharacterEllipsis"/>
-                                                                    <TextBlock Grid.Column="1"
-                                                                               Margin="12,0,0,0"
-                                                                               Foreground="{StaticResource TextDimLocal}"
-                                                                               FontSize="11"
-                                                                               Text="{Binding Date}"/>
-                                                                </Grid>
-
-                                                                <TextBlock Grid.Row="2"
-                                                                           Foreground="{StaticResource TextDimLocal}"
-                                                                           FontSize="12"
-                                                                           TextWrapping="NoWrap"
-                                                                           TextTrimming="CharacterEllipsis"
-                                                                           Text="{Binding Summary}"/>
-                                                            </Grid>
-                                                        </Border>
-                                                    </Button>
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
+                                                       FontWeight="SemiBold"
+                                                       FontSize="14"/>
+                                            <TextBlock Margin="0,3,0,0"
+                                                       Style="{StaticResource StartDim}"
+                                                       Text="Последние изменения и события проекта"/>
+                                        </StackPanel>
+                                        <Button Grid.Column="1"
+                                                Style="{StaticResource GhostButton}"
+                                                Content="Все новости"
+                                                Height="30"
+                                                Padding="11,0"
+                                                Click="OpenNewsTab_OnClick"/>
                                     </Grid>
-                                </Border>
 
-                            </StackPanel>
+                                    <ItemsControl Margin="0,11,0,0">
+                                        <ItemsControl.ItemsSource>
+                                            <PriorityBinding>
+                                                <Binding Path="ServerNewsTop2"/>
+                                                <Binding ElementName="RootWindow" Path="ServerNewsTop2"/>
+                                            </PriorityBinding>
+                                        </ItemsControl.ItemsSource>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Button Style="{StaticResource NewsCardButtonStyle}"
+                                                        Tag="{Binding Url}"
+                                                        Click="OpenNewsItem_OnClick">
+                                                    <Border Background="#6E101421"
+                                                            BorderBrush="#2D334A"
+                                                            BorderThickness="1"
+                                                            CornerRadius="12"
+                                                            Padding="11">
+                                                        <Grid>
+                                                            <Grid.RowDefinitions>
+                                                                <RowDefinition Height="Auto"/>
+                                                                <RowDefinition Height="4"/>
+                                                                <RowDefinition Height="Auto"/>
+                                                            </Grid.RowDefinitions>
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                    <ColumnDefinition Width="Auto"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="{Binding Title}"
+                                                                           Foreground="{StaticResource TextStrongLocal}"
+                                                                           FontWeight="SemiBold"
+                                                                           FontSize="11"
+                                                                           TextTrimming="CharacterEllipsis"/>
+                                                                <TextBlock Grid.Column="1"
+                                                                           Margin="10,0,0,0"
+                                                                           Foreground="#7F8BA1"
+                                                                           FontSize="9"
+                                                                           Text="{Binding Date}"/>
+                                                            </Grid>
+                                                            <TextBlock Grid.Row="2"
+                                                                       Foreground="#8E99AF"
+                                                                       FontSize="10"
+                                                                       TextWrapping="NoWrap"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       Text="{Binding Summary}"/>
+                                                        </Grid>
+                                                    </Border>
+                                                </Button>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
 
-                            <!-- Right column -->
-                            <Grid Grid.Column="2" Margin="0,12,0,0">
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="*"/>
-                                    <RowDefinition Height="Auto"/>
-                                </Grid.RowDefinitions>
+                        <!-- Right information rail -->
+                        <StackPanel Grid.Column="2">
+                            <Border Style="{StaticResource StartPanel}">
+                                <StackPanel>
+                                    <TextBlock Text="Перед запуском"
+                                               Foreground="{StaticResource TextStrongLocal}"
+                                               FontWeight="SemiBold"
+                                               FontSize="14"/>
+                                    <TextBlock Margin="0,7,0,0"
+                                               TextWrapping="Wrap"
+                                               Foreground="#8F9AB0"
+                                               FontSize="11"
+                                               Text="Launcher сначала проверит manifest, переиспользует уже готовые файлы и скачает только изменения."/>
 
-                                <Image Grid.Row="0"
-                                       Source="pack://application:,,,/Resources/Assets/legendcraft.png"
-                                       Height="170"
-                                       MaxWidth="320"
-                                       Stretch="Uniform"
-                                       HorizontalAlignment="Right"
-                                       Margin="0,0,0,14"
-                                       SnapsToDevicePixels="True"
-                                       RenderOptions.BitmapScalingMode="HighQuality">
-                                    <Image.Effect>
-                                        <DropShadowEffect Color="#A855F7"
-                                                          BlurRadius="22"
-                                                          ShadowDepth="0"
-                                                          Opacity="0.28"/>
-                                    </Image.Effect>
-                                </Image>
+                                    <Grid Margin="0,14,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="8"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Border Background="#64101522" BorderBrush="#2D334A" BorderThickness="1" CornerRadius="11" Padding="10">
+                                            <StackPanel>
+                                                <TextBlock Text="MINECRAFT" Style="{StaticResource StartDim}"/>
+                                                <TextBlock Margin="0,3,0,0" Text="{Binding MinecraftVersion}"
+                                                           Foreground="#D8DEED" FontWeight="SemiBold"/>
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Grid.Column="2" Background="#64101522" BorderBrush="#2D334A" BorderThickness="1" CornerRadius="11" Padding="10">
+                                            <StackPanel>
+                                                <TextBlock Text="LOADER" Style="{StaticResource StartDim}"/>
+                                                <TextBlock Margin="0,3,0,0" Text="{Binding LoaderName}"
+                                                           Foreground="#D8DEED" FontWeight="SemiBold"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
 
-                                <StackPanel Grid.Row="2"
-                                            VerticalAlignment="Bottom"
-                                            HorizontalAlignment="Right"
-                                            Margin="0,0,0,0">
-
-                                    <StackPanel Orientation="Horizontal"
-                                                HorizontalAlignment="Right"
-                                                Margin="0,0,0,10">
-
-                                        <Button Style="{StaticResource SmallIconButton}"
+                                    <StackPanel Orientation="Horizontal" Margin="0,13,0,0">
+                                        <Button Style="{StaticResource GhostButton}"
+                                                Height="32"
+                                                Padding="10,0"
                                                 ToolTip="Открыть папку игры"
                                                 Command="{Binding OpenGameDirCommand}">
-                                            <TextBlock FontFamily="Segoe MDL2 Assets"
-                                                       Text="&#xE8B7;"
-                                                       FontSize="16"/>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8B7;" FontSize="13"/>
+                                                <TextBlock Margin="7,0,0,0" Text="Папка"/>
+                                            </StackPanel>
                                         </Button>
-
-                                        <!-- IMPORTANT: handler must exist in StartTabView.xaml.cs -->
-                                        <Button Style="{StaticResource SmallIconButton}"
+                                        <Button Style="{StaticResource GhostButton}"
+                                                Height="32"
+                                                Padding="10,0"
+                                                Margin="8,0,0,0"
                                                 ToolTip="Открыть сайт"
-                                                Margin="10,0,0,0"
                                                 Click="OpenSite_OnClick">
-                                            <TextBlock FontFamily="Segoe MDL2 Assets"
-                                                       Text="&#xE774;"
-                                                       FontSize="16"/>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE774;" FontSize="13"/>
+                                                <TextBlock Margin="7,0,0,0" Text="Сайт"/>
+                                            </StackPanel>
                                         </Button>
                                     </StackPanel>
-
-                                    <!-- IMPORTANT: handler must exist in StartTabView.xaml.cs -->
-                                    <Button Style="{StaticResource PlayOrStopButtonStyle}"
-                                            Click="PlayOrStop_OnClick"
-                                            Height="58"
-                                            FontSize="16"
-                                            Padding="36,0"/>
-
-                                    <TextBlock Margin="0,14,0,0"
-                                               Foreground="{StaticResource TextDimLocal}"
-                                               FontSize="12"
-                                               HorizontalAlignment="Right">
-                                        Сборка синхронизируется перед запуском.
-                                    </TextBlock>
-
                                 </StackPanel>
-                            </Grid>
+                            </Border>
+                        </StackPanel>
+                    </Grid>
 
+                    <!-- Launch dock -->
+                    <Border Grid.Row="4"
+                            Background="#E50A0D18"
+                            BorderBrush="#493062"
+                            BorderThickness="1"
+                            CornerRadius="16"
+                            Padding="14">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="18"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel VerticalAlignment="Center">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding StatusText}"
+                                               Foreground="#D5DBEA"
+                                               FontSize="11"
+                                               FontWeight="SemiBold"
+                                               TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Grid.Column="1"
+                                               Margin="12,0,0,0"
+                                               Text="{Binding ProgressPercent, StringFormat={}{0}%}"
+                                               Foreground="#BFA2F2"
+                                               FontSize="10"/>
+                                </Grid>
+                                <ProgressBar x:Name="PackProgressBar"
+                                             Margin="0,7,0,0"
+                                             Height="7"
+                                             Minimum="0"
+                                             Maximum="100"
+                                             Value="{Binding ProgressPercent, Mode=OneWay}"/>
+                                <TextBlock Margin="0,5,0,0"
+                                           Text="Первый запуск может занять дольше; следующие обновления используют локальный pack state."
+                                           Foreground="#69758D"
+                                           FontSize="9"/>
+                            </StackPanel>
+
+                            <Button Grid.Column="2"
+                                    Style="{StaticResource PlayOrStopButtonStyle}"
+                                    Click="PlayOrStop_OnClick"
+                                    MinWidth="190"
+                                    Height="54"
+                                    FontSize="15"
+                                    Padding="32,0"/>
                         </Grid>
-                    </ScrollViewer>
-                </Border>
-
-                <ProgressBar Style="{StaticResource BottomStripProgressBarStyle}"
-                             Minimum="0"
-                             Maximum="100"
-                             Value="{Binding ProgressPercent, Mode=OneWay}"/>
-
+                    </Border>
+                </Grid>
             </Grid>
         </Border>
     </Grid>
-
 </UserControl>
