@@ -67,6 +67,15 @@ internal static class Program
                 throw new InvalidOperationException(
                     "Production MainWindow unexpectedly disables resizing; the refreshed shell must remain resizable.");
 
+            if (host.DataContext is not MainViewModel vm)
+                throw new InvalidOperationException("Production MainWindow did not expose MainViewModel as DataContext.");
+
+            // Materialize the real profile visual tree so Loaded-time DPI/layout polish is tested,
+            // not merely the unselected TabItem's logical content.
+            vm.SelectedMenuIndex = 2;
+            host.UpdateLayout();
+            host.Dispatcher.Invoke(static () => { }, DispatcherPriority.ApplicationIdle);
+
             var profileView = FindLogicalDescendant<ProfileTabView>(host)
                               ?? throw new InvalidOperationException(
                                   "ProfileTabView was not found inside the production MainWindow logical tree.");
@@ -175,9 +184,6 @@ internal static class Program
                 throw new InvalidOperationException(
                     "Profile XP progress unexpectedly has a WPF BindingExpression; read-only XP must be mirrored manually.");
             }
-
-            if (host.DataContext is not MainViewModel vm)
-                throw new InvalidOperationException("Production MainWindow did not expose MainViewModel as DataContext.");
 
             if (vm.MinecraftStatusHealth != "—" || vm.MinecraftStatusDimension != "—")
                 throw new InvalidOperationException("Minecraft status must default to unknown instead of fabricated telemetry.");
