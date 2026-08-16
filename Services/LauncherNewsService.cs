@@ -22,7 +22,7 @@ public static class LauncherNewsService
     private const string NewsUrl = "https://legendborn.xyz/api/launcher/news";
     private const string LatestUrl = "https://legendborn.xyz/api/launcher/latest";
     private const int MaxBodyBytes = 512 * 1024;
-    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(7);
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(7);
     private static readonly HttpClient Http = CreateHttp();
 
     public sealed record NewsItem(string Title, string Summary, string Date, string? Url);
@@ -144,7 +144,7 @@ public static class LauncherNewsService
     private static async Task<byte[]?> GetJsonAsync(string url, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(Timeout);
+        timeout.CancelAfter(RequestTimeout);
 
         using var request = new HttpRequestMessage(HttpMethod.Get, url)
         {
@@ -202,6 +202,6 @@ public static class LauncherNewsService
             MaxConnectionsPerServer = 2,
             AllowAutoRedirect = true
         };
-        return new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        return new HttpClient(handler) { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
     }
 }
