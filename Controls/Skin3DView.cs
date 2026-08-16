@@ -140,7 +140,7 @@ public sealed class Skin3DView : UserControl
                 return;
 
             var bytes = await response.Content.ReadAsByteArrayAsync(timeout.Token).ConfigureAwait(false);
-            if (bytes.Length is <= 0 or > MaxSkinBytes)
+            if (bytes.Length <= 0 || (long)bytes.Length > MaxSkinBytes)
                 return;
 
             var image = CreateBitmap(bytes);
@@ -305,6 +305,6 @@ public sealed class Skin3DView : UserControl
             AllowAutoRedirect = true
         };
 
-        return new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        return new HttpClient(handler) { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
     }
 }
