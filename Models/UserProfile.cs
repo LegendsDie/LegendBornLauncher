@@ -21,6 +21,7 @@ public sealed class UserProfile
     // /api/launcher/me already exposes these snapshots. Modeling them here prevents the launcher
     // from throwing away useful social/profile state and keeps display data on the server as source of truth.
     public MinecraftSnapshot? Minecraft { get; set; }
+    public MinecraftStatusSnapshot? MinecraftStatus { get; set; }
     public ClanSnapshot? Clan { get; set; }
     public ProgressionSnapshot? Progression { get; set; }
     public SocialSnapshot? Social { get; set; }
@@ -34,6 +35,23 @@ public sealed class UserProfile
         public bool IsLinked { get; set; }
         public string? SelectedSkinKey { get; set; }
         public SkinSnapshot? SelectedSkin { get; set; }
+    }
+
+    public sealed class MinecraftStatusSnapshot
+    {
+        public bool Online { get; set; }
+        public string? ServerId { get; set; }
+        public DateTimeOffset? SeenAt { get; set; }
+        public DateTimeOffset? SessionStartedAt { get; set; }
+        public string? Dimension { get; set; }
+        public double? X { get; set; }
+        public double? Y { get; set; }
+        public double? Z { get; set; }
+        public double? Health { get; set; }
+        public double? MaxHealth { get; set; }
+        public double? Food { get; set; }
+        public double? ExperienceLevel { get; set; }
+        public double? ExperienceProgress { get; set; }
     }
 
     public sealed class SkinSnapshot
