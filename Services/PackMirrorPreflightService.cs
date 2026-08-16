@@ -15,15 +15,22 @@ using System.Threading.Tasks;
 namespace LegendBorn.Services;
 
 /// <summary>
-/// Preflights manifest.json on every configured pack mirror in parallel and moves the freshest
-/// valid manifest to the front. The existing MinecraftService still performs SHA-256 validation,
-/// download fallback, seed-only handling and pruning; this service only prevents a stale mirror
-/// from winning because it responded first.
+/// Resolves the pack mirror order before MinecraftService starts synchronizing files.
+///
+/// The first URL comes from the authoritative server catalog as packBaseUrl and is therefore
+/// treated as the canonical primary. If it serves a valid manifest we use it immediately and
+/// keep secondary mirrors on standby instead of blocking launch on dead/slow regional mirrors.
+/// Only when the primary is unavailable do we probe the advertised fallbacks in parallel and
+/// keep the fallbacks that actually returned a valid manifest.
+///
+/// This prevents one unavailable DNS/CDN endpoint from being retried for thousands of blobs,
+/// while still preserving regional failover when the primary itself cannot be reached.
 /// </summary>
 public static class PackMirrorPreflightService
 {
-    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(6);
-    private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan PrimaryProbeTimeout = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan FallbackProbeTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(2);
     private const long MaxManifestBytes = 5L * 1024 * 1024;
 
     private static readonly HttpClient Http = CreateHttp();
@@ -63,20 +70,43 @@ public static class PackMirrorPreflightService
         var cacheKey = string.Join("\n", normalized.Select(static value => value.ToLowerInvariant()));
         if (TryGetCached(cacheKey, out var cached))
         {
-            log?.Invoke("Pack mirrors: использую свежий preflight cache.");
+            log?.Invoke($"Pack CDN: готово · {cached.Length} активное зеркало(а), preflight cache.");
             return cached;
         }
 
-        var probes = await Task.WhenAll(normalized.Select((mirror, index) => ProbeAsync(mirror, index, ct)))
+        // The catalog primary is the atomic publication target. Do not make a healthy primary
+        // wait for secondary DNS/CDN timeouts: that was a major source of perceived launch delay.
+        var primary = await ProbeAsync(normalized[0], 0, PrimaryProbeTimeout, ct).ConfigureAwait(false);
+        if (primary is not null)
+        {
+            var ordered = new[] { primary.BaseUrl };
+            StoreCache(cacheKey, ordered);
+
+            log?.Invoke(
+                $"Pack CDN: primary READY · build {(primary.Manifest.Build?.ToString() ?? "?")} · " +
+                $"{primary.ElapsedMs} ms. Secondary mirrors остаются standby.");
+
+            return ordered;
+        }
+
+        log?.Invoke("Pack CDN: primary недоступен, ищу рабочее региональное зеркало…");
+
+        var probes = await Task.WhenAll(
+                normalized
+                    .Skip(1)
+                    .Select((mirror, index) => ProbeAsync(mirror, index + 1, FallbackProbeTimeout, ct)))
             .ConfigureAwait(false);
 
         var successful = probes
             .Where(static result => result is not null)
             .Select(static result => result!)
             .ToList();
+
         if (successful.Count == 0)
         {
-            log?.Invoke("Pack mirrors: preflight не получил ни одного manifest; использую обычный fallback pipeline.");
+            // Keep the original list as a final fail-safe. MinecraftService has its own exact
+            // HTTP/SHA validation and can still recover from a very short preflight outage.
+            log?.Invoke("Pack CDN: preflight не подтвердил зеркала; включён аварийный fallback pipeline.");
             return normalized;
         }
 
@@ -86,39 +116,42 @@ public static class PackMirrorPreflightService
             .ThenBy(static result => MirrorRank(result.BaseUrl))
             .ThenBy(static result => result.ElapsedMs)
             .ThenBy(static result => result.OriginalIndex)
-            .ToList();
+            .ToArray();
 
         var selected = orderedSuccessful[0];
-        log?.Invoke(
-            $"Pack mirrors: freshest={selected.BaseUrl}, packId={selected.Manifest.PackId ?? "?"}, " +
-            $"version={selected.Manifest.PackVersion ?? selected.Manifest.Version ?? "?"}, " +
-            $"build={(selected.Manifest.Build?.ToString() ?? "?")}");
-
-        // Successful mirrors are ordered by freshness first. Failed probes are retained afterwards:
-        // they may still be useful for individual blobs if a manifest endpoint was temporarily slow.
-        var ordered = orderedSuccessful
+        var orderedFallbacks = orderedSuccessful
             .Select(static result => result.BaseUrl)
-            .Concat(normalized.Where(url => successful.All(result =>
-                !url.Equals(result.BaseUrl, StringComparison.OrdinalIgnoreCase))))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        StoreCache(cacheKey, ordered);
-        return ordered;
+        // Failed fallback probes are intentionally not returned. Re-trying a dead fallback for
+        // every one of several thousand content-addressed blobs creates huge delays and noisy logs.
+        StoreCache(cacheKey, orderedFallbacks);
+
+        log?.Invoke(
+            $"Pack CDN: fallback READY · {selected.BaseUrl} · build {(selected.Manifest.Build?.ToString() ?? "?")} · " +
+            $"{orderedFallbacks.Length}/{normalized.Length - 1} secondary доступны.");
+
+        return orderedFallbacks;
     }
 
     private static async Task<ProbeResult?> ProbeAsync(
         string baseUrl,
         int originalIndex,
+        TimeSpan timeout,
         CancellationToken ct)
     {
         try
         {
             using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            requestCts.CancelAfter(ProbeTimeout);
+            requestCts.CancelAfter(timeout);
 
             var url = new Uri(new Uri(baseUrl), "manifest.json");
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            using var request = new HttpRequestMessage(HttpMethod.Get, url)
+            {
+                Version = HttpVersion.Version20,
+                VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+            };
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             request.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
             TrySetUserAgent(request);
@@ -167,6 +200,7 @@ public static class PackMirrorPreflightService
             {
                 if (finalUri.Scheme != Uri.UriSchemeHttps)
                     return null;
+
                 finalBase = NormalizeBaseUrl(new Uri(finalUri, "./").ToString());
                 if (finalBase.Length == 0)
                     return null;
@@ -188,7 +222,7 @@ public static class PackMirrorPreflightService
     {
         await using var input = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         using var memory = new MemoryStream(capacity: 16 * 1024);
-        var buffer = ArrayPool<byte>.Shared.Rent(16 * 1024);
+        var buffer = ArrayPool<byte>.Shared.Rent(32 * 1024);
         long total = 0;
 
         try
@@ -312,10 +346,17 @@ public static class PackMirrorPreflightService
             UseProxy = true,
             ConnectTimeout = TimeSpan.FromSeconds(4),
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
             AllowAutoRedirect = true,
-            MaxConnectionsPerServer = 8
+            MaxConnectionsPerServer = 12,
+            EnableMultipleHttp2Connections = true
         };
 
-        return new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        return new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+            DefaultRequestVersion = HttpVersion.Version20,
+            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+        };
     }
 }
