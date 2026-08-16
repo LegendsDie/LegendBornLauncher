@@ -4,52 +4,53 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:controls="clr-namespace:LegendBorn.Controls"
              mc:Ignorable="d"
              d:DesignHeight="760"
              d:DesignWidth="1200">
 
     <UserControl.Resources>
         <Style x:Key="HubCard" TargetType="Border">
-            <Setter Property="Background" Value="#B80C0F1D"/>
-            <Setter Property="BorderBrush" Value="#352F2450"/>
+            <Setter Property="Background" Value="#C20B0E1A"/>
+            <Setter Property="BorderBrush" Value="#34304A"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="CornerRadius" Value="16"/>
             <Setter Property="Padding" Value="16"/>
-            <Setter Property="Margin" Value="0,0,0,12"/>
         </Style>
 
         <Style x:Key="HubSubCard" TargetType="Border">
-            <Setter Property="Background" Value="#8C101421"/>
-            <Setter Property="BorderBrush" Value="#2E344D"/>
+            <Setter Property="Background" Value="#88101421"/>
+            <Setter Property="BorderBrush" Value="#2D334A"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="CornerRadius" Value="12"/>
             <Setter Property="Padding" Value="12"/>
         </Style>
 
         <Style x:Key="MetricCard" TargetType="Border" BasedOn="{StaticResource HubSubCard}">
-            <Setter Property="MinHeight" Value="76"/>
+            <Setter Property="MinHeight" Value="68"/>
+            <Setter Property="Margin" Value="0,0,8,8"/>
         </Style>
 
         <Style x:Key="HubLabel" TargetType="TextBlock">
             <Setter Property="Foreground" Value="#8490A8"/>
-            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="FontSize" Value="9"/>
         </Style>
 
         <Style x:Key="HubValue" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{StaticResource TextStrongLocal}"/>
-            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontSize" Value="13"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
         </Style>
 
         <Style x:Key="SectionTitle" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{StaticResource TextStrongLocal}"/>
-            <Setter Property="FontSize" Value="15"/>
+            <Setter Property="FontSize" Value="14"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
         </Style>
 
         <Style x:Key="HubInput" TargetType="TextBox">
-            <Setter Property="Height" Value="36"/>
-            <Setter Property="Padding" Value="11,7"/>
+            <Setter Property="Height" Value="34"/>
+            <Setter Property="Padding" Value="10,6"/>
             <Setter Property="Foreground" Value="{StaticResource TextStrongLocal}"/>
             <Setter Property="Background" Value="#A70B0E18"/>
             <Setter Property="BorderBrush" Value="#353A55"/>
@@ -60,7 +61,7 @@
         <Style x:Key="HubListItem" TargetType="ListBoxItem">
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="Padding" Value="0"/>
-            <Setter Property="Margin" Value="0,0,0,7"/>
+            <Setter Property="Margin" Value="0,0,0,6"/>
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
@@ -68,22 +69,120 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="ListBoxItem">
                         <Border x:Name="ItemBorder"
-                                Background="#71101522"
-                                BorderBrush="#2D334A"
+                                Background="#67101420"
+                                BorderBrush="#2C3248"
                                 BorderThickness="1"
-                                CornerRadius="12"
-                                Padding="10">
+                                CornerRadius="11"
+                                Padding="9">
                             <ContentPresenter/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ItemBorder" Property="Background" Value="#A3161A2A"/>
-                                <Setter TargetName="ItemBorder" Property="BorderBrush" Value="#6A4A8C"/>
+                                <Setter TargetName="ItemBorder" Property="Background" Value="#9B15192A"/>
+                                <Setter TargetName="ItemBorder" Property="BorderBrush" Value="#684489"/>
                             </Trigger>
                             <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="ItemBorder" Property="BorderBrush" Value="#9C6CE0"/>
+                                <Setter TargetName="ItemBorder" Property="Background" Value="#A51A1530"/>
+                                <Setter TargetName="ItemBorder" Property="BorderBrush" Value="#9865D5"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ProfileTabItem" TargetType="TabItem">
+            <Setter Property="Foreground" Value="#919CB2"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Padding" Value="18,9"/>
+            <Setter Property="Margin" Value="0,0,7,0"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="TabBorder"
+                                Padding="{TemplateBinding Padding}"
+                                CornerRadius="11"
+                                Background="#64101420"
+                                BorderBrush="#2D334B"
+                                BorderThickness="1">
+                            <ContentPresenter ContentSource="Header"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="TabBorder" Property="Background" Value="#94161A2B"/>
+                                <Setter TargetName="TabBorder" Property="BorderBrush" Value="#5B3E77"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter Property="Foreground" Value="#E7DAFA"/>
+                                <Setter TargetName="TabBorder" Property="Background" Value="#A323163B"/>
+                                <Setter TargetName="TabBorder" Property="BorderBrush" Value="#8052B4"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ProfileTabControl" TargetType="TabControl">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabControl">
+                        <Grid KeyboardNavigation.TabNavigation="Local">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="12"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <TabPanel Grid.Row="0"
+                                      IsItemsHost="True"
+                                      Background="Transparent"/>
+                            <ContentPresenter Grid.Row="2"
+                                              ContentSource="SelectedContent"/>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Profile uses one vertical scroll owner and a launcher-native scrollbar instead of the white Windows default. -->
+        <Style x:Key="ProfileScrollBar" TargetType="ScrollBar">
+            <Setter Property="Width" Value="9"/>
+            <Setter Property="Margin" Value="4,2,0,2"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid Background="Transparent">
+                            <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageUpCommand" Opacity="0" Focusable="False"/>
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb MinHeight="38" Background="#76549D">
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Border CornerRadius="4"
+                                                        Background="{TemplateBinding Background}"
+                                                        BorderBrush="#A06DD2"
+                                                        BorderThickness="1"/>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageDownCommand" Opacity="0" Focusable="False"/>
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Grid>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -97,17 +196,17 @@
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <!-- Compact account hero -->
+        <!-- Account + progression hero -->
         <Border Grid.Row="0"
-                CornerRadius="17"
-                BorderBrush="#4C2D72"
+                CornerRadius="18"
+                BorderBrush="#533377"
                 BorderThickness="1"
                 Padding="16">
             <Border.Background>
                 <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
-                    <GradientStop Color="#16142D" Offset="0"/>
-                    <GradientStop Color="#111427" Offset="0.58"/>
-                    <GradientStop Color="#0E1120" Offset="1"/>
+                    <GradientStop Color="#18142E" Offset="0"/>
+                    <GradientStop Color="#111426" Offset="0.58"/>
+                    <GradientStop Color="#0D101D" Offset="1"/>
                 </LinearGradientBrush>
             </Border.Background>
 
@@ -115,11 +214,14 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="14"/>
-                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="1.12*"/>
+                    <ColumnDefinition Width="18"/>
+                    <ColumnDefinition Width="0.88*"/>
+                    <ColumnDefinition Width="18"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <Border Width="70" Height="70"
+                <Border Width="72" Height="72"
                         CornerRadius="20"
                         ClipToBounds="True"
                         Background="#211B39"
@@ -145,7 +247,7 @@
                                    TextTrimming="CharacterEllipsis"/>
                         <Border Margin="10,3,0,0"
                                 Padding="8,2"
-                                CornerRadius="10"
+                                CornerRadius="9"
                                 Background="#14281F"
                                 BorderBrush="#2F6655"
                                 BorderThickness="1">
@@ -176,169 +278,102 @@
                     </WrapPanel>
                 </StackPanel>
 
-                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button Style="{StaticResource GhostButton}" Height="34" Padding="13,0" Margin="0,0,7,0"
-                            Content="Обновить" Command="{Binding RefreshProfileExperienceCommand}"/>
-                    <Button Style="{StaticResource GhostButton}" Height="34" Padding="13,0" Margin="0,0,7,0"
+                <Grid Grid.Column="4" VerticalAlignment="Center">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="6"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="8"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="УРОВЕНЬ" Style="{StaticResource HubLabel}" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="1" Margin="8,0,0,0"
+                                   Text="{Binding ProfileLevel}"
+                                   Foreground="#DCCBFF"
+                                   FontSize="18"
+                                   FontWeight="Bold"/>
+                        <TextBlock Grid.Column="2" Text="{Binding ProfileXpLevelText}"
+                                   Foreground="#8D99B0" FontSize="9" VerticalAlignment="Center"/>
+                    </Grid>
+                    <ProgressBar x:Name="ProfileXpProgressBar"
+                                 Grid.Row="2"
+                                 Height="7" Minimum="0" Maximum="100"/>
+                    <Grid Grid.Row="4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="{Binding ProfileXpTotal, StringFormat=Всего XP · {0:N0}}"
+                                   Foreground="#78859C" FontSize="9"/>
+                        <TextBlock Grid.Column="1"
+                                   Text="{Binding ProfileXpSeason, StringFormat=Сезон · {0:N0}}"
+                                   Foreground="#9B86BD" FontSize="9"/>
+                    </Grid>
+                </Grid>
+
+                <StackPanel Grid.Column="6" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Style="{StaticResource GhostButton}" Height="34" Padding="12,0" Margin="0,0,7,0"
+                            Content="Обновить" Click="RefreshAll_OnClick"/>
+                    <Button Style="{StaticResource GhostButton}" Height="34" Padding="12,0" Margin="0,0,7,0"
                             Content="Сайт" Click="OpenSite_OnClick"/>
-                    <Button Style="{StaticResource DangerButton}" Height="34" Padding="13,0"
+                    <Button Style="{StaticResource DangerButton}" Height="34" Padding="12,0"
                             Content="Выйти" Click="Logout_OnClick"/>
                 </StackPanel>
             </Grid>
         </Border>
 
-        <!-- One scroll owner for the entire profile. No nested friends scrollbar. -->
-        <ScrollViewer Grid.Row="2"
-                      VerticalScrollBarVisibility="Auto"
-                      HorizontalScrollBarVisibility="Disabled"
-                      PanningMode="VerticalOnly">
-            <Grid Margin="0,0,4,0">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="0.90*"/>
-                    <ColumnDefinition Width="12"/>
-                    <ColumnDefinition Width="1.10*"/>
-                </Grid.ColumnDefinitions>
+        <TabControl Grid.Row="2" Style="{StaticResource ProfileTabControl}" SelectedIndex="0">
+            <!-- STATUS -->
+            <TabItem Header="Статус" Style="{StaticResource ProfileTabItem}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              PanningMode="VerticalOnly">
+                    <ScrollViewer.Resources>
+                        <Style TargetType="ScrollBar" BasedOn="{StaticResource ProfileScrollBar}"/>
+                    </ScrollViewer.Resources>
 
-                <StackPanel Grid.Column="0">
-                    <!-- Progress -->
-                    <Border Style="{StaticResource HubCard}">
-                        <StackPanel>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Прогресс" Style="{StaticResource SectionTitle}"/>
-                                <TextBlock Grid.Column="1" Style="{StaticResource HubLabel}" Text="Профиль LegendBorn" VerticalAlignment="Center"/>
-                            </Grid>
+                    <Grid Margin="0,0,4,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="12"/>
+                            <ColumnDefinition Width="300"/>
+                        </Grid.ColumnDefinitions>
 
-                            <Grid Margin="0,12,0,0">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="0.82*"/>
-                                    <ColumnDefinition Width="8"/>
-                                    <ColumnDefinition Width="1.1*"/>
-                                    <ColumnDefinition Width="8"/>
-                                    <ColumnDefinition Width="1.1*"/>
-                                </Grid.ColumnDefinitions>
-
-                                <Border Style="{StaticResource MetricCard}" BorderBrush="#5A3A80" Background="#8B17122A">
+                        <StackPanel Grid.Column="0">
+                            <!-- Server selector / instance context -->
+                            <Border Style="{StaticResource HubCard}" Margin="0,0,0,12">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="280"/>
+                                    </Grid.ColumnDefinitions>
                                     <StackPanel>
-                                        <TextBlock Style="{StaticResource HubLabel}" Text="УРОВЕНЬ"/>
-                                        <TextBlock Margin="0,3,0,0" FontSize="27" FontWeight="Bold" Foreground="#DCCBFF"
-                                                   Text="{Binding ProfileLevel}"/>
+                                        <TextBlock Text="Сервер" Style="{StaticResource SectionTitle}"/>
+                                        <TextBlock Margin="0,4,0,0"
+                                                   Text="Статус привязан к выбранному игровому инстансу."
+                                                   Style="{StaticResource HubLabel}"/>
                                     </StackPanel>
-                                </Border>
+                                    <ComboBox Grid.Column="1"
+                                              Height="36"
+                                              ItemsSource="{Binding Servers}"
+                                              SelectedItem="{Binding SelectedServer}"
+                                              IsEnabled="False"
+                                              Foreground="#E6E0F1"
+                                              Background="#141827"
+                                              BorderBrush="#4A3A62"
+                                              BorderThickness="1"
+                                              ToolTip="Сейчас доступен один сервер; выбор станет активным при добавлении новых серверов."/>
+                                </Grid>
+                            </Border>
 
-                                <Border Grid.Column="2" Style="{StaticResource MetricCard}">
-                                    <StackPanel>
-                                        <TextBlock Style="{StaticResource HubLabel}" Text="ВСЕГО XP"/>
-                                        <TextBlock Margin="0,5,0,0" Style="{StaticResource HubValue}"
-                                                   Text="{Binding ProfileXpTotal, StringFormat={}{0:N0}}"/>
-                                        <TextBlock Margin="0,2,0,0" Style="{StaticResource HubLabel}" Text="{Binding ProfileXpLevelText}"/>
-                                    </StackPanel>
-                                </Border>
-
-                                <Border Grid.Column="4" Style="{StaticResource MetricCard}">
-                                    <StackPanel>
-                                        <TextBlock Style="{StaticResource HubLabel}" Text="XP СЕЗОНА"/>
-                                        <TextBlock Margin="0,5,0,0" Style="{StaticResource HubValue}"
-                                                   Text="{Binding ProfileXpSeason, StringFormat={}{0:N0}}"/>
-                                    </StackPanel>
-                                </Border>
-                            </Grid>
-
-                            <Grid Margin="0,12,0,0">
-                                <ProgressBar x:Name="ProfileXpProgressBar"
-                                             Height="7" Minimum="0" Maximum="100"/>
-                            </Grid>
-                        </StackPanel>
-                    </Border>
-
-                    <!-- Minecraft skin -->
-                    <Border Style="{StaticResource HubCard}">
-                        <StackPanel>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <StackPanel>
-                                    <TextBlock Text="Minecraft" Style="{StaticResource SectionTitle}"/>
-                                    <TextBlock Margin="0,4,0,0" Style="{StaticResource HubLabel}"
-                                               Text="Ник и выбранный образ синхронизируются с аккаунтом."/>
-                                </StackPanel>
-                                <Button Grid.Column="1" Style="{StaticResource GhostButton}" Height="32" Padding="12,0"
-                                        Content="Сменить скин" Command="{Binding OpenSkinManagerCommand}"/>
-                            </Grid>
-
-                            <Grid Margin="0,12,0,0">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="104"/>
-                                    <ColumnDefinition Width="13"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-
-                                <Border Width="104" Height="118"
-                                        CornerRadius="13"
-                                        ClipToBounds="True"
-                                        Background="#111522"
-                                        BorderBrush="#383F5C"
-                                        BorderThickness="1">
-                                    <Grid>
-                                        <Rectangle Fill="#0D101A"/>
-                                        <TextBlock Text="Нет превью"
-                                                   HorizontalAlignment="Center"
-                                                   VerticalAlignment="Center"
-                                                   Foreground="{StaticResource TextDimLocal}"
-                                                   FontSize="10"/>
-                                        <Image Source="{Binding SkinPreviewUrl, IsAsync=True}"
-                                               Stretch="Uniform"
-                                               Margin="5"
-                                               RenderOptions.BitmapScalingMode="NearestNeighbor"/>
-                                    </Grid>
-                                </Border>
-
-                                <StackPanel Grid.Column="2" VerticalAlignment="Center">
-                                    <TextBlock Style="{StaticResource HubLabel}" Text="ТЕКУЩИЙ ОБРАЗ"/>
-                                    <TextBlock Margin="0,4,0,0" Style="{StaticResource HubValue}" FontSize="17"
-                                               Text="{Binding SelectedSkinTitle}"/>
-                                    <TextBlock Margin="0,4,0,0" Style="{StaticResource HubLabel}"
-                                               Text="{Binding SelectedSkinKey, StringFormat=Ключ: {0}}"/>
-                                    <TextBlock Margin="0,9,0,0" TextWrapping="Wrap" Foreground="#9AA5BB" FontSize="11"
-                                               Text="{Binding SkinStatusText}"/>
-                                </StackPanel>
-                            </Grid>
-                        </StackPanel>
-                    </Border>
-
-                    <!-- Clan -->
-                    <Border Style="{StaticResource HubCard}">
-                        <StackPanel>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <StackPanel>
-                                    <TextBlock Text="Клан" Style="{StaticResource SectionTitle}"/>
-                                    <TextBlock Margin="0,4,0,0" Style="{StaticResource HubLabel}"
-                                               Text="Состав, поиск и вступление прямо в Launcher."/>
-                                </StackPanel>
-                                <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="#8E99AE" FontSize="10"
-                                           Text="{Binding ClanStatusText}" MaxWidth="180" TextTrimming="CharacterEllipsis"/>
-                            </Grid>
-
-                            <Border Margin="0,12,0,0">
-                                <Border.Style>
-                                    <Style TargetType="Border" BasedOn="{StaticResource HubSubCard}">
-                                        <Setter Property="Visibility" Value="Visible"/>
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding HasClan}" Value="False">
-                                                <Setter Property="Visibility" Value="Collapsed"/>
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </Border.Style>
+                            <!-- Live snapshot -->
+                            <Border Style="{StaticResource HubCard}">
                                 <StackPanel>
                                     <Grid>
                                         <Grid.ColumnDefinitions>
@@ -346,260 +381,296 @@
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
                                         <StackPanel>
-                                            <TextBlock Style="{StaticResource HubValue}" FontSize="16" Text="{Binding ClanName}"/>
-                                            <WrapPanel Margin="0,3,0,0">
-                                                <TextBlock Style="{StaticResource HubLabel}" Text="{Binding ClanTag}"/>
-                                                <TextBlock Margin="10,0,0,0" Style="{StaticResource HubLabel}" Text="{Binding ClanRoleText}"/>
-                                                <TextBlock Margin="10,0,0,0" Style="{StaticResource HubLabel}"
-                                                           Text="{Binding ClanMemberCount, StringFormat={}{0} участников}"/>
-                                            </WrapPanel>
+                                            <TextBlock Text="Состояние персонажа" Style="{StaticResource SectionTitle}"/>
+                                            <TextBlock Margin="0,4,0,0" Text="{Binding MinecraftStatusStateText}"
+                                                       Foreground="#8F9BB0" FontSize="10" TextWrapping="Wrap"/>
                                         </StackPanel>
-                                        <Button Grid.Column="1" Style="{StaticResource DangerButton}" Height="30" Padding="11,0"
-                                                Content="Покинуть" Command="{Binding LeaveClanCommand}"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding MinecraftStatusCapturedText}"
+                                                   Foreground="#68758D" FontSize="9" VerticalAlignment="Center"/>
                                     </Grid>
 
-                                    <ItemsControl Margin="0,10,0,0" ItemsSource="{Binding ClanMembers}">
-                                        <ItemsControl.ItemTemplate>
+                                    <UniformGrid Margin="0,14,0,0" Columns="4">
+                                        <Border Style="{StaticResource MetricCard}">
+                                            <StackPanel><TextBlock Style="{StaticResource HubLabel}" Text="ЗДОРОВЬЕ"/><TextBlock Margin="0,5,0,0" Style="{StaticResource HubValue}" Text="{Binding MinecraftStatusHealth}"/></StackPanel>
+                                        </Border>
+                                        <Border Style="{StaticResource MetricCard}">
+                                            <StackPanel><TextBlock Style="{StaticResource HubLabel}" Text="ГОЛОД"/><TextBlock Margin="0,5,0,0" Style="{StaticResource HubValue}" Text="{Binding MinecraftStatusFood}"/></StackPanel>
+                                        </Border>
+                                        <Border Style="{StaticResource MetricCard}">
+                                            <StackPanel><TextBlock Style="{StaticResource HubLabel}" Text="УРОВЕНЬ"/><TextBlock Margin="0,5,0,0" Style="{StaticResource HubValue}" Text="{Binding MinecraftStatusLevel}"/></StackPanel>
+                                        </Border>
+                                        <Border Style="{StaticResource MetricCard}">
+                                            <StackPanel><TextBlock Style="{StaticResource HubLabel}" Text="XP"/><TextBlock Margin="0,5,0,0" Style="{StaticResource HubValue}" Text="{Binding MinecraftStatusXp}"/></StackPanel>
+                                        </Border>
+                                    </UniformGrid>
+
+                                    <Grid Margin="0,4,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="1*"/>
+                                            <ColumnDefinition Width="8"/>
+                                            <ColumnDefinition Width="1.35*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Border Style="{StaticResource HubSubCard}">
+                                            <StackPanel>
+                                                <TextBlock Style="{StaticResource HubLabel}" Text="МИР / ИЗМЕРЕНИЕ"/>
+                                                <TextBlock Margin="0,5,0,0" Style="{StaticResource HubValue}" Text="{Binding MinecraftStatusDimension}"/>
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Grid.Column="2" Style="{StaticResource HubSubCard}">
+                                            <StackPanel>
+                                                <TextBlock Style="{StaticResource HubLabel}" Text="ПОЗИЦИЯ"/>
+                                                <TextBlock Margin="0,5,0,0" Style="{StaticResource HubValue}" Text="{Binding MinecraftStatusPosition}"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
+
+                                    <TextBlock Margin="0,16,0,8" Text="Игровая статистика" Foreground="#B9C2D4" FontSize="11" FontWeight="SemiBold"/>
+                                    <UniformGrid Columns="4">
+                                        <Border Style="{StaticResource MetricCard}"><StackPanel><TextBlock Style="{StaticResource HubLabel}" Text="ВРЕМЯ"/><TextBlock Margin="0,5,0,0" Style="{StaticResource HubValue}" Text="{Binding MinecraftStatusPlayTime}"/></StackPanel></Border>
+                                        <Border Style="{StaticResource MetricCard}"><StackPanel><TextBlock Style="{StaticResource HubLabel}" Text="СМЕРТИ"/><TextBlock Margin="0,5,0,0" Style="{StaticResource HubValue}" Text="{Binding MinecraftStatusDeaths}"/></StackPanel></Border>
+                                        <Border Style="{StaticResource MetricCard}"><StackPanel><TextBlock Style="{StaticResource HubLabel}" Text="K/D"/><TextBlock Margin="0,5,0,0" Style="{StaticResource HubValue}" Text="{Binding MinecraftStatusKd}"/></StackPanel></Border>
+                                        <Border Style="{StaticResource MetricCard}"><StackPanel><TextBlock Style="{StaticResource HubLabel}" Text="УБИЙСТВА"/><TextBlock Margin="0,5,0,0" Style="{StaticResource HubValue}" Text="{Binding MinecraftStatusTotalKills}"/></StackPanel></Border>
+                                        <Border Style="{StaticResource MetricCard}"><StackPanel><TextBlock Style="{StaticResource HubLabel}" Text="ИГРОКИ"/><TextBlock Margin="0,5,0,0" Style="{StaticResource HubValue}" Text="{Binding MinecraftStatusPlayerKills}"/></StackPanel></Border>
+                                        <Border Style="{StaticResource MetricCard}"><StackPanel><TextBlock Style="{StaticResource HubLabel}" Text="МОБЫ"/><TextBlock Margin="0,5,0,0" Style="{StaticResource HubValue}" Text="{Binding MinecraftStatusMobKills}"/></StackPanel></Border>
+                                        <Border Style="{StaticResource MetricCard}"><StackPanel><TextBlock Style="{StaticResource HubLabel}" Text="ПРЫЖКИ"/><TextBlock Margin="0,5,0,0" Style="{StaticResource HubValue}" Text="{Binding MinecraftStatusJumps}"/></StackPanel></Border>
+                                        <Border Style="{StaticResource MetricCard}"><StackPanel><TextBlock Style="{StaticResource HubLabel}" Text="ПЕШКОМ / ПОЛЁТ"/><TextBlock Margin="0,5,0,0" Foreground="#E4E8F1" FontSize="11"><Run Text="{Binding MinecraftStatusWalk}"/><Run Text="  ·  "/><Run Text="{Binding MinecraftStatusFly}"/></TextBlock></StackPanel></Border>
+                                    </UniformGrid>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <!-- 3D skin -->
+                        <Border Grid.Column="2" Style="{StaticResource HubCard}" BorderBrush="#523278">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="10"/>
+                                    <RowDefinition Height="330"/>
+                                    <RowDefinition Height="8"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Текущий образ" Style="{StaticResource SectionTitle}"/>
+                                        <TextBlock Margin="0,3,0,0" Text="{Binding SelectedSkinTitle}" Style="{StaticResource HubLabel}"/>
+                                    </StackPanel>
+                                    <Button Grid.Column="1" Style="{StaticResource GhostButton}" Height="30" Padding="10,0"
+                                            Content="Сменить" Command="{Binding OpenSkinManagerCommand}"/>
+                                </Grid>
+                                <Border Grid.Row="2" CornerRadius="14" Background="#7D080A13" BorderBrush="#37244E" BorderThickness="1" ClipToBounds="True">
+                                    <controls:Skin3DView x:Name="ProfileSkin3DPreview"
+                                                         SkinUrl="{Binding MinecraftStatusSkinUrl, Mode=OneWay}"/>
+                                </Border>
+                                <TextBlock Grid.Row="4" HorizontalAlignment="Center"
+                                           Text="зажми и потяни, чтобы повернуть"
+                                           Foreground="#69768D" FontSize="9"/>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- COMMUNITY -->
+            <TabItem Header="Сообщество" Style="{StaticResource ProfileTabItem}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              PanningMode="VerticalOnly">
+                    <ScrollViewer.Resources>
+                        <Style TargetType="ScrollBar" BasedOn="{StaticResource ProfileScrollBar}"/>
+                    </ScrollViewer.Resources>
+
+                    <Grid Margin="0,0,4,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1.10*"/>
+                            <ColumnDefinition Width="12"/>
+                            <ColumnDefinition Width="0.90*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0">
+                            <!-- Friends -->
+                            <Border Style="{StaticResource HubCard}" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock Text="Друзья" Style="{StaticResource SectionTitle}"/>
+                                            <TextBlock Margin="0,3,0,0" Style="{StaticResource HubLabel}" Text="{Binding FriendsCount, StringFormat={}{0} друзей}"/>
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="1" Text="{Binding SocialStatusText}" Foreground="#7F8CA4" FontSize="9" VerticalAlignment="Center" MaxWidth="200" TextTrimming="CharacterEllipsis"/>
+                                    </Grid>
+
+                                    <Grid Margin="0,12,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="1*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="1*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock Style="{StaticResource HubLabel}" Margin="1,0,0,4" Text="ПОИСК"/>
+                                            <TextBox Style="{StaticResource HubInput}" Text="{Binding FriendSearchText, UpdateSourceTrigger=PropertyChanged}"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Style="{StaticResource HubLabel}" Margin="1,0,0,4" Text="НИК / ID"/>
+                                            <TextBox Style="{StaticResource HubInput}" Text="{Binding FriendRequestQuery, UpdateSourceTrigger=PropertyChanged}"/>
+                                        </StackPanel>
+                                        <Button Grid.Column="4" VerticalAlignment="Bottom" Style="{StaticResource GhostButton}" Height="34" Padding="12,0"
+                                                Content="Добавить" Command="{Binding SendFriendRequestCommand}"/>
+                                    </Grid>
+
+                                    <ListBox x:Name="FriendsList"
+                                             Margin="0,11,0,0"
+                                             Background="Transparent"
+                                             BorderThickness="0"
+                                             ItemsSource="{Binding FilteredFriends}"
+                                             ItemContainerStyle="{StaticResource HubListItem}"
+                                             MouseDoubleClick="FriendsList_OnMouseDoubleClick"
+                                             ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                        <ListBox.ItemTemplate>
                                             <DataTemplate>
-                                                <Grid Margin="0,3">
+                                                <Grid>
                                                     <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="*"/>
-                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="9"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
                                                     </Grid.ColumnDefinitions>
-                                                    <StackPanel>
+                                                    <Border Width="34" Height="34" CornerRadius="10" Background="#202943" ClipToBounds="True" BorderBrush="#3E4564" BorderThickness="1">
+                                                        <Grid>
+                                                            <TextBlock Text="{Binding Initial}" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{StaticResource TextStrongLocal}" FontWeight="Bold" FontSize="11"/>
+                                                            <Image Source="{Binding AvatarUrl, IsAsync=True}" Stretch="UniformToFill"/>
+                                                        </Grid>
+                                                    </Border>
+                                                    <StackPanel Grid.Column="2" VerticalAlignment="Center">
                                                         <TextBlock Foreground="{StaticResource TextStrongLocal}" FontWeight="SemiBold" FontSize="11" Text="{Binding Name}"/>
                                                         <TextBlock Margin="0,1,0,0" Style="{StaticResource HubLabel}" Text="{Binding PresenceText}"/>
                                                     </StackPanel>
-                                                    <TextBlock Grid.Column="1" VerticalAlignment="Center" Style="{StaticResource HubLabel}" Text="{Binding RoleText}"/>
+                                                    <Button Grid.Column="3" Style="{StaticResource GhostButton}" Height="27" Padding="9,0" Content="Удалить"
+                                                            Command="{Binding DataContext.RemoveFriendCommand, ElementName=Root}" CommandParameter="{Binding}"/>
                                                 </Grid>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Friend requests -->
+                            <Border Style="{StaticResource HubCard}">
+                                <StackPanel>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <TextBlock Text="Заявки" Style="{StaticResource SectionTitle}"/>
+                                        <WrapPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Style="{StaticResource HubLabel}" Text="Входящие  "/><TextBlock Foreground="#E4E8F1" FontSize="10" Text="{Binding IncomingFriendRequestCount}"/>
+                                            <TextBlock Margin="12,0,0,0" Style="{StaticResource HubLabel}" Text="Исходящие  "/><TextBlock Foreground="#E4E8F1" FontSize="10" Text="{Binding OutgoingFriendRequestCount}"/>
+                                        </WrapPanel>
+                                    </Grid>
+                                    <TextBlock Margin="0,11,0,6" Foreground="#B7C0D2" FontWeight="SemiBold" FontSize="10" Text="Входящие"/>
+                                    <ItemsControl ItemsSource="{Binding IncomingFriendRequests}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Margin="0,0,0,6" Style="{StaticResource HubSubCard}">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                                        <StackPanel><TextBlock Style="{StaticResource HubValue}" Text="{Binding Name}"/><TextBlock Margin="0,2,0,0" Style="{StaticResource HubLabel}" Text="{Binding PublicId, StringFormat=ID: {0}}"/></StackPanel>
+                                                        <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                            <Button Style="{StaticResource GhostButton}" Height="27" Padding="9,0" Margin="0,0,6,0" Content="Принять" Command="{Binding DataContext.AcceptFriendRequestCommand, ElementName=Root}" CommandParameter="{Binding}"/>
+                                                            <Button Style="{StaticResource DangerButton}" Height="27" Padding="9,0" Content="Отклонить" Command="{Binding DataContext.DeclineFriendRequestCommand, ElementName=Root}" CommandParameter="{Binding}"/>
+                                                        </StackPanel>
+                                                    </Grid>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <TextBlock Margin="0,8,0,6" Foreground="#B7C0D2" FontWeight="SemiBold" FontSize="10" Text="Исходящие"/>
+                                    <ItemsControl ItemsSource="{Binding OutgoingFriendRequests}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Margin="0,0,0,6" Style="{StaticResource HubSubCard}">
+                                                    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                                        <TextBlock Style="{StaticResource HubValue}" Text="{Binding Name}"/>
+                                                        <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="#B48AF4" FontSize="9" Text="ОЖИДАЕТ"/>
+                                                    </Grid>
+                                                </Border>
                                             </DataTemplate>
                                         </ItemsControl.ItemTemplate>
                                     </ItemsControl>
                                 </StackPanel>
                             </Border>
+                        </StackPanel>
 
-                            <StackPanel Margin="0,12,0,0">
-                                <StackPanel.Style>
-                                    <Style TargetType="StackPanel">
-                                        <Setter Property="Visibility" Value="Collapsed"/>
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding HasClan}" Value="False">
-                                                <Setter Property="Visibility" Value="Visible"/>
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </StackPanel.Style>
-
+                        <!-- Clan -->
+                        <Border Grid.Column="2" Style="{StaticResource HubCard}">
+                            <StackPanel>
                                 <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="8"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBox Style="{StaticResource HubInput}"
-                                             Text="{Binding ClanSearchText, UpdateSourceTrigger=PropertyChanged}"
-                                             ToolTip="Название или тег клана"/>
-                                    <Button Grid.Column="2" Style="{StaticResource GhostButton}" Height="36" Padding="13,0"
-                                            Content="Найти" Command="{Binding SearchClansCommand}"/>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Клан" Style="{StaticResource SectionTitle}"/>
+                                        <TextBlock Margin="0,3,0,0" Style="{StaticResource HubLabel}" Text="Состав и управление сообществом."/>
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="1" Text="{Binding ClanStatusText}" Foreground="#7F8CA4" FontSize="9" VerticalAlignment="Center" MaxWidth="150" TextTrimming="CharacterEllipsis"/>
                                 </Grid>
 
-                                <ItemsControl Margin="0,9,0,0" ItemsSource="{Binding ClanSearchResults}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Border Margin="0,0,0,6" Style="{StaticResource HubSubCard}">
-                                                <Grid>
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="*"/>
-                                                        <ColumnDefinition Width="Auto"/>
-                                                    </Grid.ColumnDefinitions>
-                                                    <StackPanel>
-                                                        <TextBlock Style="{StaticResource HubValue}" Text="{Binding DisplayName}"/>
-                                                        <TextBlock Margin="0,2,0,0" Style="{StaticResource HubLabel}" Text="{Binding MembersText}"/>
-                                                    </StackPanel>
-                                                    <Button Grid.Column="1" Style="{StaticResource GhostButton}" Height="30" Padding="11,0"
-                                                            Content="Вступить"
-                                                            Command="{Binding DataContext.JoinClanCommand, ElementName=Root}"
-                                                            CommandParameter="{Binding}"/>
-                                                </Grid>
-                                            </Border>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </StackPanel>
-                        </StackPanel>
-                    </Border>
-                </StackPanel>
-
-                <StackPanel Grid.Column="2">
-                    <!-- Friends -->
-                    <Border Style="{StaticResource HubCard}">
-                        <StackPanel>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <StackPanel>
-                                    <TextBlock Text="Друзья" Style="{StaticResource SectionTitle}"/>
-                                    <TextBlock Margin="0,4,0,0" Style="{StaticResource HubLabel}"
-                                               Text="{Binding FriendsCount, StringFormat={}{0} друзей}"/>
-                                </StackPanel>
-                                <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="#8E99AE" FontSize="10"
-                                           Text="{Binding SocialStatusText}" MaxWidth="220" TextTrimming="CharacterEllipsis"/>
-                            </Grid>
-
-                            <Grid Margin="0,12,0,0">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="1*"/>
-                                    <ColumnDefinition Width="8"/>
-                                    <ColumnDefinition Width="1*"/>
-                                    <ColumnDefinition Width="8"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-
-                                <StackPanel>
-                                    <TextBlock Style="{StaticResource HubLabel}" Margin="1,0,0,4" Text="ПОИСК ПО ДРУЗЬЯМ"/>
-                                    <TextBox Style="{StaticResource HubInput}"
-                                             Text="{Binding FriendSearchText, UpdateSourceTrigger=PropertyChanged}"/>
-                                </StackPanel>
-
-                                <StackPanel Grid.Column="2">
-                                    <TextBlock Style="{StaticResource HubLabel}" Margin="1,0,0,4" Text="ДОБАВИТЬ ПО НИКУ / ID"/>
-                                    <TextBox Style="{StaticResource HubInput}"
-                                             Text="{Binding FriendRequestQuery, UpdateSourceTrigger=PropertyChanged}"/>
-                                </StackPanel>
-
-                                <Button Grid.Column="4"
-                                        VerticalAlignment="Bottom"
-                                        Style="{StaticResource GhostButton}"
-                                        Height="36"
-                                        Padding="13,0"
-                                        Content="Добавить"
-                                        Command="{Binding SendFriendRequestCommand}"/>
-                            </Grid>
-
-                            <ListBox x:Name="FriendsList"
-                                     Margin="0,12,0,0"
-                                     Background="Transparent"
-                                     BorderThickness="0"
-                                     ItemsSource="{Binding FilteredFriends}"
-                                     ItemContainerStyle="{StaticResource HubListItem}"
-                                     MouseDoubleClick="FriendsList_OnMouseDoubleClick"
-                                     ScrollViewer.VerticalScrollBarVisibility="Disabled"
-                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                                <ListBox.ItemTemplate>
-                                    <DataTemplate>
+                                <Border Margin="0,12,0,0">
+                                    <Border.Style>
+                                        <Style TargetType="Border" BasedOn="{StaticResource HubSubCard}">
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                            <Style.Triggers><DataTrigger Binding="{Binding HasClan}" Value="False"><Setter Property="Visibility" Value="Collapsed"/></DataTrigger></Style.Triggers>
+                                        </Style>
+                                    </Border.Style>
+                                    <StackPanel>
                                         <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto"/>
-                                                <ColumnDefinition Width="10"/>
-                                                <ColumnDefinition Width="*"/>
-                                                <ColumnDefinition Width="Auto"/>
-                                            </Grid.ColumnDefinitions>
-
-                                            <Border Width="38" Height="38"
-                                                    CornerRadius="11"
-                                                    Background="#202943"
-                                                    ClipToBounds="True"
-                                                    BorderBrush="#3E4564"
-                                                    BorderThickness="1">
-                                                <Grid>
-                                                    <TextBlock Text="{Binding Initial}"
-                                                               HorizontalAlignment="Center"
-                                                               VerticalAlignment="Center"
-                                                               Foreground="{StaticResource TextStrongLocal}"
-                                                               FontWeight="Bold"/>
-                                                    <Image Source="{Binding AvatarUrl, IsAsync=True}" Stretch="UniformToFill"/>
-                                                </Grid>
-                                            </Border>
-
-                                            <StackPanel Grid.Column="2" VerticalAlignment="Center">
-                                                <TextBlock Foreground="{StaticResource TextStrongLocal}" FontWeight="SemiBold" FontSize="12" Text="{Binding Name}"/>
-                                                <TextBlock Margin="0,2,0,0" Style="{StaticResource HubLabel}" Text="{Binding PresenceText}"/>
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock Style="{StaticResource HubValue}" FontSize="16" Text="{Binding ClanName}"/>
+                                                <WrapPanel Margin="0,3,0,0">
+                                                    <TextBlock Style="{StaticResource HubLabel}" Text="{Binding ClanTag}"/>
+                                                    <TextBlock Margin="9,0,0,0" Style="{StaticResource HubLabel}" Text="{Binding ClanRoleText}"/>
+                                                    <TextBlock Margin="9,0,0,0" Style="{StaticResource HubLabel}" Text="{Binding ClanMemberCount, StringFormat={}{0} участников}"/>
+                                                </WrapPanel>
                                             </StackPanel>
-
-                                            <Button Grid.Column="3"
-                                                    Style="{StaticResource GhostButton}"
-                                                    Height="28"
-                                                    Padding="9,0"
-                                                    Content="Удалить"
-                                                    Command="{Binding DataContext.RemoveFriendCommand, ElementName=Root}"
-                                                    CommandParameter="{Binding}"/>
+                                            <Button Grid.Column="1" Style="{StaticResource DangerButton}" Height="28" Padding="10,0" Content="Покинуть" Command="{Binding LeaveClanCommand}"/>
                                         </Grid>
-                                    </DataTemplate>
-                                </ListBox.ItemTemplate>
-                            </ListBox>
-                        </StackPanel>
-                    </Border>
+                                        <ItemsControl Margin="0,10,0,0" ItemsSource="{Binding ClanMembers}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Grid Margin="0,3">
+                                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                                        <StackPanel><TextBlock Foreground="{StaticResource TextStrongLocal}" FontWeight="SemiBold" FontSize="10" Text="{Binding Name}"/><TextBlock Margin="0,1,0,0" Style="{StaticResource HubLabel}" Text="{Binding PresenceText}"/></StackPanel>
+                                                        <TextBlock Grid.Column="1" VerticalAlignment="Center" Style="{StaticResource HubLabel}" Text="{Binding RoleText}"/>
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </Border>
 
-                    <!-- Friend requests -->
-                    <Border Style="{StaticResource HubCard}">
-                        <StackPanel>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="Заявки" Style="{StaticResource SectionTitle}"/>
-                                <WrapPanel Grid.Column="1" VerticalAlignment="Center">
-                                    <TextBlock Style="{StaticResource HubLabel}" Text="Входящие  "/>
-                                    <TextBlock Foreground="{StaticResource TextStrongLocal}" FontSize="11" Text="{Binding IncomingFriendRequestCount}"/>
-                                    <TextBlock Margin="12,0,0,0" Style="{StaticResource HubLabel}" Text="Исходящие  "/>
-                                    <TextBlock Foreground="{StaticResource TextStrongLocal}" FontSize="11" Text="{Binding OutgoingFriendRequestCount}"/>
-                                </WrapPanel>
-                            </Grid>
-
-                            <TextBlock Margin="0,12,0,7" Foreground="#B7C0D2" FontWeight="SemiBold" FontSize="11" Text="Входящие"/>
-                            <ItemsControl ItemsSource="{Binding IncomingFriendRequests}">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Border Margin="0,0,0,6" Style="{StaticResource HubSubCard}">
-                                            <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*"/>
-                                                    <ColumnDefinition Width="Auto"/>
-                                                </Grid.ColumnDefinitions>
-                                                <StackPanel>
-                                                    <TextBlock Style="{StaticResource HubValue}" Text="{Binding Name}"/>
-                                                    <TextBlock Margin="0,2,0,0" Style="{StaticResource HubLabel}" Text="{Binding PublicId, StringFormat=ID: {0}}"/>
-                                                </StackPanel>
-                                                <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                                    <Button Style="{StaticResource GhostButton}" Height="28" Padding="9,0" Margin="0,0,6,0"
-                                                            Content="Принять"
-                                                            Command="{Binding DataContext.AcceptFriendRequestCommand, ElementName=Root}"
-                                                            CommandParameter="{Binding}"/>
-                                                    <Button Style="{StaticResource DangerButton}" Height="28" Padding="9,0"
-                                                            Content="Отклонить"
-                                                            Command="{Binding DataContext.DeclineFriendRequestCommand, ElementName=Root}"
-                                                            CommandParameter="{Binding}"/>
-                                                </StackPanel>
-                                            </Grid>
-                                        </Border>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-
-                            <TextBlock Margin="0,10,0,7" Foreground="#B7C0D2" FontWeight="SemiBold" FontSize="11" Text="Исходящие"/>
-                            <ItemsControl ItemsSource="{Binding OutgoingFriendRequests}">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Border Margin="0,0,0,6" Style="{StaticResource HubSubCard}">
-                                            <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*"/>
-                                                    <ColumnDefinition Width="Auto"/>
-                                                </Grid.ColumnDefinitions>
-                                                <TextBlock Style="{StaticResource HubValue}" Text="{Binding Name}"/>
-                                                <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="#B48AF4" FontSize="9" Text="ОЖИДАЕТ"/>
-                                            </Grid>
-                                        </Border>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-                        </StackPanel>
-                    </Border>
-                </StackPanel>
-            </Grid>
-        </ScrollViewer>
+                                <StackPanel Margin="0,12,0,0">
+                                    <StackPanel.Style>
+                                        <Style TargetType="StackPanel"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers><DataTrigger Binding="{Binding HasClan}" Value="False"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers></Style>
+                                    </StackPanel.Style>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <TextBox Style="{StaticResource HubInput}" Text="{Binding ClanSearchText, UpdateSourceTrigger=PropertyChanged}" ToolTip="Название или тег клана"/>
+                                        <Button Grid.Column="2" Style="{StaticResource GhostButton}" Height="34" Padding="12,0" Content="Найти" Command="{Binding SearchClansCommand}"/>
+                                    </Grid>
+                                    <ItemsControl Margin="0,9,0,0" ItemsSource="{Binding ClanSearchResults}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Margin="0,0,0,6" Style="{StaticResource HubSubCard}">
+                                                    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                                        <StackPanel><TextBlock Style="{StaticResource HubValue}" Text="{Binding DisplayName}"/><TextBlock Margin="0,2,0,0" Style="{StaticResource HubLabel}" Text="{Binding MembersText}"/></StackPanel>
+                                                        <Button Grid.Column="1" Style="{StaticResource GhostButton}" Height="28" Padding="10,0" Content="Вступить" Command="{Binding DataContext.JoinClanCommand, ElementName=Root}" CommandParameter="{Binding}"/>
+                                                    </Grid>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
     </Grid>
 </UserControl>
