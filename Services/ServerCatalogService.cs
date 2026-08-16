@@ -25,7 +25,7 @@ public static class ServerCatalogService
     public const string CanonicalCatalogUrl = "https://legendborn.xyz/api/launcher/servers";
     public const string SelectelCatalogUrl =
         "https://612cd759-4c9d-450e-bc91-a51d3c56e834.selstorage.ru/launcher/servers.json";
-    public const string CloudBucketCatalogUrl = "https://pack.legendborn.ru/launcher/servers.json";
+    public const string CloudBucketCatalogUrl = "https://pack.legendborn.xyz/launcher/servers.json";
     public const string SourceForgeCatalogUrl =
         "https://master.dl.sourceforge.net/project/legendborn-pack/launcher/servers.json";
 
@@ -546,7 +546,7 @@ public static class ServerCatalogService
     {
         if (url.Contains("selstorage.ru", StringComparison.OrdinalIgnoreCase) ||
             url.Contains("selcloud.ru", StringComparison.OrdinalIgnoreCase)) return 0;
-        if (url.Contains("pack.legendborn.ru", StringComparison.OrdinalIgnoreCase)) return 1;
+        if (url.Contains("pack.legendborn.xyz", StringComparison.OrdinalIgnoreCase)) return 1;
         if (url.Contains("master.dl.sourceforge.net", StringComparison.OrdinalIgnoreCase)) return 2;
         if (url.Contains("downloads.sourceforge.net", StringComparison.OrdinalIgnoreCase)) return 3;
         if (url.Contains("sourceforge.net", StringComparison.OrdinalIgnoreCase)) return 4;
