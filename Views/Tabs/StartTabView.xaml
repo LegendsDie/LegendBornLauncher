@@ -66,7 +66,6 @@
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <!-- Hero: server identity + LegendCraft logo moved to the center/right. -->
                     <Grid Grid.Row="0" Grid.Column="0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -127,7 +126,6 @@
                         </Border>
                     </Grid>
 
-                    <!-- Right blue-area equivalent: current skin in actual WPF 3D. -->
                     <Border Grid.Row="0"
                             Grid.RowSpan="3"
                             Grid.Column="2"
@@ -182,7 +180,6 @@
                         </Grid>
                     </Border>
 
-                    <!-- Yellow-area equivalent: only own nick + friends on selected server/recent activity. -->
                     <Border Grid.Row="2"
                             Grid.Column="0"
                             Style="{StaticResource DashboardPanel}">
@@ -293,7 +290,6 @@
                         </Grid>
                     </Border>
 
-                    <!-- Red-area equivalent: latest news carousel. -->
                     <Border Grid.Row="4"
                             Grid.Column="0"
                             Grid.ColumnSpan="3"
@@ -348,7 +344,7 @@
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
                                         <UniformGrid Columns="3"/>
-                                    </ItemsControl.ItemsPanel>
+                                    </ItemsPanelTemplate>
                                 </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
@@ -408,7 +404,6 @@
                         </Grid>
                     </Border>
 
-                    <!-- Launch/progress dock remains the only launch status surface. -->
                     <Border Grid.Row="6"
                             Grid.Column="0"
                             Grid.ColumnSpan="3"
@@ -457,8 +452,7 @@
                                         Command="{Binding OpenGameDirCommand}">
                                     <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8B7;" FontSize="14"/>
                                 </Button>
-                                <Button Grid.Column="2"
-                                        Style="{StaticResource PlayOrStopButtonStyle}"
+                                <Button Style="{StaticResource PlayOrStopButtonStyle}"
                                         Click="PlayOrStop_OnClick"
                                         Margin="9,0,0,0"
                                         MinWidth="180"
