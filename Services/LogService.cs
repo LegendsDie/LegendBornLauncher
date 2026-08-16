@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -190,8 +191,6 @@ public sealed class LogService : IDisposable
         }
         finally
         {
-            // Dispose performs the synchronous final flush before marking the service disposed.
-            // This is only a best-effort drain for an independently cancelled writer.
             if (!_disposed)
             {
                 try { await FlushOnceAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
@@ -235,6 +234,9 @@ public sealed class LogService : IDisposable
                 }
             }
 
+            var drained = new List<string>();
+            var dropped = 0;
+
             try
             {
                 EnsureLogDir();
@@ -242,13 +244,14 @@ public sealed class LogService : IDisposable
                 CleanupOldLogsSafe(maxKeep: 10);
 
                 var sb = new StringBuilder(FlushChunkMaxChars);
-                var dropped = Interlocked.Exchange(ref _droppedLines, 0);
+                dropped = Interlocked.Exchange(ref _droppedLines, 0);
                 if (dropped > 0)
                     sb.AppendLine(FormatLine(LogLevel.Warn, $"Log queue overflow: dropped {dropped} lines.", null));
 
                 while (_queue.TryDequeue(out var line))
                 {
                     Interlocked.Decrement(ref _queueCount);
+                    drained.Add(line);
                     sb.AppendLine(line);
                     if (sb.Length >= FlushChunkMaxChars)
                         break;
@@ -261,8 +264,17 @@ public sealed class LogService : IDisposable
             }
             catch
             {
-                // Logging must not crash the launcher. Serialization via _flushGate prevents two
-                // flushes from independently dequeuing lines and then racing the same file handle.
+                // A transient disk/locking error must not silently consume log entries. Requeue the
+                // drained lines for the next flush. Their exact order relative to newly queued lines
+                // is less important than preserving diagnostics at all.
+                if (dropped > 0)
+                    Interlocked.Add(ref _droppedLines, dropped);
+
+                foreach (var line in drained)
+                {
+                    _queue.Enqueue(line);
+                    Interlocked.Increment(ref _queueCount);
+                }
             }
         }
         finally
@@ -328,8 +340,8 @@ public sealed class LogService : IDisposable
     {
         if (_disposed) return;
 
-        // Flush while the service is still considered alive. Previously _disposed was set first,
-        // making the final Flush() return immediately and potentially dropping the last log lines.
+        // Flush while the service is still alive. Previously _disposed was set first, which made
+        // the final Flush() return immediately and could drop the last shutdown diagnostics.
         if (_enabled)
         {
             try { Flush(); } catch { }
@@ -349,7 +361,11 @@ public sealed class LogService : IDisposable
 
         try { _signal.Dispose(); } catch { }
         try { _cts?.Dispose(); } catch { }
-        try { _flushGate.Dispose(); } catch { }
+
+        // Do not dispose _flushGate during process shutdown. If a very slow filesystem write keeps
+        // the writer alive beyond the short join timeout, disposing the gate underneath its finally
+        // block can create a late ObjectDisposedException. The process is exiting, so retaining this
+        // tiny synchronization object is safer than racing its disposal.
 
         _cts = null;
         _writerTask = null;
