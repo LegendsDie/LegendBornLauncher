@@ -1,12 +1,18 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Threading;
 using LegendBorn;
+using LegendBorn.Controls;
+using LegendBorn.Services;
 using LegendBorn.ViewModels;
 using LegendBorn.Views.Tabs;
 
@@ -19,6 +25,7 @@ internal static class Program
         Console.WriteLine($"WPF_SMOKE_FRAMEWORK={RuntimeInformation.FrameworkDescription}");
 
         AssertCanonicalLegendBornOrigins();
+        AssertManagedCleanupContract();
 
         var app = new Application
         {
@@ -37,8 +44,6 @@ internal static class Program
                 UriKind.Absolute)
         });
 
-        // Use the real production window and real MainViewModel. This reproduces the exact
-        // DataContext inheritance path used by MainWindow -> TabControl -> profile/start views.
         var host = new MainWindow
         {
             ShowInTaskbar = false,
@@ -79,7 +84,18 @@ internal static class Program
                 throw new InvalidOperationException(
                     "PackProgressBar was not found in the refreshed start view namescope.");
 
-            // Regression contract: ProfileXpProgressPercent must never enter WPF's BindingEngine.
+            if (startView.FindName("Skin3DPreview") is not Skin3DView)
+                throw new InvalidOperationException(
+                    "Skin3DPreview was not found in the production start dashboard.");
+
+            if (startView.FindName("DashboardFriendsList") is not ItemsControl)
+                throw new InvalidOperationException(
+                    "DashboardFriendsList was not found in the production start dashboard.");
+
+            if (startView.FindName("NewsCarouselItems") is not ItemsControl)
+                throw new InvalidOperationException(
+                    "NewsCarouselItems was not found in the production start dashboard.");
+
             if (BindingOperations.GetBinding(progress, RangeBase.ValueProperty) is not null ||
                 BindingOperations.GetBindingExpression(progress, RangeBase.ValueProperty) is not null)
             {
@@ -95,9 +111,6 @@ internal static class Program
                 BindingFlags.Instance | BindingFlags.NonPublic)
                 ?? throw new InvalidOperationException("MainViewModel.ApplyProgression was not found for smoke setup.");
 
-            // Drive the real ViewModel progression path. ApplyProgression raises
-            // PropertyChanged(ProfileXpProgressPercent); ProfileTabView must mirror that into
-            // ProgressBar.Value without creating any BindingExpression.
             applyProgression.Invoke(vm, new object[]
             {
                 2,
@@ -126,6 +139,45 @@ internal static class Program
         {
             host.Close();
             app.Shutdown();
+        }
+    }
+
+    private static void AssertManagedCleanupContract()
+    {
+        var temp = Path.Combine(Path.GetTempPath(), "legendborn-managed-cleanup-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(temp, "mods"));
+        Directory.CreateDirectory(Path.Combine(temp, "config"));
+
+        var wanted = Path.Combine(temp, "mods", "wanted.jar");
+        var stale = Path.Combine(temp, "mods", "stale.jar");
+        var config = Path.Combine(temp, "config", "user.toml");
+
+        try
+        {
+            File.WriteAllText(wanted, "wanted");
+            File.WriteAllText(stale, "stale");
+            File.WriteAllText(config, "user-owned");
+
+            var method = typeof(ManagedPackCleanupService).GetMethod(
+                "ReconcileLocalManagedRootsAsync",
+                BindingFlags.Static | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("Managed cleanup local reconciliation method was not found.");
+
+            var wantedSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "mods/wanted.jar" };
+            var task = method.Invoke(null, new object[] { temp, wantedSet, CancellationToken.None }) as Task
+                       ?? throw new InvalidOperationException("Managed cleanup did not return a Task.");
+            task.GetAwaiter().GetResult();
+
+            if (!File.Exists(wanted))
+                throw new InvalidOperationException("Managed cleanup deleted a manifest-owned mod.");
+            if (File.Exists(stale))
+                throw new InvalidOperationException("Managed cleanup left a stale mod in the managed root.");
+            if (!File.Exists(config))
+                throw new InvalidOperationException("Managed cleanup touched protected user config.");
+        }
+        finally
+        {
+            try { Directory.Delete(temp, recursive: true); } catch { }
         }
     }
 
