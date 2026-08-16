@@ -1,10 +1,14 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using LegendBorn.ViewModels;
 
@@ -82,6 +86,8 @@ public partial class ProfileTabView : UserControl
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        ApplyProfileVisualPolish();
+
         if (DataContext is not MainViewModel vm)
         {
             AttachProfileProgressOwner(null);
@@ -98,6 +104,96 @@ public partial class ProfileTabView : UserControl
             return;
 
         RefreshAll(vm);
+    }
+
+    /// <summary>
+    /// PR21 introduced a shared rail around the two profile tabs. On the real launcher DPI/layout
+    /// this made the buttons visually merge into one control. Strip only that rail at runtime and
+    /// keep the individual TabItem templates, which gives Status/Community their own clear pills.
+    /// This is applied after the template is materialized so it behaves identically at any DPI.
+    /// </summary>
+    private void ApplyProfileVisualPolish()
+    {
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+        {
+            try
+            {
+                ProfileTabs.ApplyTemplate();
+
+                var tabs = ProfileTabs.Items.OfType<TabItem>().ToArray();
+                for (var i = 0; i < tabs.Length; i++)
+                {
+                    tabs[i].MinWidth = 90;
+                    tabs[i].Margin = i == tabs.Length - 1
+                        ? new Thickness(0)
+                        : new Thickness(0, 0, 12, 0);
+                }
+
+                var panel = FindVisualDescendant<TabPanel>(ProfileTabs);
+                if (panel is not null)
+                {
+                    panel.Margin = new Thickness(0);
+
+                    DependencyObject? parent = VisualTreeHelper.GetParent(panel);
+                    while (parent is not null && !ReferenceEquals(parent, ProfileTabs))
+                    {
+                        if (parent is Border rail)
+                        {
+                            rail.Padding = new Thickness(0);
+                            rail.BorderThickness = new Thickness(0);
+                            rail.Background = Brushes.Transparent;
+                            break;
+                        }
+
+                        parent = VisualTreeHelper.GetParent(parent);
+                    }
+                }
+
+                // Keep the compact currency label until the dedicated RZN icon lands.
+                foreach (var text in FindVisualDescendants<TextBlock>(this))
+                {
+                    if (string.Equals(text.Text?.Trim(), "РЕЗОН", StringComparison.OrdinalIgnoreCase))
+                        text.Text = "РЕЗ  ";
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine(ex);
+            }
+        }));
+    }
+
+    private static T? FindVisualDescendant<T>(DependencyObject root)
+        where T : DependencyObject
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T match)
+                return match;
+
+            var nested = FindVisualDescendant<T>(child);
+            if (nested is not null)
+                return nested;
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<T> FindVisualDescendants<T>(DependencyObject root)
+        where T : DependencyObject
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T match)
+                yield return match;
+
+            foreach (var nested in FindVisualDescendants<T>(child))
+                yield return nested;
+        }
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)

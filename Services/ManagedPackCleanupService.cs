@@ -14,20 +14,21 @@ using System.Threading.Tasks;
 namespace LegendBorn.Services;
 
 /// <summary>
-/// Reconciles destructive pack-owned roots before the normal MinecraftService sync runs.
-/// Only mods/, kubejs/ and scripts/ are managed here. Config/defaultconfigs/resourcepacks/
-/// shaderpacks remain user-owned or seed-only and are never touched by this service.
+/// Reconciles pack-owned roots before the normal MinecraftService sync runs.
+/// Only mods/, kubejs/ and scripts/ are destructive-managed here. Config/defaultconfigs/
+/// resourcepacks/shaderpacks remain user-owned or seed-only and are never removed by this service.
 ///
-/// This exists as a fail-closed guard: an old managed JAR/script must never survive silently
-/// just because Windows refused one File.Delete call. If stale managed content cannot be removed,
-/// launch is blocked with a clear error instead of starting a mixed pack.
+/// Stale managed files are moved into .trash instead of being deleted immediately. This keeps
+/// upgrades deterministic while preserving a recovery path if a pack publication was wrong.
+/// If a stale file is locked and cannot be moved out of a managed root, launch fails closed instead
+/// of starting a mixture of two pack revisions.
 /// </summary>
 public static class ManagedPackCleanupService
 {
     private static readonly string[] ManagedRoots = { "mods/", "kubejs/", "scripts/" };
     private static readonly TimeSpan ManifestTimeout = TimeSpan.FromSeconds(8);
     private const long MaxManifestBytes = 8L * 1024 * 1024;
-    private const int DeleteAttempts = 6;
+    private const int MoveAttempts = 6;
 
     private static readonly HttpClient Http = CreateHttp();
 
@@ -61,7 +62,7 @@ public static class ManagedPackCleanupService
             .ToArray();
 
         if (normalizedMirrors.Length == 0)
-            throw new InvalidOperationException("Нет HTTPS-зеркала для проверки managed-файлов.");
+            throw new InvalidOperationException("Нет HTTPS-зеркала для проверки файлов сборки.");
 
         var wanted = await LoadManagedPathsAsync(normalizedMirrors, ct).ConfigureAwait(false);
         var result = await ReconcileLocalManagedRootsAsync(gameDir, wanted, ct).ConfigureAwait(false);
@@ -69,12 +70,12 @@ public static class ManagedPackCleanupService
         if (result.RemovedFiles > 0 || result.RemovedDirectories > 0)
         {
             log?.Invoke(
-                $"Сборка: удалены устаревшие managed-файлы: {result.RemovedFiles}; " +
-                $"пустые папки: {result.RemovedDirectories}.");
+                $"Сборка: устаревшие файлы перенесены в .trash: {result.RemovedFiles}; " +
+                $"пустые папки убраны: {result.RemovedDirectories}.");
         }
         else
         {
-            log?.Invoke("Сборка: managed-зоны чистые — лишних mods/kubejs/scripts нет.");
+            log?.Invoke("Сборка: лишних файлов прошлой версии не найдено.");
         }
 
         return result;
@@ -91,6 +92,7 @@ public static class ManagedPackCleanupService
         var removedFiles = 0;
         var removedDirs = 0;
         var failures = new List<string>();
+        string? quarantineRoot = null;
 
         foreach (var root in ManagedRoots)
         {
@@ -100,10 +102,8 @@ public static class ManagedPackCleanupService
             if (!IsUnder(rootPath, gameFull) || !Directory.Exists(rootPath))
                 continue;
 
-            // Junctions/symlinks inside a destructive root are not followed. A pack root containing
-            // a reparse point is unusual and should not become an escape hatch outside the instance.
             if ((File.GetAttributes(rootPath) & FileAttributes.ReparsePoint) != 0)
-                throw new IOException($"Managed-папка является reparse point: {root}");
+                throw new IOException($"Папка сборки является reparse point: {root}");
 
             string[] files;
             try
@@ -112,7 +112,7 @@ public static class ManagedPackCleanupService
             }
             catch (Exception ex)
             {
-                throw new IOException($"Не удалось просканировать managed-папку {root}: {ex.Message}", ex);
+                throw new IOException($"Не удалось просканировать папку сборки {root}: {ex.Message}", ex);
             }
 
             foreach (var file in files)
@@ -127,13 +127,12 @@ public static class ManagedPackCleanupService
                 }
 
                 var rel = NormalizeRel(Path.GetRelativePath(gameDir, full));
-                if (rel.Length == 0)
+                if (rel.Length == 0 || ShouldKeep(rel, wantedManaged))
                     continue;
 
-                if (ShouldKeep(rel, wantedManaged))
-                    continue;
+                quarantineRoot ??= CreateQuarantineRoot(gameDir);
 
-                if (await TryDeleteFileAsync(full, ct).ConfigureAwait(false))
+                if (await TryMoveToTrashAsync(full, rel, quarantineRoot, ct).ConfigureAwait(false))
                     removedFiles++;
                 else
                     failures.Add(rel);
@@ -162,7 +161,7 @@ public static class ManagedPackCleanupService
                     }
                     catch
                     {
-                        // Directory cleanup is cosmetic. Remaining files are verified below.
+                        // Empty-directory cleanup is cosmetic. Remaining stale files are verified below.
                     }
                 }
             }
@@ -172,7 +171,7 @@ public static class ManagedPackCleanupService
             }
         }
 
-        // Verify after deletion. Silent stale managed content is not allowed.
+        // Verify after quarantine. Silent stale managed content is not allowed.
         foreach (var root in ManagedRoots)
         {
             var rootPath = Path.Combine(gameDir, root.TrimEnd('/'));
@@ -180,10 +179,13 @@ public static class ManagedPackCleanupService
                 continue;
 
             IEnumerable<string> files;
-            try { files = Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories); }
+            try
+            {
+                files = Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories);
+            }
             catch (Exception ex)
             {
-                throw new IOException($"Не удалось проверить managed-папку {root}: {ex.Message}", ex);
+                throw new IOException($"Не удалось проверить папку сборки {root}: {ex.Message}", ex);
             }
 
             foreach (var file in files)
@@ -204,11 +206,69 @@ public static class ManagedPackCleanupService
         {
             var sample = string.Join(", ", unresolved.Take(4));
             throw new IOException(
-                $"Не удалось удалить устаревшие managed-файлы ({unresolved.Length}+): {sample}. " +
-                "Закрой Minecraft/Java и повтори запуск. Смешанная версия сборки не будет запущена.");
+                $"Не удалось убрать устаревшие файлы сборки ({unresolved.Length}+): {sample}. " +
+                "Закрой Minecraft/Java и повтори проверку. Смешанная версия сборки не будет запущена.");
         }
 
         return new CleanupResult(removedFiles, removedDirs, wantedManaged.Count);
+    }
+
+    private static string CreateQuarantineRoot(string gameDir)
+    {
+        var runName = $"{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}";
+        return Path.Combine(gameDir, ".trash", "pack-cleanup", runName);
+    }
+
+    private static async Task<bool> TryMoveToTrashAsync(
+        string sourcePath,
+        string relativePath,
+        string quarantineRoot,
+        CancellationToken ct)
+    {
+        var quarantineFull = Path.GetFullPath(quarantineRoot)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var destination = Path.GetFullPath(Path.Combine(
+            quarantineRoot,
+            relativePath.Replace('/', Path.DirectorySeparatorChar)));
+
+        if (!IsUnder(destination, quarantineFull))
+            return false;
+
+        for (var attempt = 0; attempt < MoveAttempts; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            try
+            {
+                if (!File.Exists(sourcePath))
+                    return true;
+
+                var attrs = File.GetAttributes(sourcePath);
+                if ((attrs & FileAttributes.ReadOnly) != 0)
+                    File.SetAttributes(sourcePath, attrs & ~FileAttributes.ReadOnly);
+
+                var parent = Path.GetDirectoryName(destination);
+                if (!string.IsNullOrWhiteSpace(parent))
+                    Directory.CreateDirectory(parent);
+
+                if (File.Exists(destination))
+                    File.Delete(destination);
+
+                File.Move(sourcePath, destination);
+                if (!File.Exists(sourcePath) && File.Exists(destination))
+                    return true;
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+
+            await Task.Delay(100 + (attempt * 125), ct).ConfigureAwait(false);
+        }
+
+        return !File.Exists(sourcePath);
     }
 
     private static bool ShouldKeep(string rel, IReadOnlySet<string> wantedManaged)
@@ -276,7 +336,7 @@ public static class ManagedPackCleanupService
             }
         }
 
-        throw new InvalidOperationException("Не удалось получить manifest для очистки managed-зон.", last);
+        throw new InvalidOperationException("Не удалось получить manifest для очистки файлов сборки.", last);
     }
 
     private static async Task<ManifestDto> DownloadManifestAsync(string mirror, CancellationToken ct)
@@ -329,9 +389,11 @@ public static class ManagedPackCleanupService
             {
                 var read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
                 if (read == 0) break;
+
                 total += read;
                 if (total > MaxManifestBytes)
                     throw new InvalidDataException("manifest превышает лимит размера");
+
                 output.Write(buffer, 0, read);
             }
         }
@@ -343,33 +405,6 @@ public static class ManagedPackCleanupService
         return output.ToArray();
     }
 
-    private static async Task<bool> TryDeleteFileAsync(string path, CancellationToken ct)
-    {
-        for (var attempt = 0; attempt < DeleteAttempts; attempt++)
-        {
-            ct.ThrowIfCancellationRequested();
-            try
-            {
-                if (!File.Exists(path))
-                    return true;
-
-                var attrs = File.GetAttributes(path);
-                if ((attrs & FileAttributes.ReadOnly) != 0)
-                    File.SetAttributes(path, attrs & ~FileAttributes.ReadOnly);
-
-                File.Delete(path);
-                if (!File.Exists(path))
-                    return true;
-            }
-            catch (IOException) { }
-            catch (UnauthorizedAccessException) { }
-
-            await Task.Delay(100 + (attempt * 125), ct).ConfigureAwait(false);
-        }
-
-        return !File.Exists(path);
-    }
-
     private static bool IsManaged(string rel)
         => ManagedRoots.Any(root => rel.StartsWith(root, StringComparison.OrdinalIgnoreCase));
 
@@ -378,6 +413,7 @@ public static class ManagedPackCleanupService
         if (rel.Length == 0 || rel.EndsWith('/')) return false;
         if (rel.StartsWith('/') || Path.IsPathRooted(rel)) return false;
         if (rel.Contains(':')) return false;
+
         return !rel.Split('/', StringSplitOptions.RemoveEmptyEntries)
             .Any(static part => part is "." or "..");
     }
@@ -400,8 +436,10 @@ public static class ManagedPackCleanupService
     {
         var full = Path.GetFullPath(path);
         return full.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(full.TrimEnd(Path.DirectorySeparatorChar),
-                   rootWithSeparator.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase);
+               string.Equals(
+                   full.TrimEnd(Path.DirectorySeparatorChar),
+                   rootWithSeparator.TrimEnd(Path.DirectorySeparatorChar),
+                   StringComparison.OrdinalIgnoreCase);
     }
 
     private static HttpClient CreateHttp()

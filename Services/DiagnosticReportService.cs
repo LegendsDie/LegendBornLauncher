@@ -19,7 +19,10 @@ public static partial class DiagnosticReportService
     private const int MaxLauncherLogs = 4;
     private const int MaxCrashFiles = 5;
     private const int MaxGameCrashFiles = 3;
+    private const int MaxInventoryFiles = 12_000;
+    private const int MaxQuarantineInventoryFiles = 2_000;
 
+    private static readonly string[] ManagedInventoryRoots = { "mods", "kubejs", "scripts" };
     private static readonly UTF8Encoding Utf8NoBom = new(false);
 
     [GeneratedRegex("(?i)(authorization\\s*[:=]\\s*bearer\\s+)[A-Za-z0-9._~+\\-/=]+")]
@@ -94,13 +97,36 @@ public static partial class DiagnosticReportService
                     secrets,
                     ct,
                     allowedExtensions: new[] { ".txt", ".log" });
+
+                // Pack state and path-only inventories make stale-file upgrade reports actionable
+                // without copying the user's configs, saves, resource packs or shader packs.
+                CopySpecificTextFile(
+                    Path.Combine(gameDir, "launcher", "pack_state.json"),
+                    Path.Combine(workDir, "pack", "pack_state.json"),
+                    secrets,
+                    ct);
+
+                WriteFileInventory(
+                    gameDir,
+                    ManagedInventoryRoots,
+                    Path.Combine(workDir, "pack", "managed-files.txt"),
+                    MaxInventoryFiles,
+                    ct);
+
+                WriteFileInventory(
+                    gameDir,
+                    new[] { ".trash/pack-cleanup" },
+                    Path.Combine(workDir, "pack", "quarantine-files.txt"),
+                    MaxQuarantineInventoryFiles,
+                    ct);
             }
 
             await File.WriteAllTextAsync(
                 Path.Combine(workDir, "PRIVACY.txt"),
                 "This diagnostic bundle intentionally excludes launcher.tokens.dat, auth.token, auth.json and .legendcore/session.json.\n" +
                 "Bearer/access/refresh/join-ticket shaped values found in copied text logs are redacted before archiving.\n" +
-                "The Windows machine/computer name is intentionally not collected.\n",
+                "The Windows machine/computer name is intentionally not collected.\n" +
+                "Pack inventories contain relative file names, sizes and timestamps only; user configs/saves are not copied.\n",
                 Utf8NoBom,
                 ct).ConfigureAwait(false);
 
@@ -154,6 +180,12 @@ public static partial class DiagnosticReportService
                 autoConnect = context.AutoConnect,
                 gameDirectoryExists = NormalizeDirectory(context.GameDir) is not null,
             },
+            diagnostics = new
+            {
+                managedPackInventory = true,
+                quarantineInventory = true,
+                packStateIncludedWhenPresent = true,
+            },
             security = new
             {
                 tokenStoreIncluded = false,
@@ -194,6 +226,87 @@ public static partial class DiagnosticReportService
         catch
         {
             // The index is convenience metadata only; diagnostics still remain useful without it.
+        }
+    }
+
+    private static void WriteFileInventory(
+        string gameDir,
+        IReadOnlyCollection<string> relativeRoots,
+        string destinationPath,
+        int maxFiles,
+        CancellationToken ct)
+    {
+        try
+        {
+            var normalizedGame = NormalizeDirectory(gameDir);
+            if (normalizedGame is null) return;
+
+            var lines = new List<string>();
+            var truncated = false;
+
+            foreach (var relativeRoot in relativeRoots)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var normalizedRelRoot = (relativeRoot ?? string.Empty)
+                    .Trim()
+                    .Replace('\\', '/')
+                    .Trim('/');
+                if (normalizedRelRoot.Length == 0 || normalizedRelRoot.Split('/').Any(static x => x is "." or ".."))
+                    continue;
+
+                var rootPath = Path.GetFullPath(Path.Combine(
+                    normalizedGame,
+                    normalizedRelRoot.Replace('/', Path.DirectorySeparatorChar)));
+                var gamePrefix = normalizedGame.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                                 + Path.DirectorySeparatorChar;
+                if (!rootPath.StartsWith(gamePrefix, StringComparison.OrdinalIgnoreCase) || !Directory.Exists(rootPath))
+                    continue;
+
+                foreach (var path in Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories)
+                             .OrderBy(static x => x, StringComparer.OrdinalIgnoreCase))
+                {
+                    ct.ThrowIfCancellationRequested();
+
+                    if (lines.Count >= Math.Max(0, maxFiles))
+                    {
+                        truncated = true;
+                        break;
+                    }
+
+                    try
+                    {
+                        var info = new FileInfo(path);
+                        var rel = Path.GetRelativePath(normalizedGame, info.FullName).Replace('\\', '/');
+                        lines.Add($"{info.Length,12}  {info.LastWriteTimeUtc:O}  {rel}");
+                    }
+                    catch
+                    {
+                        // A single disappearing/locked file should not abort the report.
+                    }
+                }
+
+                if (truncated) break;
+            }
+
+            if (lines.Count == 0 && !truncated)
+                lines.Add("<empty>");
+            if (truncated)
+                lines.Add($"<truncated after {maxFiles} files>");
+
+            var parent = Path.GetDirectoryName(destinationPath);
+            if (!string.IsNullOrWhiteSpace(parent))
+                Directory.CreateDirectory(parent);
+
+            File.WriteAllLines(destinationPath, lines, Utf8NoBom);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            // Inventory is supplementary diagnostics only.
         }
     }
 

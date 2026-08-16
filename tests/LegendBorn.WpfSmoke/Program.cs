@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -30,6 +31,12 @@ internal static class Program
         AssertCanonicalLegendBornOrigins();
         AssertManagedCleanupContract();
 
+        var launcherInfoVersion = typeof(MainWindow).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion ?? string.Empty;
+        if (!launcherInfoVersion.StartsWith("0.4.1", StringComparison.Ordinal))
+            throw new InvalidOperationException($"Launcher 0.4.1 smoke is running against {launcherInfoVersion}.");
+
         var app = new Application
         {
             ShutdownMode = ShutdownMode.OnExplicitShutdown
@@ -57,11 +64,20 @@ internal static class Program
         {
             host.Show();
             host.UpdateLayout();
-            host.Dispatcher.Invoke(static () => { }, DispatcherPriority.DataBind);
+            host.Dispatcher.Invoke(static () => { }, DispatcherPriority.ApplicationIdle);
 
             if (host.ResizeMode == ResizeMode.NoResize)
                 throw new InvalidOperationException(
                     "Production MainWindow unexpectedly disables resizing; the refreshed shell must remain resizable.");
+
+            if (host.DataContext is not MainViewModel vm)
+                throw new InvalidOperationException("Production MainWindow did not expose MainViewModel as DataContext.");
+
+            // Materialize the real profile visual tree so Loaded-time DPI/layout polish is tested,
+            // not merely the unselected TabItem's logical content.
+            vm.SelectedMenuIndex = 2;
+            host.UpdateLayout();
+            host.Dispatcher.Invoke(static () => { }, DispatcherPriority.ApplicationIdle);
 
             var profileView = FindLogicalDescendant<ProfileTabView>(host)
                               ?? throw new InvalidOperationException(
@@ -85,7 +101,15 @@ internal static class Program
 
             if (profileView.FindName("ProfileTabs") is not TabControl profileTabs || profileTabs.Items.Count != 2)
                 throw new InvalidOperationException(
-                    "Profile status/community tab rail is missing or no longer contains exactly two sections.");
+                    "Profile status/community tabs are missing or no longer contain exactly two sections.");
+
+            var profileTabItems = profileTabs.Items.OfType<TabItem>().ToArray();
+            if (profileTabItems.Length != 2 || profileTabItems[0].Margin.Right < 10)
+                throw new InvalidOperationException(
+                    "Status and Community tabs no longer have a clear visual gap between them.");
+
+            if (ContainsTextFragment(profileView, "РЕЗОН"))
+                throw new InvalidOperationException("Legacy РЕЗОН abbreviation is still visible in the profile.");
 
             if (profileView.FindName("StatusCharacterCard") is not Border characterCard ||
                 profileView.FindName("StatusSkinCard") is not Border skinCard)
@@ -142,6 +166,24 @@ internal static class Program
                     "Start dashboard news area regressed to the overly compressed height.");
             }
 
+            var settingsView = FindLogicalDescendant<SettingsTabView>(host)
+                               ?? throw new InvalidOperationException(
+                                   "SettingsTabView was not found inside the production MainWindow logical tree.");
+
+            if (settingsView.FindName("AutomaticRamCheck") is not CheckBox)
+                throw new InvalidOperationException("Automatic RAM control is missing from Settings.");
+            if (settingsView.FindName("GameDirectoryText") is not TextBlock)
+                throw new InvalidOperationException("Game directory presentation is missing from Settings.");
+            if (settingsView.FindName("RepairPackButton") is not Button)
+                throw new InvalidOperationException("Pack repair action is missing from Settings.");
+            if (ContainsTextFragment(settingsView, "Launcher v") ||
+                ContainsTextFragment(settingsView, "join-ticket") ||
+                ContainsTextFragment(settingsView, "BMCLAPI"))
+            {
+                throw new InvalidOperationException(
+                    "Technical implementation details or duplicate launcher version leaked into Settings.");
+            }
+
             if (BindingOperations.GetBinding(progress, RangeBase.ValueProperty) is not null ||
                 BindingOperations.GetBindingExpression(progress, RangeBase.ValueProperty) is not null)
             {
@@ -149,11 +191,11 @@ internal static class Program
                     "Profile XP progress unexpectedly has a WPF BindingExpression; read-only XP must be mirrored manually.");
             }
 
-            if (host.DataContext is not MainViewModel vm)
-                throw new InvalidOperationException("Production MainWindow did not expose MainViewModel as DataContext.");
-
             if (vm.MinecraftStatusHealth != "—" || vm.MinecraftStatusDimension != "—")
                 throw new InvalidOperationException("Minecraft status must default to unknown instead of fabricated telemetry.");
+
+            if (string.IsNullOrWhiteSpace(vm.GameDirectoryPath))
+                throw new InvalidOperationException("Settings game directory path is empty.");
 
             var applyProgression = typeof(MainViewModel).GetMethod(
                 "ApplyProgression",
@@ -202,7 +244,6 @@ internal static class Program
             BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("Skin3DView scene field was not found for runtime smoke.");
 
-        // Modern 64x64 must render six base cuboids + six second-layer cuboids.
         var modern = CreateSkinBitmap(64);
         buildPlayer.Invoke(view, new object[] { modern });
         var scene = sceneField.GetValue(view) as Model3DGroup
@@ -210,7 +251,6 @@ internal static class Program
         if (scene.Children.Count < 4 || scene.Children[^1] is not Model3DGroup modernPlayer || modernPlayer.Children.Count != 12)
             throw new InvalidOperationException("Modern Minecraft skin did not render all six base and six outer-layer cuboids.");
 
-        // Legacy 64x32 has no second layer and must remain supported.
         var legacy = CreateSkinBitmap(32);
         buildPlayer.Invoke(view, new object[] { legacy });
         if (scene.Children.Count < 4 || scene.Children[^1] is not Model3DGroup legacyPlayer || legacyPlayer.Children.Count != 6)
@@ -267,11 +307,18 @@ internal static class Program
             task.GetAwaiter().GetResult();
 
             if (!File.Exists(wanted))
-                throw new InvalidOperationException("Managed cleanup deleted a manifest-owned mod.");
+                throw new InvalidOperationException("Managed cleanup removed a manifest-owned mod.");
             if (File.Exists(stale))
                 throw new InvalidOperationException("Managed cleanup left a stale mod in the managed root.");
             if (!File.Exists(config))
                 throw new InvalidOperationException("Managed cleanup touched protected user config.");
+
+            var trashRoot = Path.Combine(temp, ".trash", "pack-cleanup");
+            if (!Directory.Exists(trashRoot) ||
+                !Directory.EnumerateFiles(trashRoot, "stale.jar", SearchOption.AllDirectories).Any())
+            {
+                throw new InvalidOperationException("Stale managed file was not preserved in the SAFE .trash quarantine.");
+            }
         }
         finally
         {
@@ -314,6 +361,30 @@ internal static class Program
             }
 
             if (child is DependencyObject dependencyObject && ContainsVisibleLabel(dependencyObject, label))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool ContainsTextFragment(DependencyObject root, string fragment)
+    {
+        foreach (var child in LogicalTreeHelper.GetChildren(root))
+        {
+            if (child is TextBlock textBlock &&
+                (textBlock.Text ?? string.Empty).Contains(fragment, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (child is ContentControl contentControl &&
+                contentControl.Content is string content &&
+                content.Contains(fragment, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (child is DependencyObject dependencyObject && ContainsTextFragment(dependencyObject, fragment))
                 return true;
         }
 
