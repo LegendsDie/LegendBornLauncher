@@ -3,21 +3,31 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:controls="clr-namespace:LegendBorn.Controls"
              mc:Ignorable="d"
-             d:DesignHeight="700"
-             d:DesignWidth="1180">
+             d:DesignHeight="760"
+             d:DesignWidth="1200">
 
     <UserControl.Resources>
-        <Style x:Key="StartPanel" TargetType="Border">
-            <Setter Property="Background" Value="#A80B0E19"/>
-            <Setter Property="BorderBrush" Value="#34314A"/>
+        <Style x:Key="DashboardPanel" TargetType="Border">
+            <Setter Property="Background" Value="#BC0B0E19"/>
+            <Setter Property="BorderBrush" Value="#39324F"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="15"/>
-            <Setter Property="Padding" Value="16"/>
+            <Setter Property="CornerRadius" Value="16"/>
+            <Setter Property="Padding" Value="15"/>
         </Style>
-        <Style x:Key="StartDim" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#8F9AB0"/>
-            <Setter Property="FontSize" Value="11"/>
+
+        <Style x:Key="DashboardDim" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#8995AB"/>
+            <Setter Property="FontSize" Value="10"/>
+        </Style>
+
+        <Style x:Key="CarouselArrow" TargetType="Button" BasedOn="{StaticResource GhostButton}">
+            <Setter Property="Width" Value="34"/>
+            <Setter Property="Height" Value="34"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+            <Setter Property="FontSize" Value="13"/>
         </Style>
     </UserControl.Resources>
 
@@ -26,36 +36,41 @@
             <Grid>
                 <Image Source="pack://application:,,,/Resources/Assets/legendcraft.jpg"
                        Stretch="UniformToFill"
-                       Opacity="0.34"
+                       Opacity="0.27"
                        RenderOptions.BitmapScalingMode="HighQuality"/>
 
-                <Rectangle Fill="#A2080A13"/>
-
+                <Rectangle Fill="#A9080A14"/>
                 <Rectangle>
                     <Rectangle.Fill>
-                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
-                            <GradientStop Color="#F00C0D1D" Offset="0"/>
-                            <GradientStop Color="#C80C0D1D" Offset="0.48"/>
-                            <GradientStop Color="#8A0A0B17" Offset="1"/>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                            <GradientStop Color="#EF0B0C1B" Offset="0"/>
+                            <GradientStop Color="#C90C0D1C" Offset="0.48"/>
+                            <GradientStop Color="#9A090B15" Offset="1"/>
                         </LinearGradientBrush>
                     </Rectangle.Fill>
                 </Rectangle>
 
-                <Grid Margin="26,24,26,22">
+                <Grid Margin="24,20,24,20">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="16"/>
+                        <ColumnDefinition Width="280"/>
+                    </Grid.ColumnDefinitions>
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="18"/>
+                        <RowDefinition Height="150"/>
+                        <RowDefinition Height="12"/>
+                        <RowDefinition Height="166"/>
+                        <RowDefinition Height="14"/>
                         <RowDefinition Height="*"/>
-                        <RowDefinition Height="16"/>
+                        <RowDefinition Height="14"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <!-- Hero -->
-                    <Grid Grid.Row="0">
+                    <!-- Hero: server identity + LegendCraft logo moved to the center/right. -->
+                    <Grid Grid.Row="0" Grid.Column="0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="22"/>
-                            <ColumnDefinition Width="300"/>
+                            <ColumnDefinition Width="310"/>
                         </Grid.ColumnDefinitions>
 
                         <StackPanel VerticalAlignment="Center">
@@ -75,242 +90,337 @@
                                 </StackPanel>
                             </Border>
 
-                            <TextBlock Margin="0,12,0,0"
+                            <TextBlock Margin="0,10,0,0"
                                        Text="{Binding PackName}"
                                        Foreground="{StaticResource TextStrongLocal}"
-                                       FontSize="34"
+                                       FontSize="31"
                                        FontWeight="Bold"
                                        TextTrimming="CharacterEllipsis"/>
 
-                            <TextBlock Margin="0,7,0,0"
+                            <TextBlock Margin="0,5,0,0"
                                        Text="{Binding BuildDisplayName}"
-                                       Foreground="#B1BBD0"
-                                       FontSize="13"
+                                       Foreground="#AAB5CA"
+                                       FontSize="11"
                                        TextTrimming="CharacterEllipsis"/>
-
-                            <TextBlock Margin="0,10,0,0"
-                                       MaxWidth="650"
-                                       Text="TechMagicRPG сервер, где прогресс, история и сообщество живут в одной экосистеме LegendBorn."
-                                       Foreground="#8994A9"
-                                       FontSize="12"
-                                       TextWrapping="Wrap"/>
                         </StackPanel>
 
-                        <Image Grid.Column="2"
-                               Source="pack://application:,,,/Resources/Assets/legendcraft.png"
-                               Height="150"
-                               MaxWidth="285"
-                               Stretch="Uniform"
-                               HorizontalAlignment="Right"
-                               VerticalAlignment="Center"
-                               SnapsToDevicePixels="True"
-                               RenderOptions.BitmapScalingMode="HighQuality">
-                            <Image.Effect>
-                                <DropShadowEffect Color="#9B5CFF"
-                                                  BlurRadius="28"
-                                                  ShadowDepth="0"
-                                                  Opacity="0.30"/>
-                            </Image.Effect>
-                        </Image>
+                        <Border Grid.Column="1"
+                                Margin="12,0,0,0"
+                                CornerRadius="18"
+                                Background="#2A0B0D19"
+                                BorderBrush="#302343"
+                                BorderThickness="1">
+                            <Image Source="pack://application:,,,/Resources/Assets/legendcraft.png"
+                                   Height="126"
+                                   MaxWidth="280"
+                                   Stretch="Uniform"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   RenderOptions.BitmapScalingMode="HighQuality">
+                                <Image.Effect>
+                                    <DropShadowEffect Color="#A85CFF"
+                                                      BlurRadius="24"
+                                                      ShadowDepth="0"
+                                                      Opacity="0.28"/>
+                                </Image.Effect>
+                            </Image>
+                        </Border>
                     </Grid>
 
-                    <!-- Main content -->
-                    <Grid Grid.Row="2">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="1.18*"/>
-                            <ColumnDefinition Width="14"/>
-                            <ColumnDefinition Width="0.82*"/>
-                        </Grid.ColumnDefinitions>
+                    <!-- Right blue-area equivalent: current skin in actual WPF 3D. -->
+                    <Border Grid.Row="0"
+                            Grid.RowSpan="3"
+                            Grid.Column="2"
+                            Style="{StaticResource DashboardPanel}"
+                            BorderBrush="#513076"
+                            Background="#D00A0C18">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="8"/>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="8"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
 
-                        <StackPanel Grid.Column="0">
-                            <Border Style="{StaticResource StartPanel}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="ТЕКУЩИЙ СКИН" Style="{StaticResource DashboardDim}"/>
+                                    <TextBlock Margin="0,3,0,0"
+                                               Text="{Binding SelectedSkinTitle}"
+                                               Foreground="#E5D9FA"
+                                               FontWeight="SemiBold"
+                                               FontSize="13"
+                                               TextTrimming="CharacterEllipsis"/>
+                                </StackPanel>
+                                <Button Grid.Column="1"
+                                        Style="{StaticResource GhostButton}"
+                                        Height="28"
+                                        Padding="9,0"
+                                        Content="Сменить"
+                                        Command="{Binding OpenSkinManagerCommand}"/>
+                            </Grid>
+
+                            <Border Grid.Row="2"
+                                    CornerRadius="14"
+                                    Background="#65080A13"
+                                    BorderBrush="#37244E"
+                                    BorderThickness="1"
+                                    ClipToBounds="True">
+                                <controls:Skin3DView x:Name="Skin3DPreview"/>
+                            </Border>
+
+                            <TextBlock Grid.Row="4"
+                                       HorizontalAlignment="Center"
+                                       Text="3D · синхронизировано с профилем"
+                                       Foreground="#6F7C94"
+                                       FontSize="9"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- Yellow-area equivalent: only own nick + friends on selected server/recent activity. -->
+                    <Border Grid.Row="2"
+                            Grid.Column="0"
+                            Style="{StaticResource DashboardPanel}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="190"/>
+                                <ColumnDefinition Width="14"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="ТВОЙ НИК" Style="{StaticResource DashboardDim}"/>
+                                <TextBlock Margin="0,6,0,0"
+                                           Text="{Binding Username}"
+                                           Foreground="#F0EBFA"
+                                           FontSize="20"
+                                           FontWeight="Bold"
+                                           TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Margin="0,6,0,0"
+                                           Text="{Binding SelectedServer.Name, StringFormat=сервер · {0}}"
+                                           Foreground="#747F96"
+                                           FontSize="9"
+                                           TextTrimming="CharacterEllipsis"/>
+                            </StackPanel>
+
+                            <Border Grid.Column="1" Width="1" Background="#252A3E"/>
+
+                            <Grid Grid.Column="2">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="8"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+
                                 <Grid>
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="1*"/>
-                                        <ColumnDefinition Width="12"/>
-                                        <ColumnDefinition Width="1.2*"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
-
-                                    <StackPanel>
-                                        <TextBlock Text="MINECRAFT НИК" Style="{StaticResource StartDim}"/>
-                                        <TextBox Margin="0,7,0,0"
-                                                 Height="40"
-                                                 Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"/>
-                                    </StackPanel>
-
-                                    <StackPanel Grid.Column="2">
-                                        <TextBlock Text="СОСТОЯНИЕ" Style="{StaticResource StartDim}"/>
-                                        <Border Margin="0,7,0,0"
-                                                Height="40"
-                                                Background="#77101522"
-                                                BorderBrush="#343A54"
-                                                BorderThickness="1"
-                                                CornerRadius="12"
-                                                Padding="12,0">
-                                            <TextBlock VerticalAlignment="Center"
-                                                       Text="{Binding StatusText, FallbackValue='Готов к запуску.'}"
-                                                       Foreground="#C6CEE0"
-                                                       FontSize="11"
-                                                       TextTrimming="CharacterEllipsis"/>
-                                        </Border>
-                                    </StackPanel>
+                                    <TextBlock x:Name="DashboardFriendsTitle"
+                                               Text="Друзья на сервере"
+                                               Foreground="#CCD4E4"
+                                               FontWeight="SemiBold"
+                                               FontSize="12"/>
+                                    <TextBlock Grid.Column="1"
+                                               Text="обновляется автоматически"
+                                               Foreground="#68758D"
+                                               FontSize="9"/>
                                 </Grid>
-                            </Border>
 
-                            <Border Margin="0,12,0,0" Style="{StaticResource StartPanel}">
-                                <StackPanel>
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <StackPanel>
-                                            <TextBlock Text="Новости сервера"
-                                                       Foreground="{StaticResource TextStrongLocal}"
-                                                       FontWeight="SemiBold"
-                                                       FontSize="14"/>
-                                            <TextBlock Margin="0,3,0,0"
-                                                       Style="{StaticResource StartDim}"
-                                                       Text="Последние изменения и события проекта"/>
-                                        </StackPanel>
-                                        <Button Grid.Column="1"
-                                                Style="{StaticResource GhostButton}"
-                                                Content="Все новости"
-                                                Height="30"
-                                                Padding="11,0"
-                                                Click="OpenNewsTab_OnClick"/>
-                                    </Grid>
-
-                                    <ItemsControl Margin="0,11,0,0">
-                                        <ItemsControl.ItemsSource>
-                                            <PriorityBinding>
-                                                <Binding Path="ServerNewsTop2"/>
-                                                <Binding ElementName="RootWindow" Path="ServerNewsTop2"/>
-                                            </PriorityBinding>
-                                        </ItemsControl.ItemsSource>
-                                        <ItemsControl.ItemTemplate>
-                                            <DataTemplate>
-                                                <Button Style="{StaticResource NewsCardButtonStyle}"
-                                                        Tag="{Binding Url}"
-                                                        Click="OpenNewsItem_OnClick">
-                                                    <Border Background="#6E101421"
-                                                            BorderBrush="#2D334A"
-                                                            BorderThickness="1"
-                                                            CornerRadius="12"
-                                                            Padding="11">
+                                <ItemsControl x:Name="DashboardFriendsList" Grid.Row="2">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <UniformGrid Columns="3"/>
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Margin="0,0,8,0"
+                                                    Padding="9"
+                                                    CornerRadius="11"
+                                                    Background="#78101422"
+                                                    BorderBrush="#2D334A"
+                                                    BorderThickness="1">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="34"/>
+                                                        <ColumnDefinition Width="8"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <Border Width="34" Height="34" CornerRadius="10" ClipToBounds="True"
+                                                            Background="#202943" BorderBrush="#3E4564" BorderThickness="1">
                                                         <Grid>
-                                                            <Grid.RowDefinitions>
-                                                                <RowDefinition Height="Auto"/>
-                                                                <RowDefinition Height="4"/>
-                                                                <RowDefinition Height="Auto"/>
-                                                            </Grid.RowDefinitions>
-                                                            <Grid>
-                                                                <Grid.ColumnDefinitions>
-                                                                    <ColumnDefinition Width="*"/>
-                                                                    <ColumnDefinition Width="Auto"/>
-                                                                </Grid.ColumnDefinitions>
-                                                                <TextBlock Text="{Binding Title}"
-                                                                           Foreground="{StaticResource TextStrongLocal}"
-                                                                           FontWeight="SemiBold"
-                                                                           FontSize="11"
-                                                                           TextTrimming="CharacterEllipsis"/>
-                                                                <TextBlock Grid.Column="1"
-                                                                           Margin="10,0,0,0"
-                                                                           Foreground="#7F8BA1"
-                                                                           FontSize="9"
-                                                                           Text="{Binding Date}"/>
-                                                            </Grid>
-                                                            <TextBlock Grid.Row="2"
-                                                                       Foreground="#8E99AF"
-                                                                       FontSize="10"
-                                                                       TextWrapping="NoWrap"
-                                                                       TextTrimming="CharacterEllipsis"
-                                                                       Text="{Binding Summary}"/>
+                                                            <TextBlock Text="{Binding Initial}"
+                                                                       HorizontalAlignment="Center"
+                                                                       VerticalAlignment="Center"
+                                                                       Foreground="#E9E4F4"
+                                                                       FontWeight="Bold"/>
+                                                            <Image Source="{Binding AvatarUrl, IsAsync=True}" Stretch="UniformToFill"/>
                                                         </Grid>
                                                     </Border>
-                                                </Button>
-                                            </DataTemplate>
-                                        </ItemsControl.ItemTemplate>
-                                    </ItemsControl>
-                                </StackPanel>
-                            </Border>
-                        </StackPanel>
+                                                    <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding Name}"
+                                                                   Foreground="#E3E8F3"
+                                                                   FontSize="11"
+                                                                   FontWeight="SemiBold"
+                                                                   TextTrimming="CharacterEllipsis"/>
+                                                        <TextBlock Margin="0,2,0,0"
+                                                                   Text="{Binding PresenceText}"
+                                                                   Foreground="#7F8CA4"
+                                                                   FontSize="9"
+                                                                   TextTrimming="CharacterEllipsis"/>
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
 
-                        <!-- Right information rail -->
-                        <StackPanel Grid.Column="2">
-                            <Border Style="{StaticResource StartPanel}">
-                                <StackPanel>
-                                    <TextBlock Text="Перед запуском"
-                                               Foreground="{StaticResource TextStrongLocal}"
-                                               FontWeight="SemiBold"
-                                               FontSize="14"/>
-                                    <TextBlock Margin="0,7,0,0"
-                                               TextWrapping="Wrap"
-                                               Foreground="#8F9AB0"
-                                               FontSize="11"
-                                               Text="Launcher сначала проверит manifest, переиспользует уже готовые файлы и скачает только изменения."/>
+                                <TextBlock x:Name="DashboardFriendsEmpty"
+                                           Grid.Row="2"
+                                           Visibility="Collapsed"
+                                           VerticalAlignment="Center"
+                                           Text="Пока нет данных об активности друзей."
+                                           Foreground="#77839A"
+                                           FontSize="10"/>
+                            </Grid>
+                        </Grid>
+                    </Border>
 
-                                    <Grid Margin="0,14,0,0">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="8"/>
-                                            <ColumnDefinition Width="*"/>
-                                        </Grid.ColumnDefinitions>
-                                        <Border Background="#64101522" BorderBrush="#2D334A" BorderThickness="1" CornerRadius="11" Padding="10">
-                                            <StackPanel>
-                                                <TextBlock Text="MINECRAFT" Style="{StaticResource StartDim}"/>
-                                                <TextBlock Margin="0,3,0,0" Text="{Binding MinecraftVersion}"
-                                                           Foreground="#D8DEED" FontWeight="SemiBold"/>
-                                            </StackPanel>
-                                        </Border>
-                                        <Border Grid.Column="2" Background="#64101522" BorderBrush="#2D334A" BorderThickness="1" CornerRadius="11" Padding="10">
-                                            <StackPanel>
-                                                <TextBlock Text="LOADER" Style="{StaticResource StartDim}"/>
-                                                <TextBlock Margin="0,3,0,0" Text="{Binding LoaderName}"
-                                                           Foreground="#D8DEED" FontWeight="SemiBold"/>
-                                            </StackPanel>
-                                        </Border>
-                                    </Grid>
-
-                                    <StackPanel Orientation="Horizontal" Margin="0,13,0,0">
-                                        <Button Style="{StaticResource GhostButton}"
-                                                Height="32"
-                                                Padding="10,0"
-                                                ToolTip="Открыть папку игры"
-                                                Command="{Binding OpenGameDirCommand}">
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8B7;" FontSize="13"/>
-                                                <TextBlock Margin="7,0,0,0" Text="Папка"/>
-                                            </StackPanel>
-                                        </Button>
-                                        <Button Style="{StaticResource GhostButton}"
-                                                Height="32"
-                                                Padding="10,0"
-                                                Margin="8,0,0,0"
-                                                ToolTip="Открыть сайт"
-                                                Click="OpenSite_OnClick">
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE774;" FontSize="13"/>
-                                                <TextBlock Margin="7,0,0,0" Text="Сайт"/>
-                                            </StackPanel>
-                                        </Button>
-                                    </StackPanel>
-                                </StackPanel>
-                            </Border>
-                        </StackPanel>
-                    </Grid>
-
-                    <!-- Launch dock -->
+                    <!-- Red-area equivalent: latest news carousel. -->
                     <Border Grid.Row="4"
+                            Grid.Column="0"
+                            Grid.ColumnSpan="3"
+                            Style="{StaticResource DashboardPanel}"
+                            Padding="15,13">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="10"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="Последние новости"
+                                               Foreground="#E9EDF6"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"/>
+                                    <TextBlock x:Name="NewsPageText"
+                                               Margin="10,1,0,0"
+                                               Text=""
+                                               Foreground="#69768E"
+                                               FontSize="9"/>
+                                </StackPanel>
+
+                                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                    <Button x:Name="NewsPrevButton"
+                                            Style="{StaticResource CarouselArrow}"
+                                            Content="&#xE76B;"
+                                            ToolTip="Предыдущие новости"
+                                            Click="NewsPrev_OnClick"/>
+                                    <Button x:Name="NewsNextButton"
+                                            Style="{StaticResource CarouselArrow}"
+                                            Margin="7,0,0,0"
+                                            Content="&#xE76C;"
+                                            ToolTip="Следующие новости"
+                                            Click="NewsNext_OnClick"/>
+                                    <Button Style="{StaticResource GhostButton}"
+                                            Margin="9,0,0,0"
+                                            Height="34"
+                                            Padding="11,0"
+                                            Content="Все"
+                                            Click="OpenNewsTab_OnClick"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <ItemsControl x:Name="NewsCarouselItems" Grid.Row="2">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <UniformGrid Columns="3"/>
+                                    </ItemsControl.ItemsPanel>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Style="{StaticResource NewsCardButtonStyle}"
+                                                Margin="0,0,10,0"
+                                                Tag="{Binding Url}"
+                                                Click="OpenNewsItem_OnClick">
+                                            <Border Background="#76101421"
+                                                    BorderBrush="#30364D"
+                                                    BorderThickness="1"
+                                                    CornerRadius="12"
+                                                    Padding="11">
+                                                <Grid>
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="5"/>
+                                                        <RowDefinition Height="*"/>
+                                                    </Grid.RowDefinitions>
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*"/>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock Text="{Binding Title}"
+                                                                   Foreground="#E1E6F1"
+                                                                   FontSize="11"
+                                                                   FontWeight="SemiBold"
+                                                                   TextTrimming="CharacterEllipsis"/>
+                                                        <TextBlock Grid.Column="1"
+                                                                   Margin="8,0,0,0"
+                                                                   Text="{Binding Date}"
+                                                                   Foreground="#68758D"
+                                                                   FontSize="8"/>
+                                                    </Grid>
+                                                    <TextBlock Grid.Row="2"
+                                                               Text="{Binding Summary}"
+                                                               Foreground="#8793A9"
+                                                               FontSize="9"
+                                                               TextWrapping="Wrap"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               MaxHeight="34"/>
+                                                </Grid>
+                                            </Border>
+                                        </Button>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <TextBlock x:Name="NewsEmptyText"
+                                       Grid.Row="2"
+                                       Visibility="Collapsed"
+                                       VerticalAlignment="Center"
+                                       HorizontalAlignment="Center"
+                                       Text="Новости пока недоступны — здесь не будут показываться выдуманные карточки."
+                                       Foreground="#728097"
+                                       FontSize="10"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- Launch/progress dock remains the only launch status surface. -->
+                    <Border Grid.Row="6"
+                            Grid.Column="0"
+                            Grid.ColumnSpan="3"
                             Background="#E50A0D18"
                             BorderBrush="#493062"
                             BorderThickness="1"
                             CornerRadius="16"
-                            Padding="14">
+                            Padding="13">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="18"/>
+                                <ColumnDefinition Width="16"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
 
@@ -322,34 +432,40 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Text="{Binding StatusText}"
                                                Foreground="#D5DBEA"
-                                               FontSize="11"
+                                               FontSize="10"
                                                FontWeight="SemiBold"
                                                TextTrimming="CharacterEllipsis"/>
                                     <TextBlock Grid.Column="1"
                                                Margin="12,0,0,0"
                                                Text="{Binding ProgressPercent, StringFormat={}{0}%}"
                                                Foreground="#BFA2F2"
-                                               FontSize="10"/>
+                                               FontSize="9"/>
                                 </Grid>
                                 <ProgressBar x:Name="PackProgressBar"
-                                             Margin="0,7,0,0"
+                                             Margin="0,6,0,0"
                                              Height="7"
                                              Minimum="0"
                                              Maximum="100"
                                              Value="{Binding ProgressPercent, Mode=OneWay}"/>
-                                <TextBlock Margin="0,5,0,0"
-                                           Text="Первый запуск может занять дольше; следующие обновления используют локальный pack state."
-                                           Foreground="#69758D"
-                                           FontSize="9"/>
                             </StackPanel>
 
-                            <Button Grid.Column="2"
-                                    Style="{StaticResource PlayOrStopButtonStyle}"
-                                    Click="PlayOrStop_OnClick"
-                                    MinWidth="190"
-                                    Height="54"
-                                    FontSize="15"
-                                    Padding="32,0"/>
+                            <StackPanel Grid.Column="2" Orientation="Horizontal">
+                                <Button Style="{StaticResource GhostButton}"
+                                        Height="48"
+                                        Padding="12,0"
+                                        ToolTip="Открыть папку игры"
+                                        Command="{Binding OpenGameDirCommand}">
+                                    <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE8B7;" FontSize="14"/>
+                                </Button>
+                                <Button Grid.Column="2"
+                                        Style="{StaticResource PlayOrStopButtonStyle}"
+                                        Click="PlayOrStop_OnClick"
+                                        Margin="9,0,0,0"
+                                        MinWidth="180"
+                                        Height="48"
+                                        FontSize="14"
+                                        Padding="28,0"/>
+                            </StackPanel>
                         </Grid>
                     </Border>
                 </Grid>
