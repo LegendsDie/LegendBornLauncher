@@ -34,7 +34,6 @@
     <Grid>
         <Border Style="{StaticResource ScreenFrameStyle}">
             <Grid>
-                <!-- Keep the server art visible behind the native dashboard. -->
                 <Image Source="pack://application:,,,/Resources/Assets/legendcraft.jpg"
                        Stretch="UniformToFill"
                        Opacity="0.42"
@@ -67,7 +66,6 @@
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <!-- Server identity + description. Logo intentionally has no card/frame. -->
                     <Grid Grid.Row="0" Grid.Column="0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -129,7 +127,6 @@
                         </Image>
                     </Grid>
 
-                    <!-- Current skin -->
                     <Border Grid.Row="0"
                             Grid.RowSpan="3"
                             Grid.Column="2"
@@ -184,7 +181,6 @@
                         </Grid>
                     </Border>
 
-                    <!-- Nick + friends. Cards are deliberately compact, similar to a native instance dashboard. -->
                     <Border Grid.Row="2"
                             Grid.Column="0"
                             Style="{StaticResource DashboardPanel}">
@@ -230,10 +226,9 @@
                                                FontWeight="SemiBold"
                                                FontSize="12"/>
                                     <TextBlock Grid.Column="1"
-                                               Text="presence"
+                                               Text="PRESENCE"
                                                Foreground="#66748E"
-                                               FontSize="8"
-                                               TextTransform="Uppercase"/>
+                                               FontSize="8"/>
                                 </Grid>
 
                                 <ItemsControl x:Name="DashboardFriendsList" Grid.Row="2">
@@ -319,7 +314,6 @@
                         </Grid>
                     </Border>
 
-                    <!-- Compact news carousel. -->
                     <Border Grid.Row="4"
                             Grid.Column="0"
                             Grid.ColumnSpan="3"
@@ -435,7 +429,6 @@
                         </Grid>
                     </Border>
 
-                    <!-- Launch dock anchored at the bottom. -->
                     <Border Grid.Row="6"
                             Grid.Column="0"
                             Grid.ColumnSpan="3"
