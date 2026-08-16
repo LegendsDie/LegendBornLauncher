@@ -1,4 +1,5 @@
 <UserControl x:Class="LegendBorn.Views.Tabs.SettingsTabView"
+             x:Name="Root"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -14,14 +15,21 @@
             <Setter Property="CornerRadius" Value="14"/>
             <Setter Property="Padding" Value="16"/>
         </Style>
+
         <Style x:Key="SettingsLabel" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{StaticResource TextDimLocal}"/>
             <Setter Property="FontSize" Value="11"/>
         </Style>
+
         <Style x:Key="SettingsValue" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{StaticResource TextStrongLocal}"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="FontSize" Value="13"/>
+        </Style>
+
+        <Style x:Key="SettingsCaption" TargetType="TextBlock" BasedOn="{StaticResource SettingsLabel}">
+            <Setter Property="Margin" Value="0,4,0,0"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
         </Style>
     </UserControl.Resources>
 
@@ -35,55 +43,96 @@
                 </Grid.RowDefinitions>
 
                 <Grid Grid.Row="0">
-                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
                     <StackPanel>
-                        <TextBlock Text="Настройки" Foreground="{StaticResource TextStrongLocal}" FontSize="20" FontWeight="Bold"/>
-                        <TextBlock Margin="0,4,0,0" Foreground="{StaticResource TextDimLocal}" FontSize="12"
-                                   Text="Параметры запуска, подключения, обновлений и диагностики."/>
+                        <TextBlock x:Name="SettingsTitle"
+                                   Text="Настройки"
+                                   Foreground="{StaticResource TextStrongLocal}"
+                                   FontSize="20"
+                                   FontWeight="Bold"/>
+                        <TextBlock Margin="0,4,0,0"
+                                   Foreground="{StaticResource TextDimLocal}"
+                                   FontSize="12"
+                                   Text="Настройте запуск игры, память, подключение и обслуживание сборки."/>
                     </StackPanel>
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Border Padding="10,5" CornerRadius="99" Background="#151A2B" BorderBrush="#323956" BorderThickness="1">
-                            <TextBlock Foreground="{StaticResource TextDimLocal}" FontSize="11"
-                                       Text="{Binding LauncherVersion, StringFormat=Launcher {0}}"/>
-                        </Border>
-                        <Button Margin="8,0,0,0" Style="{StaticResource WinCtlButton}" ToolTip="На главную" Click="OpenStart_OnClick">
-                            <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE711;" FontSize="14"/>
-                        </Button>
-                    </StackPanel>
+
+                    <Button Grid.Column="1"
+                            Style="{StaticResource WinCtlButton}"
+                            ToolTip="На главную"
+                            Click="OpenStart_OnClick">
+                        <TextBlock FontFamily="Segoe MDL2 Assets" Text="&#xE711;" FontSize="14"/>
+                    </Button>
                 </Grid>
 
-                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                    <StackPanel>
+                <ScrollViewer Grid.Row="2"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              PanningMode="VerticalOnly">
+                    <StackPanel Margin="0,0,4,0">
                         <Grid>
-                            <Grid.ColumnDefinitions><ColumnDefinition Width="1.08*"/><ColumnDefinition Width="14"/><ColumnDefinition Width="1*"/></Grid.ColumnDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1.08*"/>
+                                <ColumnDefinition Width="14"/>
+                                <ColumnDefinition Width="1*"/>
+                            </Grid.ColumnDefinitions>
 
                             <StackPanel Grid.Column="0">
                                 <Border Style="{StaticResource SettingsSection}">
                                     <StackPanel>
-                                        <TextBlock Text="Память Minecraft" Foreground="{StaticResource TextStrongLocal}" FontWeight="SemiBold" FontSize="14"/>
-                                        <TextBlock Margin="0,4,0,0" Style="{StaticResource SettingsLabel}"
-                                                   Text="Лаунчер ограничивает выбор безопасным диапазоном и учитывает доступную память системы."/>
+                                        <TextBlock Text="Память Minecraft"
+                                                   Foreground="{StaticResource TextStrongLocal}"
+                                                   FontWeight="SemiBold"
+                                                   FontSize="14"/>
+                                        <TextBlock Style="{StaticResource SettingsCaption}"
+                                                   Text="Можно доверить выбор лаунчеру или задать объём вручную."/>
 
-                                        <ComboBox x:Name="RamCombo" Margin="0,14,0,0" Height="44"
-                                                  ItemsSource="{Binding RamOptions}" SelectedItem="{Binding RamMb, Mode=OneWay}"
+                                        <CheckBox x:Name="AutomaticRamCheck"
+                                                  Margin="0,13,0,0"
+                                                  Foreground="{StaticResource TextStrongLocal}"
+                                                  Content="Подбирать автоматически (рекомендуется)"
+                                                  IsChecked="{Binding UseAutomaticRam, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+
+                                        <ComboBox x:Name="RamCombo"
+                                                  Margin="0,12,0,0"
+                                                  Height="44"
+                                                  ItemsSource="{Binding RamOptions}"
+                                                  SelectedItem="{Binding RamMb, Mode=OneWay}"
+                                                  IsEnabled="{Binding ManualRamEnabled}"
                                                   SelectionChanged="RamCombo_OnSelectionChanged"/>
 
                                         <Grid Margin="0,14,0,0">
-                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="10"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="10"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+
                                             <StackPanel>
-                                                <TextBlock Style="{StaticResource SettingsLabel}" Text="СИСТЕМА"/>
-                                                <TextBlock Margin="0,4,0,0" Style="{StaticResource SettingsValue}"
-                                                           Text="{Binding TotalSystemRamMb, StringFormat={}{0:N0} MB}"/>
+                                                <TextBlock Style="{StaticResource SettingsLabel}" Text="В СИСТЕМЕ"/>
+                                                <TextBlock Margin="0,4,0,0"
+                                                           Style="{StaticResource SettingsValue}"
+                                                           Text="{Binding TotalSystemRamMb, StringFormat={}{0:N0} МБ}"/>
                                             </StackPanel>
+
                                             <StackPanel Grid.Column="2">
                                                 <TextBlock Style="{StaticResource SettingsLabel}" Text="РЕКОМЕНДУЕТСЯ"/>
-                                                <TextBlock Margin="0,4,0,0" Style="{StaticResource SettingsValue}"
-                                                           Text="{Binding RecommendedRamMb, StringFormat={}{0:N0} MB}"/>
+                                                <TextBlock Margin="0,4,0,0"
+                                                           Style="{StaticResource SettingsValue}"
+                                                           Foreground="#CBB4FF"
+                                                           Text="{Binding RecommendedRamMb, StringFormat={}{0:N0} МБ}"/>
                                             </StackPanel>
+
                                             <StackPanel Grid.Column="4">
                                                 <TextBlock Style="{StaticResource SettingsLabel}" Text="МАКСИМУМ"/>
-                                                <TextBlock Margin="0,4,0,0" Style="{StaticResource SettingsValue}"
-                                                           Text="{Binding MaxAllowedRamMb, StringFormat={}{0:N0} MB}"/>
+                                                <TextBlock Margin="0,4,0,0"
+                                                           Style="{StaticResource SettingsValue}"
+                                                           Text="{Binding MaxAllowedRamMb, StringFormat={}{0:N0} МБ}"/>
                                             </StackPanel>
                                         </Grid>
                                     </StackPanel>
@@ -91,49 +140,113 @@
 
                                 <Border Margin="0,14,0,0" Style="{StaticResource SettingsSection}">
                                     <StackPanel>
-                                        <TextBlock Text="Поведение при запуске" Foreground="{StaticResource TextStrongLocal}" FontWeight="SemiBold" FontSize="14"/>
-                                        <TextBlock Margin="0,4,0,12" Style="{StaticResource SettingsLabel}"
-                                                   Text="Выберите, что делать с окном лаунчера, пока запущен Minecraft."/>
-                                        <RadioButton GroupName="GameUiMode" Margin="0,4" Foreground="{StaticResource TextStrongLocal}"
-                                                     Content="Скрывать лаунчер" IsChecked="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=GameUiModeHide, Mode=TwoWay}"/>
-                                        <RadioButton GroupName="GameUiMode" Margin="0,4" Foreground="{StaticResource TextStrongLocal}"
-                                                     Content="Сворачивать лаунчер" IsChecked="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=GameUiModeMinimize, Mode=TwoWay}"/>
-                                        <RadioButton GroupName="GameUiMode" Margin="0,4" Foreground="{StaticResource TextStrongLocal}"
-                                                     Content="Оставлять открытым" IsChecked="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=GameUiModeNone, Mode=TwoWay}"/>
-                                        <TextBlock Margin="0,9,0,0" Style="{StaticResource SettingsLabel}" Text="После завершения игры окно автоматически возвращается."/>
+                                        <TextBlock Text="Поведение при запуске"
+                                                   Foreground="{StaticResource TextStrongLocal}"
+                                                   FontWeight="SemiBold"
+                                                   FontSize="14"/>
+                                        <TextBlock Margin="0,4,0,12"
+                                                   Style="{StaticResource SettingsLabel}"
+                                                   Text="Что делать с лаунчером, пока Minecraft запущен."/>
+
+                                        <RadioButton GroupName="GameUiMode"
+                                                     Margin="0,4"
+                                                     Foreground="{StaticResource TextStrongLocal}"
+                                                     Content="Скрывать лаунчер"
+                                                     IsChecked="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=GameUiModeHide, Mode=TwoWay}"/>
+                                        <RadioButton GroupName="GameUiMode"
+                                                     Margin="0,4"
+                                                     Foreground="{StaticResource TextStrongLocal}"
+                                                     Content="Сворачивать лаунчер"
+                                                     IsChecked="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=GameUiModeMinimize, Mode=TwoWay}"/>
+                                        <RadioButton GroupName="GameUiMode"
+                                                     Margin="0,4"
+                                                     Foreground="{StaticResource TextStrongLocal}"
+                                                     Content="Оставлять открытым"
+                                                     IsChecked="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=GameUiModeNone, Mode=TwoWay}"/>
                                     </StackPanel>
+                                </Border>
+
+                                <Border Margin="0,14,0,0" Style="{StaticResource SettingsSection}">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="12"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+
+                                        <StackPanel>
+                                            <TextBlock Text="Папка игры"
+                                                       Foreground="{StaticResource TextStrongLocal}"
+                                                       FontWeight="SemiBold"
+                                                       FontSize="14"/>
+                                            <TextBlock x:Name="GameDirectoryText"
+                                                       Margin="0,5,0,0"
+                                                       MaxWidth="430"
+                                                       Style="{StaticResource SettingsLabel}"
+                                                       Text="{Binding GameDirectoryPath}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       ToolTip="{Binding GameDirectoryPath}"/>
+                                        </StackPanel>
+
+                                        <Button Grid.Column="2"
+                                                VerticalAlignment="Center"
+                                                Style="{StaticResource GhostButton}"
+                                                Height="36"
+                                                Padding="14,0"
+                                                Content="Открыть"
+                                                Command="{Binding OpenGameDirCommand}"/>
+                                    </Grid>
                                 </Border>
                             </StackPanel>
 
                             <StackPanel Grid.Column="2">
                                 <Border Style="{StaticResource SettingsSection}">
                                     <StackPanel>
-                                        <TextBlock Text="Аккаунт и подключение" Foreground="{StaticResource TextStrongLocal}" FontWeight="SemiBold" FontSize="14"/>
-                                        <CheckBox Margin="0,14,0,0" Foreground="{StaticResource TextStrongLocal}"
+                                        <TextBlock Text="Аккаунт и подключение"
+                                                   Foreground="{StaticResource TextStrongLocal}"
+                                                   FontWeight="SemiBold"
+                                                   FontSize="14"/>
+
+                                        <CheckBox Margin="0,14,0,0"
+                                                  Foreground="{StaticResource TextStrongLocal}"
                                                   Content="Автоматически восстанавливать вход"
                                                   IsChecked="{Binding AutoLogin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-                                        <TextBlock Margin="22,3,0,0" Style="{StaticResource SettingsLabel}" TextWrapping="Wrap"
-                                                   Text="Использует защищённый локальный токен; пароль в лаунчере не хранится."/>
 
-                                        <CheckBox Margin="0,13,0,0" Foreground="{StaticResource TextStrongLocal}"
+                                        <CheckBox Margin="0,13,0,0"
+                                                  Foreground="{StaticResource TextStrongLocal}"
                                                   Content="Автоподключение к выбранному серверу"
                                                   IsChecked="{Binding AutoConnect, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-                                        <TextBlock Margin="22,3,0,0" Style="{StaticResource SettingsLabel}" TextWrapping="Wrap"
-                                                   Text="Перед каждым запуском создаётся свежий одноразовый join-ticket."/>
                                     </StackPanel>
                                 </Border>
 
                                 <Border Margin="0,14,0,0" Style="{StaticResource SettingsSection}">
                                     <StackPanel>
-                                        <TextBlock Text="Проверки и обновления" Foreground="{StaticResource TextStrongLocal}" FontWeight="SemiBold" FontSize="14"/>
-                                        <TextBlock Margin="0,4,0,12" Style="{StaticResource SettingsLabel}" TextWrapping="Wrap"
-                                                   Text="Обновление лаунчера и проверка Minecraft-сборки остаются независимыми операциями."/>
-                                        <Button Style="{StaticResource GhostButton}" Height="42" Padding="16,0"
-                                                Content="Проверить обновления лаунчера" Command="{Binding CheckLauncherUpdatesCommand}"/>
-                                        <Button Margin="0,9,0,0" Style="{StaticResource GhostButton}" Height="42" Padding="16,0"
-                                                Content="Проверить текущую сборку" Command="{Binding RefreshVersionsCommand}"/>
-                                        <TextBlock Margin="0,10,0,0" Style="{StaticResource SettingsLabel}" TextWrapping="Wrap"
-                                                   Text="Загрузки Minecraft/NeoForge используют настроенные LegendBorn mirrors и резервный BMCLAPI."/>
+                                        <TextBlock Text="Обновления и восстановление"
+                                                   Foreground="{StaticResource TextStrongLocal}"
+                                                   FontWeight="SemiBold"
+                                                   FontSize="14"/>
+                                        <TextBlock Style="{StaticResource SettingsCaption}"
+                                                   Text="Проверка сборки восстановит недостающие файлы и уберёт устаревшие файлы, которыми управляет лаунчер."/>
+
+                                        <Button Margin="0,13,0,0"
+                                                Style="{StaticResource GhostButton}"
+                                                Height="42"
+                                                Padding="16,0"
+                                                Content="Проверить обновления лаунчера"
+                                                Command="{Binding CheckLauncherUpdatesCommand}"/>
+
+                                        <Button x:Name="RepairPackButton"
+                                                Margin="0,9,0,0"
+                                                Style="{StaticResource GhostButton}"
+                                                Height="42"
+                                                Padding="16,0"
+                                                Content="Проверить и восстановить сборку"
+                                                Command="{Binding RefreshVersionsCommand}"/>
+
+                                        <TextBlock Margin="0,10,0,0"
+                                                   Style="{StaticResource SettingsLabel}"
+                                                   TextWrapping="Wrap"
+                                                   Text="Ваши личные настройки Minecraft при этом сохраняются."/>
                                     </StackPanel>
                                 </Border>
                             </StackPanel>
@@ -142,43 +255,89 @@
                         <Border Margin="0,14,0,0" Style="{StaticResource SettingsSection}">
                             <StackPanel>
                                 <Grid>
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+
                                     <StackPanel>
-                                        <TextBlock Text="Диагностика и поддержка" Foreground="{StaticResource TextStrongLocal}" FontWeight="SemiBold" FontSize="14"/>
-                                        <TextBlock Margin="0,4,0,0" Style="{StaticResource SettingsLabel}" TextWrapping="Wrap"
-                                                   Text="Отчёт исключает токены и LegendCore session; секреты в текстовых логах редактируются."/>
+                                        <TextBlock Text="Диагностика и поддержка"
+                                                   Foreground="{StaticResource TextStrongLocal}"
+                                                   FontWeight="SemiBold"
+                                                   FontSize="14"/>
+                                        <TextBlock Style="{StaticResource SettingsCaption}"
+                                                   Text="Если игра не запускается или работает неправильно, соберите отчёт для поддержки."/>
                                     </StackPanel>
-                                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                                        <Button Style="{StaticResource GhostButton}" Content="Собрать отчёт"
-                                                Command="{Binding CollectDiagnosticsCommand}" Height="36" Padding="14,0" Margin="0,0,12,0"/>
-                                        <CheckBox x:Name="RootAutoScroll" VerticalAlignment="Center" Foreground="{StaticResource TextDimLocal}"
-                                                  Content="Следовать за выводом" IsChecked="True"/>
+
+                                    <StackPanel Grid.Column="1"
+                                                Orientation="Horizontal"
+                                                VerticalAlignment="Center">
+                                        <Button Style="{StaticResource GhostButton}"
+                                                Content="Собрать отчёт"
+                                                Command="{Binding CollectDiagnosticsCommand}"
+                                                Height="36"
+                                                Padding="14,0"
+                                                Margin="0,0,12,0"/>
+                                        <CheckBox x:Name="RootAutoScroll"
+                                                  VerticalAlignment="Center"
+                                                  Foreground="{StaticResource TextDimLocal}"
+                                                  Content="Автопрокрутка"
+                                                  IsChecked="True"/>
                                     </StackPanel>
                                 </Grid>
 
-                                <Expander Margin="0,12,0,0" Foreground="{StaticResource TextStrongLocal}"
-                                          Header="Логи (последние 120)" IsExpanded="False">
-                                    <Border Margin="0,10,0,0" Background="#101329" BorderBrush="{StaticResource StrokeGlow}"
-                                            BorderThickness="1" CornerRadius="14" Padding="14" ClipToBounds="True">
+                                <Expander Margin="0,12,0,0"
+                                          Foreground="{StaticResource TextStrongLocal}"
+                                          Header="Журнал запуска"
+                                          IsExpanded="False">
+                                    <Border Margin="0,10,0,0"
+                                            Background="#101329"
+                                            BorderBrush="{StaticResource StrokeGlow}"
+                                            BorderThickness="1"
+                                            CornerRadius="14"
+                                            Padding="14"
+                                            ClipToBounds="True">
                                         <Grid>
-                                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="10"/><RowDefinition Height="220"/></Grid.RowDefinitions>
-                                            <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Right">
-                                                <Button Style="{StaticResource GhostButton}" Content="Копировать" Height="34" Padding="14,0"
-                                                        Margin="0,0,8,0" Click="CopyLogs_OnClick"/>
-                                                <Button Style="{StaticResource GhostButton}" Content="Очистить" Height="34" Padding="14,0"
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="10"/>
+                                                <RowDefinition Height="220"/>
+                                            </Grid.RowDefinitions>
+
+                                            <StackPanel Grid.Row="0"
+                                                        Orientation="Horizontal"
+                                                        HorizontalAlignment="Right">
+                                                <Button Style="{StaticResource GhostButton}"
+                                                        Content="Копировать"
+                                                        Height="34"
+                                                        Padding="14,0"
+                                                        Margin="0,0,8,0"
+                                                        Click="CopyLogs_OnClick"/>
+                                                <Button Style="{StaticResource GhostButton}"
+                                                        Content="Очистить"
+                                                        Height="34"
+                                                        Padding="14,0"
                                                         Click="ClearLogs_OnClick"/>
                                             </StackPanel>
-                                            <ListBox x:Name="LogListBox" Grid.Row="2" ItemsSource="{Binding LogLines}"
-                                                     Background="Transparent" BorderThickness="0" Foreground="{StaticResource TextDimLocal}"
-                                                     FontSize="12" ScrollViewer.VerticalScrollBarVisibility="Auto"
+
+                                            <ListBox x:Name="LogListBox"
+                                                     Grid.Row="2"
+                                                     ItemsSource="{Binding LogLines}"
+                                                     Background="Transparent"
+                                                     BorderThickness="0"
+                                                     Foreground="{StaticResource TextDimLocal}"
+                                                     FontSize="12"
+                                                     ScrollViewer.VerticalScrollBarVisibility="Auto"
                                                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                                      VirtualizingStackPanel.IsVirtualizing="True"
                                                      VirtualizingStackPanel.VirtualizationMode="Recycling"
                                                      ItemContainerStyle="{StaticResource LogListItemStyle}">
                                                 <ListBox.ItemTemplate>
                                                     <DataTemplate>
-                                                        <TextBlock Text="{Binding}" Foreground="{StaticResource TextDimLocal}"
-                                                                   TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+                                                        <TextBlock Text="{Binding}"
+                                                                   Foreground="{StaticResource TextDimLocal}"
+                                                                   TextWrapping="NoWrap"
+                                                                   TextTrimming="CharacterEllipsis"/>
                                                     </DataTemplate>
                                                 </ListBox.ItemTemplate>
                                             </ListBox>
