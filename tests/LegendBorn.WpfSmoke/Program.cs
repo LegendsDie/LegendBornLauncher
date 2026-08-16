@@ -83,6 +83,24 @@ internal static class Program
                 throw new InvalidOperationException(
                     "ProfileSkin3DPreview was not found in the profile Status tab.");
 
+            if (profileView.FindName("ProfileTabs") is not TabControl profileTabs || profileTabs.Items.Count != 2)
+                throw new InvalidOperationException(
+                    "Profile status/community tab rail is missing or no longer contains exactly two sections.");
+
+            if (profileView.FindName("StatusCharacterCard") is not Border characterCard ||
+                profileView.FindName("StatusSkinCard") is not Border skinCard)
+            {
+                throw new InvalidOperationException(
+                    "Profile character/status alignment anchors were not found.");
+            }
+
+            if (Grid.GetRow(characterCard) != Grid.GetRow(skinCard) ||
+                Grid.GetRow(characterCard) != 2)
+            {
+                throw new InvalidOperationException(
+                    "Current character image is no longer aligned to the same status row as character telemetry.");
+            }
+
             AssertSkinRenderer(profileSkin);
 
             var startView = FindLogicalDescendant<StartTabView>(host)
@@ -103,9 +121,26 @@ internal static class Program
                 throw new InvalidOperationException(
                     "DashboardFriendsList was not found in the production start dashboard.");
 
+            if (ContainsVisibleLabel(startView, "PRESENCE"))
+                throw new InvalidOperationException(
+                    "Internal PRESENCE terminology leaked into the user-facing start dashboard.");
+
             if (startView.FindName("NewsCarouselItems") is not ItemsControl)
                 throw new InvalidOperationException(
                     "NewsCarouselItems was not found in the production start dashboard.");
+
+            if (startView.FindName("NewsPanel") is not Border newsPanel || newsPanel.Parent is not Grid dashboardGrid)
+                throw new InvalidOperationException(
+                    "NewsPanel was not found in the production start dashboard.");
+
+            var newsRow = Grid.GetRow(newsPanel);
+            if (newsRow < 0 || newsRow >= dashboardGrid.RowDefinitions.Count ||
+                dashboardGrid.RowDefinitions[newsRow].Height.GridUnitType != GridUnitType.Pixel ||
+                dashboardGrid.RowDefinitions[newsRow].Height.Value < 180)
+            {
+                throw new InvalidOperationException(
+                    "Start dashboard news area regressed to the overly compressed height.");
+            }
 
             if (BindingOperations.GetBinding(progress, RangeBase.ValueProperty) is not null ||
                 BindingOperations.GetBindingExpression(progress, RangeBase.ValueProperty) is not null)
@@ -266,6 +301,23 @@ internal static class Program
                     $"MainViewModel.{name} must resolve to the canonical LegendBorn origin {canonicalOrigin}, got {value ?? "<null>"}.");
             }
         }
+    }
+
+    private static bool ContainsVisibleLabel(DependencyObject root, string label)
+    {
+        foreach (var child in LogicalTreeHelper.GetChildren(root))
+        {
+            if (child is TextBlock textBlock &&
+                string.Equals(textBlock.Text, label, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (child is DependencyObject dependencyObject && ContainsVisibleLabel(dependencyObject, label))
+                return true;
+        }
+
+        return false;
     }
 
     private static T? FindLogicalDescendant<T>(DependencyObject root)

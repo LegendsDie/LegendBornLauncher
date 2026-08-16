@@ -61,7 +61,7 @@
                         <RowDefinition Height="12"/>
                         <RowDefinition Height="154"/>
                         <RowDefinition Height="12"/>
-                        <RowDefinition Height="156"/>
+                        <RowDefinition Height="184"/>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
@@ -215,21 +215,11 @@
                                     <RowDefinition Height="*"/>
                                 </Grid.RowDefinitions>
 
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock x:Name="DashboardFriendsTitle"
-                                               Text="Друзья на сервере"
-                                               Foreground="#D8DEEA"
-                                               FontWeight="SemiBold"
-                                               FontSize="12"/>
-                                    <TextBlock Grid.Column="1"
-                                               Text="PRESENCE"
-                                               Foreground="#66748E"
-                                               FontSize="8"/>
-                                </Grid>
+                                <TextBlock x:Name="DashboardFriendsTitle"
+                                           Text="Друзья на сервере"
+                                           Foreground="#D8DEEA"
+                                           FontWeight="SemiBold"
+                                           FontSize="12"/>
 
                                 <ItemsControl x:Name="DashboardFriendsList" Grid.Row="2">
                                     <ItemsControl.ItemsPanel>
@@ -314,7 +304,8 @@
                         </Grid>
                     </Border>
 
-                    <Border Grid.Row="4"
+                    <Border x:Name="NewsPanel"
+                            Grid.Row="4"
                             Grid.Column="0"
                             Grid.ColumnSpan="3"
                             Style="{StaticResource DashboardPanel}"
@@ -376,7 +367,7 @@
                                                 Margin="0,0,9,0"
                                                 Tag="{Binding Url}"
                                                 Click="OpenNewsItem_OnClick">
-                                            <Border Height="82"
+                                            <Border Height="106"
                                                     Background="#70101421"
                                                     BorderBrush="#30364D"
                                                     BorderThickness="1"
@@ -410,7 +401,7 @@
                                                                FontSize="8.5"
                                                                TextWrapping="Wrap"
                                                                TextTrimming="CharacterEllipsis"
-                                                               MaxHeight="28"/>
+                                                               MaxHeight="46"/>
                                                 </Grid>
                                             </Border>
                                         </Button>

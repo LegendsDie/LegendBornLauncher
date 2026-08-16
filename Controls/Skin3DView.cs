@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -23,7 +24,11 @@ public sealed class Skin3DView : UserControl
 {
     private const long MaxSkinBytes = 4L * 1024 * 1024;
     private const int TextureUpscale = 6;
+    private const int MaxCachedSkinUrls = 32;
+
     private static readonly HttpClient Http = CreateHttp();
+    private static readonly ConcurrentDictionary<string, WeakReference<BitmapSource>> SkinCache =
+        new(StringComparer.Ordinal);
 
     private readonly Viewport3D _viewport = new();
     private readonly Border _placeholder;
@@ -50,8 +55,16 @@ public sealed class Skin3DView : UserControl
     {
         Focusable = false;
         ClipToBounds = true;
+        SnapsToDevicePixels = true;
+        UseLayoutRounding = true;
+        RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.NearestNeighbor);
+        RenderOptions.SetBitmapScalingMode(_viewport, BitmapScalingMode.NearestNeighbor);
 
-        var root = new Grid();
+        var root = new Grid
+        {
+            SnapsToDevicePixels = true,
+            UseLayoutRounding = true
+        };
         root.Children.Add(_viewport);
 
         _placeholder = new Border
@@ -101,6 +114,11 @@ public sealed class Skin3DView : UserControl
         _viewport.MouseLeftButtonUp += Viewport_OnMouseLeftButtonUp;
         _viewport.LostMouseCapture += (_, _) => _dragging = false;
 
+        Loaded += (_, _) =>
+        {
+            if (_scene.Children.Count <= 3 && _loadCts is null)
+                StartLoad(SkinUrl);
+        };
         Unloaded += (_, _) => CancelLoad();
     }
 
@@ -119,6 +137,13 @@ public sealed class Skin3DView : UserControl
         var value = (rawUrl ?? string.Empty).Trim();
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
             return;
+
+        var cached = TryGetCachedSkin(uri.AbsoluteUri);
+        if (cached is not null)
+        {
+            BuildPlayer(cached);
+            return;
+        }
 
         var cts = new CancellationTokenSource();
         _loadCts = cts;
@@ -148,19 +173,31 @@ public sealed class Skin3DView : UserControl
                 return;
 
             var bytes = await response.Content.ReadAsByteArrayAsync(timeout.Token).ConfigureAwait(false);
-            if (bytes.Length <= 0 || (long)bytes.Length > MaxSkinBytes)
+            if (bytes.Length <= 0 || bytes.LongLength > MaxSkinBytes)
                 return;
 
             var image = CreateBitmap(bytes);
             if (!IsSupportedSkin(image))
                 return;
 
+            CacheSkin(uri.AbsoluteUri, image);
             await Dispatcher.InvokeAsync(() => BuildPlayer(image));
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException)
+        {
+            // Normal when the URL changes or the control leaves the visual tree.
+        }
         catch
         {
             // Presentation-only component: profile/game flow must never depend on the preview.
+        }
+        finally
+        {
+            if (!ct.IsCancellationRequested)
+            {
+                var completed = Interlocked.Exchange(ref _loadCts, null);
+                completed?.Dispose();
+            }
         }
     }
 
@@ -460,6 +497,26 @@ public sealed class Skin3DView : UserControl
     private static Int32Rect R(int x, int y, int width, int height)
         => new(x, y, width, height);
 
+    private static BitmapSource? TryGetCachedSkin(string key)
+    {
+        if (!SkinCache.TryGetValue(key, out var reference))
+            return null;
+
+        if (reference.TryGetTarget(out var target) && target is not null)
+            return target;
+
+        SkinCache.TryRemove(key, out _);
+        return null;
+    }
+
+    private static void CacheSkin(string key, BitmapSource skin)
+    {
+        if (SkinCache.Count >= MaxCachedSkinUrls)
+            SkinCache.Clear();
+
+        SkinCache[key] = new WeakReference<BitmapSource>(skin);
+    }
+
     private void CancelLoad()
     {
         var old = Interlocked.Exchange(ref _loadCts, null);
@@ -480,6 +537,6 @@ public sealed class Skin3DView : UserControl
             AllowAutoRedirect = true
         };
 
-        return new HttpClient(handler) { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
+        return new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
     }
 }
