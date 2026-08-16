@@ -10,7 +10,7 @@
 
     <UserControl.Resources>
         <Style x:Key="DashboardPanel" TargetType="Border">
-            <Setter Property="Background" Value="#BC0B0E19"/>
+            <Setter Property="Background" Value="#B70B0E19"/>
             <Setter Property="BorderBrush" Value="#39324F"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="CornerRadius" Value="16"/>
@@ -23,11 +23,11 @@
         </Style>
 
         <Style x:Key="CarouselArrow" TargetType="Button" BasedOn="{StaticResource GhostButton}">
-            <Setter Property="Width" Value="34"/>
-            <Setter Property="Height" Value="34"/>
+            <Setter Property="Width" Value="32"/>
+            <Setter Property="Height" Value="32"/>
             <Setter Property="Padding" Value="0"/>
             <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
-            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontSize" Value="12"/>
         </Style>
     </UserControl.Resources>
 
@@ -36,40 +36,40 @@
             <Grid>
                 <Image Source="pack://application:,,,/Resources/Assets/legendcraft.jpg"
                        Stretch="UniformToFill"
-                       Opacity="0.27"
+                       Opacity="0.42"
                        RenderOptions.BitmapScalingMode="HighQuality"/>
 
-                <Rectangle Fill="#A9080A14"/>
+                <Rectangle Fill="#6F080A14"/>
                 <Rectangle>
                     <Rectangle.Fill>
                         <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                            <GradientStop Color="#EF0B0C1B" Offset="0"/>
-                            <GradientStop Color="#C90C0D1C" Offset="0.48"/>
-                            <GradientStop Color="#9A090B15" Offset="1"/>
+                            <GradientStop Color="#B90B0C1B" Offset="0"/>
+                            <GradientStop Color="#900C0D1C" Offset="0.52"/>
+                            <GradientStop Color="#62090B15" Offset="1"/>
                         </LinearGradientBrush>
                     </Rectangle.Fill>
                 </Rectangle>
 
-                <Grid Margin="24,20,24,20">
+                <Grid Margin="24,18,24,18">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="16"/>
                         <ColumnDefinition Width="280"/>
                     </Grid.ColumnDefinitions>
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="150"/>
+                        <RowDefinition Height="160"/>
                         <RowDefinition Height="12"/>
-                        <RowDefinition Height="166"/>
-                        <RowDefinition Height="14"/>
+                        <RowDefinition Height="154"/>
+                        <RowDefinition Height="12"/>
+                        <RowDefinition Height="156"/>
                         <RowDefinition Height="*"/>
-                        <RowDefinition Height="14"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
                     <Grid Grid.Row="0" Grid.Column="0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="310"/>
+                            <ColumnDefinition Width="290"/>
                         </Grid.ColumnDefinitions>
 
                         <StackPanel VerticalAlignment="Center">
@@ -96,34 +96,35 @@
                                        FontWeight="Bold"
                                        TextTrimming="CharacterEllipsis"/>
 
-                            <TextBlock Margin="0,5,0,0"
+                            <TextBlock Margin="0,4,0,0"
                                        Text="{Binding BuildDisplayName}"
-                                       Foreground="#AAB5CA"
+                                       Foreground="#B2BDD1"
                                        FontSize="11"
                                        TextTrimming="CharacterEllipsis"/>
+
+                            <TextBlock Margin="0,8,12,0"
+                                       MaxWidth="600"
+                                       Text="TechMagicRPG сервер, где прогресс, история и сообщество живут в одной экосистеме LegendBorn."
+                                       Foreground="#929EB4"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"/>
                         </StackPanel>
 
-                        <Border Grid.Column="1"
-                                Margin="12,0,0,0"
-                                CornerRadius="18"
-                                Background="#2A0B0D19"
-                                BorderBrush="#302343"
-                                BorderThickness="1">
-                            <Image Source="pack://application:,,,/Resources/Assets/legendcraft.png"
-                                   Height="126"
-                                   MaxWidth="280"
-                                   Stretch="Uniform"
-                                   HorizontalAlignment="Center"
-                                   VerticalAlignment="Center"
-                                   RenderOptions.BitmapScalingMode="HighQuality">
-                                <Image.Effect>
-                                    <DropShadowEffect Color="#A85CFF"
-                                                      BlurRadius="24"
-                                                      ShadowDepth="0"
-                                                      Opacity="0.28"/>
-                                </Image.Effect>
-                            </Image>
-                        </Border>
+                        <Image Grid.Column="1"
+                               Source="pack://application:,,,/Resources/Assets/legendcraft.png"
+                               Height="132"
+                               MaxWidth="270"
+                               Stretch="Uniform"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               RenderOptions.BitmapScalingMode="HighQuality">
+                            <Image.Effect>
+                                <DropShadowEffect Color="#A85CFF"
+                                                  BlurRadius="26"
+                                                  ShadowDepth="0"
+                                                  Opacity="0.31"/>
+                            </Image.Effect>
+                        </Image>
                     </Grid>
 
                     <Border Grid.Row="0"
@@ -131,13 +132,13 @@
                             Grid.Column="2"
                             Style="{StaticResource DashboardPanel}"
                             BorderBrush="#513076"
-                            Background="#D00A0C18">
+                            Background="#C80A0C18">
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="8"/>
                                 <RowDefinition Height="*"/>
-                                <RowDefinition Height="8"/>
+                                <RowDefinition Height="7"/>
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
@@ -165,7 +166,7 @@
 
                             <Border Grid.Row="2"
                                     CornerRadius="14"
-                                    Background="#65080A13"
+                                    Background="#56080A13"
                                     BorderBrush="#37244E"
                                     BorderThickness="1"
                                     ClipToBounds="True">
@@ -174,7 +175,7 @@
 
                             <TextBlock Grid.Row="4"
                                        HorizontalAlignment="Center"
-                                       Text="3D · синхронизировано с профилем"
+                                       Text="зажми и потяни, чтобы повернуть"
                                        Foreground="#6F7C94"
                                        FontSize="9"/>
                         </Grid>
@@ -185,7 +186,7 @@
                             Style="{StaticResource DashboardPanel}">
                         <Grid>
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="190"/>
+                                <ColumnDefinition Width="175"/>
                                 <ColumnDefinition Width="14"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
@@ -198,19 +199,19 @@
                                            FontSize="20"
                                            FontWeight="Bold"
                                            TextTrimming="CharacterEllipsis"/>
-                                <TextBlock Margin="0,6,0,0"
+                                <TextBlock Margin="0,5,0,0"
                                            Text="{Binding SelectedServer.Name, StringFormat=сервер · {0}}"
                                            Foreground="#747F96"
                                            FontSize="9"
                                            TextTrimming="CharacterEllipsis"/>
                             </StackPanel>
 
-                            <Border Grid.Column="1" Width="1" Background="#252A3E"/>
+                            <Border Grid.Column="1" Width="1" Background="#2A3045"/>
 
                             <Grid Grid.Column="2">
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="8"/>
+                                    <RowDefinition Height="7"/>
                                     <RowDefinition Height="*"/>
                                 </Grid.RowDefinitions>
 
@@ -221,56 +222,79 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock x:Name="DashboardFriendsTitle"
                                                Text="Друзья на сервере"
-                                               Foreground="#CCD4E4"
+                                               Foreground="#D8DEEA"
                                                FontWeight="SemiBold"
                                                FontSize="12"/>
                                     <TextBlock Grid.Column="1"
-                                               Text="обновляется автоматически"
-                                               Foreground="#68758D"
-                                               FontSize="9"/>
+                                               Text="PRESENCE"
+                                               Foreground="#66748E"
+                                               FontSize="8"/>
                                 </Grid>
 
                                 <ItemsControl x:Name="DashboardFriendsList" Grid.Row="2">
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
-                                            <UniformGrid Columns="3"/>
+                                            <StackPanel Orientation="Horizontal"/>
                                         </ItemsPanelTemplate>
                                     </ItemsControl.ItemsPanel>
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
-                                            <Border Margin="0,0,8,0"
-                                                    Padding="9"
-                                                    CornerRadius="11"
-                                                    Background="#78101422"
-                                                    BorderBrush="#2D334A"
+                                            <Border Width="184"
+                                                    Height="64"
+                                                    Margin="0,0,8,0"
+                                                    Padding="9,7"
+                                                    CornerRadius="12"
+                                                    BorderBrush="#44375D"
                                                     BorderThickness="1">
+                                                <Border.Background>
+                                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                                        <GradientStop Color="#A2161928" Offset="0"/>
+                                                        <GradientStop Color="#83101623" Offset="1"/>
+                                                    </LinearGradientBrush>
+                                                </Border.Background>
                                                 <Grid>
                                                     <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="34"/>
+                                                        <ColumnDefinition Width="4"/>
                                                         <ColumnDefinition Width="8"/>
+                                                        <ColumnDefinition Width="36"/>
+                                                        <ColumnDefinition Width="9"/>
                                                         <ColumnDefinition Width="*"/>
                                                     </Grid.ColumnDefinitions>
-                                                    <Border Width="34" Height="34" CornerRadius="10" ClipToBounds="True"
-                                                            Background="#202943" BorderBrush="#3E4564" BorderThickness="1">
+
+                                                    <Border Width="3"
+                                                            CornerRadius="2"
+                                                            Background="#8758D1"
+                                                            VerticalAlignment="Stretch"/>
+
+                                                    <Border Grid.Column="2"
+                                                            Width="36"
+                                                            Height="36"
+                                                            CornerRadius="10"
+                                                            ClipToBounds="True"
+                                                            Background="#202943"
+                                                            BorderBrush="#4B4569"
+                                                            BorderThickness="1">
                                                         <Grid>
                                                             <TextBlock Text="{Binding Initial}"
                                                                        HorizontalAlignment="Center"
                                                                        VerticalAlignment="Center"
                                                                        Foreground="#E9E4F4"
                                                                        FontWeight="Bold"/>
-                                                            <Image Source="{Binding AvatarUrl, IsAsync=True}" Stretch="UniformToFill"/>
+                                                            <Image Source="{Binding AvatarUrl, IsAsync=True}"
+                                                                   Stretch="UniformToFill"/>
                                                         </Grid>
                                                     </Border>
-                                                    <StackPanel Grid.Column="2" VerticalAlignment="Center">
+
+                                                    <StackPanel Grid.Column="4" VerticalAlignment="Center">
                                                         <TextBlock Text="{Binding Name}"
-                                                                   Foreground="#E3E8F3"
-                                                                   FontSize="11"
+                                                                   Foreground="#EDF0F7"
+                                                                   FontSize="10.5"
                                                                    FontWeight="SemiBold"
                                                                    TextTrimming="CharacterEllipsis"/>
-                                                        <TextBlock Margin="0,2,0,0"
+                                                        <TextBlock Margin="0,3,0,0"
                                                                    Text="{Binding PresenceText}"
-                                                                   Foreground="#7F8CA4"
-                                                                   FontSize="9"
+                                                                   Foreground="#8795AD"
+                                                                   FontSize="8.5"
                                                                    TextTrimming="CharacterEllipsis"/>
                                                     </StackPanel>
                                                 </Grid>
@@ -294,11 +318,11 @@
                             Grid.Column="0"
                             Grid.ColumnSpan="3"
                             Style="{StaticResource DashboardPanel}"
-                            Padding="15,13">
+                            Padding="15,11">
                         <Grid>
                             <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="10"/>
+                                <RowDefinition Height="32"/>
+                                <RowDefinition Height="7"/>
                                 <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
 
@@ -310,10 +334,10 @@
                                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                     <TextBlock Text="Последние новости"
                                                Foreground="#E9EDF6"
-                                               FontSize="13"
+                                               FontSize="12.5"
                                                FontWeight="SemiBold"/>
                                     <TextBlock x:Name="NewsPageText"
-                                               Margin="10,1,0,0"
+                                               Margin="9,1,0,0"
                                                Text=""
                                                Foreground="#69768E"
                                                FontSize="9"/>
@@ -327,14 +351,14 @@
                                             Click="NewsPrev_OnClick"/>
                                     <Button x:Name="NewsNextButton"
                                             Style="{StaticResource CarouselArrow}"
-                                            Margin="7,0,0,0"
+                                            Margin="6,0,0,0"
                                             Content="&#xE76C;"
                                             ToolTip="Следующие новости"
                                             Click="NewsNext_OnClick"/>
                                     <Button Style="{StaticResource GhostButton}"
-                                            Margin="9,0,0,0"
-                                            Height="34"
-                                            Padding="11,0"
+                                            Margin="8,0,0,0"
+                                            Height="32"
+                                            Padding="10,0"
                                             Content="Все"
                                             Click="OpenNewsTab_OnClick"/>
                                 </StackPanel>
@@ -349,14 +373,15 @@
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
                                         <Button Style="{StaticResource NewsCardButtonStyle}"
-                                                Margin="0,0,10,0"
+                                                Margin="0,0,9,0"
                                                 Tag="{Binding Url}"
                                                 Click="OpenNewsItem_OnClick">
-                                            <Border Background="#76101421"
+                                            <Border Height="82"
+                                                    Background="#70101421"
                                                     BorderBrush="#30364D"
                                                     BorderThickness="1"
-                                                    CornerRadius="12"
-                                                    Padding="11">
+                                                    CornerRadius="11"
+                                                    Padding="10,9">
                                                 <Grid>
                                                     <Grid.RowDefinitions>
                                                         <RowDefinition Height="Auto"/>
@@ -369,8 +394,8 @@
                                                             <ColumnDefinition Width="Auto"/>
                                                         </Grid.ColumnDefinitions>
                                                         <TextBlock Text="{Binding Title}"
-                                                                   Foreground="#E1E6F1"
-                                                                   FontSize="11"
+                                                                   Foreground="#E4E9F3"
+                                                                   FontSize="10.5"
                                                                    FontWeight="SemiBold"
                                                                    TextTrimming="CharacterEllipsis"/>
                                                         <TextBlock Grid.Column="1"
@@ -382,10 +407,10 @@
                                                     <TextBlock Grid.Row="2"
                                                                Text="{Binding Summary}"
                                                                Foreground="#8793A9"
-                                                               FontSize="9"
+                                                               FontSize="8.5"
                                                                TextWrapping="Wrap"
                                                                TextTrimming="CharacterEllipsis"
-                                                               MaxHeight="34"/>
+                                                               MaxHeight="28"/>
                                                 </Grid>
                                             </Border>
                                         </Button>
