@@ -97,13 +97,28 @@ public partial class ProfileTabView : UserControl
         if (!vm.IsLoggedIn)
             return;
 
-        var command = vm.RefreshProfileExperienceCommand;
-        if (command.CanExecute(null))
-            command.Execute(null);
+        RefreshAll(vm);
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
         => AttachProfileProgressOwner(null);
+
+    private static void RefreshAll(MainViewModel vm)
+    {
+        var profile = vm.RefreshProfileExperienceCommand;
+        if (profile.CanExecute(null))
+            profile.Execute(null);
+
+        var minecraft = vm.RefreshMinecraftStatusCommand;
+        if (minecraft.CanExecute(null))
+            minecraft.Execute(null);
+    }
+
+    private void RefreshAll_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is MainViewModel vm)
+            RefreshAll(vm);
+    }
 
     private void OpenSite_OnClick(object sender, RoutedEventArgs e)
         => OpenUrl(SiteBaseUrl + "/profile");
