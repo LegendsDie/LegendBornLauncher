@@ -18,9 +18,9 @@ public sealed partial class MainViewModel : ObservableObject
     // Source of truth: production origins declared by legendbornweb.
     internal const string SiteBaseUrl = "https://legendborn.xyz";
 
-    // Публичный сайт (для ссылок/картинок).
+    // Публичный сайт (для ссылок/картинок). Legacy aliases intentionally resolve to the same canonical .xyz origin.
     internal const string SitePublicUrlPrimary = "https://legendborn.xyz";
-    internal const string SitePublicUrlFallback = "https://ru.legendborn.xyz";
+    internal const string SitePublicUrlFallback = "https://legendborn.xyz";
 
     private const int MenuMinIndex = 0;
     private const int MenuMaxIndex = 4; // 0..4 (включая News)
