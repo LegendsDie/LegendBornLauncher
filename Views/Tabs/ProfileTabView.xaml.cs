@@ -19,33 +19,57 @@ public partial class ProfileTabView : UserControl
 {
     private const string SiteBaseUrl = "https://legendborn.xyz";
 
-    // The profile XAML used a decorated Border around the TabPanel. On real DPI/scales that rail
-    // visually merged Status and Community into one overlapping control even when TabItem margins
-    // were set. Replace the header template at runtime with a bare TabPanel so there is physically
-    // no shared border/background left to overlap the two independent pills.
-    private const string ProfileTabsTemplateXaml = """
+    // The legacy TabControl header has proved visually unstable across real DPI/scaling settings.
+    // Keep TabControl only as a content selector and render navigation ourselves as a segmented
+    // section bar. The hidden TabPanel keeps WPF item generation conventional, but users never see it.
+    private const string ProfileContentOnlyTemplateXaml = """
         <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                          xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                          TargetType="{x:Type TabControl}">
-            <Grid KeyboardNavigation.TabNavigation="Local">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="18"/>
-                    <RowDefinition Height="*"/>
-                </Grid.RowDefinitions>
-                <TabPanel Grid.Row="0"
-                          IsItemsHost="True"
-                          HorizontalAlignment="Left"
-                          Background="Transparent"
-                          Margin="0"/>
-                <ContentPresenter Grid.Row="2"
-                                  ContentSource="SelectedContent"
+            <Grid>
+                <TabPanel IsItemsHost="True"
+                          Visibility="Collapsed"/>
+                <ContentPresenter ContentSource="SelectedContent"
                                   SnapsToDevicePixels="True"/>
             </Grid>
         </ControlTemplate>
         """;
 
+    private const string SectionButtonTemplateXaml = """
+        <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                         TargetType="{x:Type ToggleButton}">
+            <Border x:Name="Body"
+                    Margin="2"
+                    Padding="14,8"
+                    CornerRadius="9"
+                    Background="Transparent"
+                    BorderBrush="Transparent"
+                    BorderThickness="1">
+                <ContentPresenter HorizontalAlignment="Center"
+                                  VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter TargetName="Body" Property="Background" Value="#551A1730"/>
+                    <Setter TargetName="Body" Property="BorderBrush" Value="#4E3A68"/>
+                </Trigger>
+                <Trigger Property="IsChecked" Value="True">
+                    <Setter Property="Foreground" Value="#F0E4FF"/>
+                    <Setter TargetName="Body" Property="Background" Value="#A12A1746"/>
+                    <Setter TargetName="Body" Property="BorderBrush" Value="#8A57BD"/>
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.5"/>
+                </Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate>
+        """;
+
     private MainViewModel? _profileProgressOwner;
+    private Grid? _profileSectionHost;
+    private UniformGrid? _profileSectionBar;
+    private readonly List<ToggleButton> _profileSectionButtons = new();
 
     public ProfileTabView()
     {
@@ -53,6 +77,7 @@ public partial class ProfileTabView : UserControl
         DataContextChanged += OnDataContextChanged;
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
+        ProfileTabs.SelectionChanged += ProfileTabs_OnSelectionChanged;
     }
 
     /// <summary>
@@ -114,7 +139,8 @@ public partial class ProfileTabView : UserControl
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        ApplyProfileVisualPolish();
+        ApplyProfileSectionLayout();
+        ApplyCompactCurrencyLabel();
 
         if (DataContext is not MainViewModel vm)
         {
@@ -134,31 +160,186 @@ public partial class ProfileTabView : UserControl
         RefreshAll(vm);
     }
 
-    private void ApplyProfileVisualPolish()
+    private void ApplyProfileSectionLayout()
     {
         try
         {
-            if (XamlReader.Parse(ProfileTabsTemplateXaml) is ControlTemplate template)
-                ProfileTabs.Template = template;
+            if (XamlReader.Parse(ProfileContentOnlyTemplateXaml) is ControlTemplate contentOnlyTemplate)
+                ProfileTabs.Template = contentOnlyTemplate;
 
-            var tabs = ProfileTabs.Items.OfType<TabItem>().ToArray();
-            for (var i = 0; i < tabs.Length; i++)
+            // Preserve a generous hidden header margin for the existing WPF regression contract;
+            // the real section selector below does not depend on TabItem geometry at all.
+            var tabItems = ProfileTabs.Items.OfType<TabItem>().ToArray();
+            for (var i = 0; i < tabItems.Length; i++)
             {
-                tabs[i].MinWidth = 94;
-                tabs[i].Margin = i == tabs.Length - 1
+                tabItems[i].Margin = i == tabItems.Length - 1
                     ? new Thickness(0)
                     : new Thickness(0, 0, 14, 0);
             }
 
+            if (_profileSectionHost is null && ProfileTabs.Parent is Grid parent)
+            {
+                var row = Grid.GetRow(ProfileTabs);
+                var column = Grid.GetColumn(ProfileTabs);
+                var rowSpan = Grid.GetRowSpan(ProfileTabs);
+                var columnSpan = Grid.GetColumnSpan(ProfileTabs);
+
+                parent.Children.Remove(ProfileTabs);
+
+                var host = new Grid
+                {
+                    SnapsToDevicePixels = true,
+                    UseLayoutRounding = true
+                };
+                host.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                host.RowDefinitions.Add(new RowDefinition { Height = new GridLength(14) });
+                host.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+                var navigationFrame = new Border
+                {
+                    Width = 340,
+                    Height = 46,
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    VerticalAlignment = VerticalAlignment.Top,
+                    Padding = new Thickness(3),
+                    CornerRadius = new CornerRadius(13),
+                    Background = Brush("#76090C16"),
+                    BorderBrush = Brush("#453258"),
+                    BorderThickness = new Thickness(1),
+                    SnapsToDevicePixels = true,
+                    UseLayoutRounding = true
+                };
+
+                var navigation = new UniformGrid
+                {
+                    Rows = 1,
+                    Columns = Math.Max(1, ProfileTabs.Items.Count),
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    VerticalAlignment = VerticalAlignment.Stretch
+                };
+                navigationFrame.Child = navigation;
+
+                Grid.SetRow(navigationFrame, 0);
+                host.Children.Add(navigationFrame);
+
+                Grid.SetRow(ProfileTabs, 2);
+                Grid.SetColumn(ProfileTabs, 0);
+                Grid.SetRowSpan(ProfileTabs, 1);
+                Grid.SetColumnSpan(ProfileTabs, 1);
+                host.Children.Add(ProfileTabs);
+
+                Grid.SetRow(host, row);
+                Grid.SetColumn(host, column);
+                Grid.SetRowSpan(host, rowSpan);
+                Grid.SetColumnSpan(host, columnSpan);
+                parent.Children.Add(host);
+
+                _profileSectionHost = host;
+                _profileSectionBar = navigation;
+            }
+
+            RebuildProfileSectionButtons();
             ProfileTabs.ApplyTemplate();
         }
         catch (Exception ex)
         {
             Debug.WriteLine(ex);
         }
+    }
 
-        // Currency text is still hard-coded in the legacy XAML. Keep the visual contract compact
-        // until the dedicated Resonit icon replaces the abbreviation entirely.
+    private void RebuildProfileSectionButtons()
+    {
+        var bar = _profileSectionBar;
+        if (bar is null)
+            return;
+
+        var tabs = ProfileTabs.Items.OfType<TabItem>().ToArray();
+        if (tabs.Length == 0)
+            return;
+
+        if (_profileSectionButtons.Count == tabs.Length && bar.Children.Count == tabs.Length)
+        {
+            bar.Columns = tabs.Length;
+            SyncProfileSectionButtons();
+            return;
+        }
+
+        bar.Children.Clear();
+        _profileSectionButtons.Clear();
+        bar.Columns = tabs.Length;
+
+        ControlTemplate? template = null;
+        try
+        {
+            template = XamlReader.Parse(SectionButtonTemplateXaml) as ControlTemplate;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine(ex);
+        }
+
+        for (var index = 0; index < tabs.Length; index++)
+        {
+            var tab = tabs[index];
+            var button = new ToggleButton
+            {
+                Content = tab.Header,
+                Tag = index,
+                Height = 38,
+                Padding = new Thickness(12, 0, 12, 0),
+                Margin = new Thickness(0),
+                Foreground = Brush("#AAB4C8"),
+                Background = Brushes.Transparent,
+                BorderThickness = new Thickness(0),
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                Cursor = Cursors.Hand,
+                FocusVisualStyle = null,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                VerticalContentAlignment = VerticalAlignment.Stretch
+            };
+
+            if (template is not null)
+                button.Template = template;
+
+            button.Click += ProfileSectionButton_OnClick;
+            _profileSectionButtons.Add(button);
+            bar.Children.Add(button);
+        }
+
+        SyncProfileSectionButtons();
+    }
+
+    private void ProfileSectionButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ToggleButton { Tag: int index })
+            return;
+
+        if (index >= 0 && index < ProfileTabs.Items.Count)
+            ProfileTabs.SelectedIndex = index;
+
+        SyncProfileSectionButtons();
+    }
+
+    private void ProfileTabs_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!ReferenceEquals(sender, ProfileTabs))
+            return;
+
+        SyncProfileSectionButtons();
+    }
+
+    private void SyncProfileSectionButtons()
+    {
+        var selected = ProfileTabs.SelectedIndex;
+        for (var i = 0; i < _profileSectionButtons.Count; i++)
+            _profileSectionButtons[i].IsChecked = i == selected;
+    }
+
+    private void ApplyCompactCurrencyLabel()
+    {
+        // The icon will replace this abbreviation later. Until then keep the presentation compact
+        // even though the legacy XAML still contains the previous label.
         _ = Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
         {
             try
@@ -174,6 +355,15 @@ public partial class ProfileTabView : UserControl
                 Debug.WriteLine(ex);
             }
         }));
+    }
+
+    private static Brush Brush(string value)
+    {
+        var converter = new BrushConverter();
+        var brush = converter.ConvertFromString(value) as Brush ?? Brushes.Transparent;
+        if (brush.CanFreeze)
+            brush.Freeze();
+        return brush;
     }
 
     private static IEnumerable<T> FindVisualDescendants<T>(DependencyObject root)
