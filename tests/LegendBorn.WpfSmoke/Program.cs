@@ -11,6 +11,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Media.Media3D;
 using System.Windows.Threading;
 using LegendBorn;
 using LegendBorn.Controls;
@@ -72,11 +73,17 @@ internal static class Program
 
             if (profileView.FindName("FriendsList") is not ListBox friendsList)
                 throw new InvalidOperationException(
-                    "FriendsList was not found in the refreshed profile view namescope.");
+                    "FriendsList was not found in the profile Community tab namescope.");
 
             if (ScrollViewer.GetVerticalScrollBarVisibility(friendsList) != ScrollBarVisibility.Disabled)
                 throw new InvalidOperationException(
                     "FriendsList owns a nested vertical scrollbar; profile should have a single outer scroll owner.");
+
+            if (profileView.FindName("ProfileSkin3DPreview") is not Skin3DView profileSkin)
+                throw new InvalidOperationException(
+                    "ProfileSkin3DPreview was not found in the profile Status tab.");
+
+            AssertSkinRenderer(profileSkin);
 
             var startView = FindLogicalDescendant<StartTabView>(host)
                             ?? throw new InvalidOperationException(
@@ -109,6 +116,9 @@ internal static class Program
 
             if (host.DataContext is not MainViewModel vm)
                 throw new InvalidOperationException("Production MainWindow did not expose MainViewModel as DataContext.");
+
+            if (vm.MinecraftStatusHealth != "—" || vm.MinecraftStatusDimension != "—")
+                throw new InvalidOperationException("Minecraft status must default to unknown instead of fabricated telemetry.");
 
             var applyProgression = typeof(MainViewModel).GetMethod(
                 "ApplyProgression",
@@ -152,30 +162,47 @@ internal static class Program
             "BuildPlayer",
             BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("Skin3DView.BuildPlayer was not found for runtime smoke.");
+        var sceneField = typeof(Skin3DView).GetField(
+            "_scene",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Skin3DView scene field was not found for runtime smoke.");
 
-        // Exercise both modern 64x64 and legacy 64x32 atlas layouts without network access.
-        foreach (var height in new[] { 64, 32 })
+        // Modern 64x64 must render six base cuboids + six second-layer cuboids.
+        var modern = CreateSkinBitmap(64);
+        buildPlayer.Invoke(view, new object[] { modern });
+        var scene = sceneField.GetValue(view) as Model3DGroup
+                    ?? throw new InvalidOperationException("Skin3DView scene is unavailable.");
+        if (scene.Children.Count < 4 || scene.Children[^1] is not Model3DGroup modernPlayer || modernPlayer.Children.Count != 12)
+            throw new InvalidOperationException("Modern Minecraft skin did not render all six base and six outer-layer cuboids.");
+
+        // Legacy 64x32 has no second layer and must remain supported.
+        var legacy = CreateSkinBitmap(32);
+        buildPlayer.Invoke(view, new object[] { legacy });
+        if (scene.Children.Count < 4 || scene.Children[^1] is not Model3DGroup legacyPlayer || legacyPlayer.Children.Count != 6)
+            throw new InvalidOperationException("Legacy Minecraft skin renderer no longer matches its six base cuboids.");
+    }
+
+    private static WriteableBitmap CreateSkinBitmap(int height)
+    {
+        var bitmap = new WriteableBitmap(64, height, 96, 96, PixelFormats.Bgra32, null);
+        var stride = 64 * 4;
+        var pixels = new byte[stride * height];
+
+        for (var y = 0; y < height; y++)
         {
-            var bitmap = new WriteableBitmap(64, height, 96, 96, PixelFormats.Bgra32, null);
-            var stride = 64 * 4;
-            var pixels = new byte[stride * height];
-
-            for (var y = 0; y < height; y++)
+            for (var x = 0; x < 64; x++)
             {
-                for (var x = 0; x < 64; x++)
-                {
-                    var i = y * stride + x * 4;
-                    pixels[i + 0] = (byte)((x * 3) % 255);
-                    pixels[i + 1] = (byte)((y * 5) % 255);
-                    pixels[i + 2] = (byte)(120 + (x + y) % 120);
-                    pixels[i + 3] = 255;
-                }
+                var i = y * stride + x * 4;
+                pixels[i + 0] = (byte)((x * 3) % 255);
+                pixels[i + 1] = (byte)((y * 5) % 255);
+                pixels[i + 2] = (byte)(120 + (x + y) % 120);
+                pixels[i + 3] = 255;
             }
-
-            bitmap.WritePixels(new Int32Rect(0, 0, 64, height), pixels, stride, 0);
-            bitmap.Freeze();
-            buildPlayer.Invoke(view, new object[] { bitmap });
         }
+
+        bitmap.WritePixels(new Int32Rect(0, 0, 64, height), pixels, stride, 0);
+        bitmap.Freeze();
+        return bitmap;
     }
 
     private static void AssertManagedCleanupContract()
