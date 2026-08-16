@@ -14,14 +14,15 @@ using System.Windows.Media.Media3D;
 namespace LegendBorn.Controls;
 
 /// <summary>
-/// Native WPF Minecraft skin preview inspired by the interaction used on legendborn.xyz/immersion.
-/// The skin atlas is cropped into independent face textures before it reaches WPF 3D. This avoids
-/// atlas bleeding/stretching artifacts while keeping the launcher lightweight and WebView-free.
-/// Rotation is user-controlled by dragging, just like the website preview.
+/// Native WPF Minecraft skin preview inspired by legendborn.xyz/immersion.
+/// Every Minecraft face is cropped into its own nearest-neighbour texture before it reaches WPF 3D.
+/// Modern skins render both the base layer and the complete outer layer (hat/jacket/sleeves/pants).
+/// Rotation is user-controlled by dragging; no browser/WebView is required.
 /// </summary>
 public sealed class Skin3DView : UserControl
 {
     private const long MaxSkinBytes = 4L * 1024 * 1024;
+    private const int TextureUpscale = 6;
     private static readonly HttpClient Http = CreateHttp();
 
     private readonly Viewport3D _viewport = new();
@@ -83,16 +84,15 @@ public sealed class Skin3DView : UserControl
         root.Children.Add(_placeholder);
         Content = root;
 
-        // Similar framing to /immersion: full player, mild perspective, no automatic rotation.
         _viewport.Camera = new PerspectiveCamera(
             new Point3D(27, 8, 46),
             new Vector3D(-27, -3, -46),
             new Vector3D(0, 1, 0),
-            55);
+            53);
 
-        _scene.Children.Add(new AmbientLight(Color.FromRgb(178, 174, 194)));
-        _scene.Children.Add(new DirectionalLight(Color.FromRgb(255, 248, 255), new Vector3D(-1, -1, -2)));
-        _scene.Children.Add(new DirectionalLight(Color.FromRgb(112, 77, 176), new Vector3D(1, 0, 1)));
+        _scene.Children.Add(new AmbientLight(Color.FromRgb(202, 198, 214)));
+        _scene.Children.Add(new DirectionalLight(Color.FromRgb(255, 250, 255), new Vector3D(-1, -1, -2)));
+        _scene.Children.Add(new DirectionalLight(Color.FromRgb(126, 91, 188), new Vector3D(1, 0, 1)));
         _viewport.Children.Add(new ModelVisual3D { Content = _scene });
 
         _viewport.Cursor = Cursors.Hand;
@@ -142,10 +142,8 @@ public sealed class Skin3DView : UserControl
 
             if (!response.IsSuccessStatusCode)
                 return;
-
             if (response.RequestMessage?.RequestUri is not { Scheme: "https" })
                 return;
-
             if (response.Content.Headers.ContentLength is long declared && declared > MaxSkinBytes)
                 return;
 
@@ -162,7 +160,7 @@ public sealed class Skin3DView : UserControl
         catch (OperationCanceledException) { }
         catch
         {
-            // Dashboard rendering is presentation-only; profile/game flow must not depend on it.
+            // Presentation-only component: profile/game flow must never depend on the preview.
         }
     }
 
@@ -175,6 +173,7 @@ public sealed class Skin3DView : UserControl
         image.CreateOptions = BitmapCreateOptions.PreservePixelFormat;
         image.StreamSource = ms;
         image.EndInit();
+        RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.NearestNeighbor);
         image.Freeze();
         return image;
     }
@@ -194,22 +193,20 @@ public sealed class Skin3DView : UserControl
     {
         ClearPlayer();
 
-        var modern = skin.PixelHeight * 2 == skin.PixelWidth * 2; // square 64x64/HD skin
+        var modern = skin.PixelHeight == skin.PixelWidth;
         var player = new Model3DGroup();
 
-        // Head
+        // Base layer ---------------------------------------------------------
         player.Children.Add(CreateCuboid(skin, 0, 17, 0, 8, 8, 8,
             front: R(8, 8, 8, 8), back: R(24, 8, 8, 8),
             left: R(16, 8, 8, 8), right: R(0, 8, 8, 8),
             top: R(8, 0, 8, 8), bottom: R(16, 0, 8, 8)));
 
-        // Body
         player.Children.Add(CreateCuboid(skin, 0, 7, 0, 8, 12, 4,
             front: R(20, 20, 8, 12), back: R(32, 20, 8, 12),
             left: R(28, 20, 4, 12), right: R(16, 20, 4, 12),
             top: R(20, 16, 8, 4), bottom: R(28, 16, 8, 4)));
 
-        // Player's left arm. Modern skins have a dedicated atlas region; legacy 64x32 reuses right arm.
         player.Children.Add(CreateCuboid(skin, -6, 7, 0, 4, 12, 4,
             front: modern ? R(36, 52, 4, 12) : R(44, 20, 4, 12),
             back: modern ? R(44, 52, 4, 12) : R(52, 20, 4, 12),
@@ -218,13 +215,11 @@ public sealed class Skin3DView : UserControl
             top: modern ? R(36, 48, 4, 4) : R(44, 16, 4, 4),
             bottom: modern ? R(40, 48, 4, 4) : R(48, 16, 4, 4)));
 
-        // Player's right arm.
         player.Children.Add(CreateCuboid(skin, 6, 7, 0, 4, 12, 4,
             front: R(44, 20, 4, 12), back: R(52, 20, 4, 12),
             left: R(48, 20, 4, 12), right: R(40, 20, 4, 12),
             top: R(44, 16, 4, 4), bottom: R(48, 16, 4, 4)));
 
-        // Player's left leg. Modern skins have a dedicated atlas region; legacy reuses right leg.
         player.Children.Add(CreateCuboid(skin, -2, -5, 0, 4, 12, 4,
             front: modern ? R(20, 52, 4, 12) : R(4, 20, 4, 12),
             back: modern ? R(28, 52, 4, 12) : R(12, 20, 4, 12),
@@ -233,11 +228,50 @@ public sealed class Skin3DView : UserControl
             top: modern ? R(20, 48, 4, 4) : R(4, 16, 4, 4),
             bottom: modern ? R(24, 48, 4, 4) : R(8, 16, 4, 4)));
 
-        // Player's right leg.
         player.Children.Add(CreateCuboid(skin, 2, -5, 0, 4, 12, 4,
             front: R(4, 20, 4, 12), back: R(12, 20, 4, 12),
             left: R(8, 20, 4, 12), right: R(0, 20, 4, 12),
             top: R(4, 16, 4, 4), bottom: R(8, 16, 4, 4)));
+
+        // Modern outer layer ------------------------------------------------
+        // Slightly larger cuboids prevent z-fighting and reproduce Minecraft's
+        // hat, jacket, sleeves and pants layers instead of flattening them into the base skin.
+        if (modern)
+        {
+            player.Children.Add(CreateCuboid(skin, 0, 17, 0, 9.0, 9.0, 9.0,
+                front: R(40, 8, 8, 8), back: R(56, 8, 8, 8),
+                left: R(48, 8, 8, 8), right: R(32, 8, 8, 8),
+                top: R(40, 0, 8, 8), bottom: R(48, 0, 8, 8)));
+
+            player.Children.Add(CreateCuboid(skin, 0, 7, 0, 8.5, 12.5, 4.5,
+                front: R(20, 36, 8, 12), back: R(32, 36, 8, 12),
+                left: R(28, 36, 4, 12), right: R(16, 36, 4, 12),
+                top: R(20, 32, 8, 4), bottom: R(28, 32, 8, 4)));
+
+            // Left sleeve.
+            player.Children.Add(CreateCuboid(skin, -6, 7, 0, 4.5, 12.5, 4.5,
+                front: R(52, 52, 4, 12), back: R(60, 52, 4, 12),
+                left: R(56, 52, 4, 12), right: R(48, 52, 4, 12),
+                top: R(52, 48, 4, 4), bottom: R(56, 48, 4, 4)));
+
+            // Right sleeve.
+            player.Children.Add(CreateCuboid(skin, 6, 7, 0, 4.5, 12.5, 4.5,
+                front: R(44, 36, 4, 12), back: R(52, 36, 4, 12),
+                left: R(48, 36, 4, 12), right: R(40, 36, 4, 12),
+                top: R(44, 32, 4, 4), bottom: R(48, 32, 4, 4)));
+
+            // Left pants leg.
+            player.Children.Add(CreateCuboid(skin, -2, -5, 0, 4.5, 12.5, 4.5,
+                front: R(4, 52, 4, 12), back: R(12, 52, 4, 12),
+                left: R(8, 52, 4, 12), right: R(0, 52, 4, 12),
+                top: R(4, 48, 4, 4), bottom: R(8, 48, 4, 4)));
+
+            // Right pants leg.
+            player.Children.Add(CreateCuboid(skin, 2, -5, 0, 4.5, 12.5, 4.5,
+                front: R(4, 36, 4, 12), back: R(12, 36, 4, 12),
+                left: R(8, 36, 4, 12), right: R(0, 36, 4, 12),
+                top: R(4, 32, 4, 4), bottom: R(8, 32, 4, 4)));
+        }
 
         _rotation = new AxisAngleRotation3D(new Vector3D(0, 1, 0), -18);
         player.Transform = new RotateTransform3D(_rotation, new Point3D(0, 4, 0));
@@ -347,23 +381,80 @@ public sealed class Skin3DView : UserControl
             region.X + region.Width > skin.PixelWidth ||
             region.Y + region.Height > skin.PixelHeight)
         {
-            return new DiffuseMaterial(new SolidColorBrush(Color.FromRgb(120, 104, 146)));
+            var fallback = new SolidColorBrush(Color.FromRgb(120, 104, 146));
+            fallback.Freeze();
+            var fallbackMaterial = new DiffuseMaterial(fallback);
+            fallbackMaterial.Freeze();
+            return fallbackMaterial;
         }
 
         var crop = new CroppedBitmap(skin, region);
         crop.Freeze();
+        var sharp = CreateNearestNeighbourTexture(crop);
 
-        var brush = new ImageBrush(crop)
+        var brush = new ImageBrush(sharp)
         {
             Stretch = Stretch.Fill,
             TileMode = TileMode.None,
             ViewportUnits = BrushMappingMode.RelativeToBoundingBox
         };
+        RenderOptions.SetBitmapScalingMode(brush, BitmapScalingMode.NearestNeighbor);
         brush.Freeze();
 
         var material = new DiffuseMaterial(brush);
         material.Freeze();
         return material;
+    }
+
+    private static BitmapSource CreateNearestNeighbourTexture(BitmapSource source)
+    {
+        var converted = source.Format == PixelFormats.Bgra32
+            ? source
+            : new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
+
+        var width = converted.PixelWidth;
+        var height = converted.PixelHeight;
+        var sourceStride = checked(width * 4);
+        var sourcePixels = new byte[checked(sourceStride * height)];
+        converted.CopyPixels(sourcePixels, sourceStride, 0);
+
+        var targetWidth = checked(width * TextureUpscale);
+        var targetHeight = checked(height * TextureUpscale);
+        var targetStride = checked(targetWidth * 4);
+        var targetPixels = new byte[checked(targetStride * targetHeight)];
+
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var sourceOffset = y * sourceStride + x * 4;
+                for (var oy = 0; oy < TextureUpscale; oy++)
+                {
+                    var row = (y * TextureUpscale + oy) * targetStride;
+                    for (var ox = 0; ox < TextureUpscale; ox++)
+                    {
+                        var targetOffset = row + (x * TextureUpscale + ox) * 4;
+                        targetPixels[targetOffset] = sourcePixels[sourceOffset];
+                        targetPixels[targetOffset + 1] = sourcePixels[sourceOffset + 1];
+                        targetPixels[targetOffset + 2] = sourcePixels[sourceOffset + 2];
+                        targetPixels[targetOffset + 3] = sourcePixels[sourceOffset + 3];
+                    }
+                }
+            }
+        }
+
+        var bitmap = BitmapSource.Create(
+            targetWidth,
+            targetHeight,
+            96,
+            96,
+            PixelFormats.Bgra32,
+            null,
+            targetPixels,
+            targetStride);
+        RenderOptions.SetBitmapScalingMode(bitmap, BitmapScalingMode.NearestNeighbor);
+        bitmap.Freeze();
+        return bitmap;
     }
 
     private static Int32Rect R(int x, int y, int width, int height)
