@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 
 namespace LegendBorn.Models;
 
@@ -52,6 +53,82 @@ public sealed class UserProfile
         public double? Food { get; set; }
         public double? ExperienceLevel { get; set; }
         public double? ExperienceProgress { get; set; }
+
+        public string StateText => Online ? "В ИГРЕ" : "НЕ В ИГРЕ";
+        public string ServerIdText => Clean(ServerId) ?? "—";
+        public string WorldText => Clean(Dimension)?.ToLowerInvariant() switch
+        {
+            "minecraft:overworld" => "Верхний мир",
+            "minecraft:the_nether" => "Незер",
+            "minecraft:the_end" => "Энд",
+            { } value => value,
+            _ => "—"
+        };
+
+        public string CoordinatesText => X is double x && Y is double y && Z is double z
+            ? $"X {Math.Round(x):N0}   Y {Math.Round(y):N0}   Z {Math.Round(z):N0}"
+            : "—";
+
+        public string HealthText => Health is double health
+            ? MaxHealth is double maxHealth
+                ? $"{Compact(health)} / {Compact(maxHealth)} HP"
+                : $"{Compact(health)} HP"
+            : "—";
+
+        public string FoodText => Food is double food ? $"{Compact(food)} / 20" : "—";
+
+        public string ExperienceText
+        {
+            get
+            {
+                if (ExperienceLevel is not double level) return "—";
+                var roundedLevel = Math.Max(0, (int)Math.Round(level));
+                return ExperienceProgress is double progress
+                    ? $"Уровень {roundedLevel:N0} • {Math.Clamp(progress, 0, 1) * 100:0}%"
+                    : $"Уровень {roundedLevel:N0}";
+            }
+        }
+
+        public string SessionText
+        {
+            get
+            {
+                if (!Online || SessionStartedAt is null) return "—";
+                var elapsed = DateTimeOffset.UtcNow - SessionStartedAt.Value.ToUniversalTime();
+                if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+                return elapsed.TotalHours >= 1
+                    ? $"{(int)elapsed.TotalHours} ч {elapsed.Minutes} мин"
+                    : $"{Math.Max(0, elapsed.Minutes)} мин";
+            }
+        }
+
+        public string UpdatedText
+        {
+            get
+            {
+                if (SeenAt is null) return "Нет данных от сервера";
+                var age = DateTimeOffset.UtcNow - SeenAt.Value.ToUniversalTime();
+                if (age < TimeSpan.Zero) age = TimeSpan.Zero;
+                if (age.TotalSeconds < 20) return "Обновлено только что";
+                if (age.TotalMinutes < 1) return $"Обновлено {Math.Max(1, (int)age.TotalSeconds)} сек назад";
+                if (age.TotalHours < 1) return $"Обновлено {(int)age.TotalMinutes} мин назад";
+                return $"Обновлено {SeenAt.Value.ToLocalTime():dd.MM HH:mm}";
+            }
+        }
+
+        private static string? Clean(string? value)
+        {
+            var text = (value ?? string.Empty).Trim();
+            return text.Length == 0 ? null : text;
+        }
+
+        private static string Compact(double value)
+        {
+            var rounded = Math.Round(value, 1);
+            return Math.Abs(rounded - Math.Round(rounded)) < 0.001
+                ? Math.Round(rounded).ToString("N0", CultureInfo.CurrentCulture)
+                : rounded.ToString("N1", CultureInfo.CurrentCulture);
+        }
     }
 
     public sealed class SkinSnapshot
