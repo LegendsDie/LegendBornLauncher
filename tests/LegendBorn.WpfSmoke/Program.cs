@@ -9,6 +9,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using LegendBorn;
 using LegendBorn.Controls;
@@ -84,9 +86,11 @@ internal static class Program
                 throw new InvalidOperationException(
                     "PackProgressBar was not found in the refreshed start view namescope.");
 
-            if (startView.FindName("Skin3DPreview") is not Skin3DView)
+            if (startView.FindName("Skin3DPreview") is not Skin3DView skinPreview)
                 throw new InvalidOperationException(
                     "Skin3DPreview was not found in the production start dashboard.");
+
+            AssertSkinRenderer(skinPreview);
 
             if (startView.FindName("DashboardFriendsList") is not ItemsControl)
                 throw new InvalidOperationException(
@@ -139,6 +143,38 @@ internal static class Program
         {
             host.Close();
             app.Shutdown();
+        }
+    }
+
+    private static void AssertSkinRenderer(Skin3DView view)
+    {
+        var buildPlayer = typeof(Skin3DView).GetMethod(
+            "BuildPlayer",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Skin3DView.BuildPlayer was not found for runtime smoke.");
+
+        // Exercise both modern 64x64 and legacy 64x32 atlas layouts without network access.
+        foreach (var height in new[] { 64, 32 })
+        {
+            var bitmap = new WriteableBitmap(64, height, 96, 96, PixelFormats.Bgra32, null);
+            var stride = 64 * 4;
+            var pixels = new byte[stride * height];
+
+            for (var y = 0; y < height; y++)
+            {
+                for (var x = 0; x < 64; x++)
+                {
+                    var i = y * stride + x * 4;
+                    pixels[i + 0] = (byte)((x * 3) % 255);
+                    pixels[i + 1] = (byte)((y * 5) % 255);
+                    pixels[i + 2] = (byte)(120 + (x + y) % 120);
+                    pixels[i + 3] = 255;
+                }
+            }
+
+            bitmap.WritePixels(new Int32Rect(0, 0, 64, height), pixels, stride, 0);
+            bitmap.Freeze();
+            buildPlayer.Invoke(view, new object[] { bitmap });
         }
     }
 
