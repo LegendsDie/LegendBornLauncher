@@ -36,8 +36,8 @@ internal static class Program
         var launcherInfoVersion = typeof(MainWindow).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
             .InformationalVersion ?? string.Empty;
-        if (!launcherInfoVersion.StartsWith("0.4.2", StringComparison.Ordinal))
-            throw new InvalidOperationException($"Launcher 0.4.2 smoke is running against {launcherInfoVersion}.");
+        if (!launcherInfoVersion.StartsWith("0.4.3", StringComparison.Ordinal))
+            throw new InvalidOperationException($"Launcher 0.4.3 smoke is running against {launcherInfoVersion}.");
 
         var app = new Application
         {
@@ -199,8 +199,8 @@ internal static class Program
             var updateDialog = new LauncherUpdateDialog(
                 "Доступно обновление",
                 "Smoke",
-                "0.4.1",
                 "0.4.2",
+                "0.4.3",
                 "LegendBorn CDN",
                 progressMode: true);
             try

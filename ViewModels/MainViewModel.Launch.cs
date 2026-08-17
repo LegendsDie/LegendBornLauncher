@@ -23,6 +23,8 @@ public sealed partial class MainViewModel
 
     private MinecraftService? _runningMinecraftService;
     private string? _runningMinecraftGameDir;
+    private CancellationTokenSource? _runningLegendCoreSessionCts;
+    private Task? _runningLegendCoreSessionTask;
 
     private static string NormalizePackMirror(string? value)
     {
@@ -171,6 +173,25 @@ public sealed partial class MainViewModel
         {
             StatusText = "Сервер не выбран.";
             return;
+        }
+
+        var existingProcess = _runningProcess;
+        if (existingProcess is not null)
+        {
+            try
+            {
+                if (!existingProcess.HasExited)
+                {
+                    StatusText = "Minecraft уже запущен.";
+                    AppendLog("Запуск: второй экземпляр Minecraft заблокирован, пока текущая игра работает.");
+                    return;
+                }
+            }
+            catch
+            {
+                StatusText = "Minecraft уже запущен.";
+                return;
+            }
         }
 
         if (Interlocked.Exchange(ref _playGuard, 1) == 1)
@@ -330,6 +351,13 @@ public sealed partial class MainViewModel
                     return;
                 }
 
+                if (!string.Equals((jt.ServerId ?? string.Empty).Trim(), s.Id.Trim(), StringComparison.Ordinal))
+                {
+                    StatusText = "Сайт вернул игровую сессию не для выбранного сервера.";
+                    AppendLog("Сервер: serverId в join-ticket не совпал с выбранным сервером.");
+                    return;
+                }
+
                 gameSession = new MinecraftService.LegendCoreSession(
                     ServerId: s.Id.Trim(),
                     Ticket: jt.Ticket.Trim(),
@@ -341,9 +369,7 @@ public sealed partial class MainViewModel
                     LauncherVersion: LauncherIdentity.InformationalVersion);
 
                 AppendLog("Сервер: безопасный одноразовый join-ticket получен.");
-
-                if (!autoConnect)
-                    AppendLog("Автозаход выключен: join-ticket короткоживущий, подключайся к серверу сразу после запуска.");
+                AppendLog("LegendCore: игровая сессия будет автоматически обновляться, пока Minecraft запущен.");
             }
             else
             {
@@ -379,7 +405,47 @@ public sealed partial class MainViewModel
             _runningMinecraftGameDir = launchGameDir;
             launched = true;
 
-            HookProcessExited(_runningProcess, launchMc, launchGameDir);
+            CancellationTokenSource? sessionRefreshCts = null;
+            Task? sessionRefreshTask = null;
+
+            // Arm process exit handling before any refresh loop can be started. The handler also
+            // performs a post-subscription HasExited check so an immediately terminating process
+            // cannot leave a background ticket renewal loop alive.
+            var startSessionRefresh = gameSession is not null && !string.IsNullOrWhiteSpace(s.Id);
+            if (startSessionRefresh)
+                sessionRefreshCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+
+            HookProcessExited(
+                _runningProcess,
+                launchMc,
+                launchGameDir,
+                sessionRefreshCts,
+                () => sessionRefreshTask);
+
+            if (startSessionRefresh && sessionRefreshCts is not null && !_runningProcess.HasExited)
+            {
+                sessionRefreshTask = LegendCoreSessionRefreshService.RunAsync(
+                    site: _site,
+                    minecraft: launchMc,
+                    accessToken: token,
+                    serverId: s.Id.Trim(),
+                    minecraftUsername: username,
+                    seedSession: gameSession!,
+                    log: line => PostToUi(() =>
+                    {
+                        if (!_isClosing)
+                            AppendLog(line);
+                    }),
+                    cancellationToken: sessionRefreshCts.Token);
+
+                _runningLegendCoreSessionCts = sessionRefreshCts;
+                _runningLegendCoreSessionTask = sessionRefreshTask;
+            }
+            else if (sessionRefreshCts is not null)
+            {
+                try { sessionRefreshCts.Cancel(); } catch { }
+                try { sessionRefreshCts.Dispose(); } catch { }
+            }
 
             Raise(nameof(CanStop));
             StopGameCommand.RaiseCanExecuteChanged();
@@ -416,35 +482,70 @@ public sealed partial class MainViewModel
         }
     }
 
-    private void HookProcessExited(Process p, MinecraftService mc, string gameDir)
+    private void HookProcessExited(
+        Process p,
+        MinecraftService mc,
+        string gameDir,
+        CancellationTokenSource? sessionRefreshCts,
+        Func<Task?> sessionRefreshTaskProvider)
     {
+        var handled = 0;
+
+        async void HandleExited(object? _, EventArgs __)
+        {
+            if (Interlocked.Exchange(ref handled, 1) == 1)
+                return;
+
+            try { sessionRefreshCts?.Cancel(); } catch { }
+
+            var sessionRefreshTask = sessionRefreshTaskProvider();
+            if (sessionRefreshTask is not null)
+            {
+                try { await sessionRefreshTask.ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
+                catch { }
+            }
+
+            try { mc.ClearLegendCoreSession(); } catch { }
+            CleanupLegacyGameAuthFiles(gameDir);
+            try { sessionRefreshCts?.Dispose(); } catch { }
+
+            if (_isClosing) return;
+
+            PostToUi(() =>
+            {
+                if (_isClosing) return;
+
+                AppendLog("Игра закрыта.");
+                _runningProcess = null;
+                _runningMinecraftService = null;
+                _runningMinecraftGameDir = null;
+
+                if (ReferenceEquals(_runningLegendCoreSessionCts, sessionRefreshCts))
+                {
+                    _runningLegendCoreSessionCts = null;
+                    _runningLegendCoreSessionTask = null;
+                }
+
+                Raise(nameof(CanStop));
+                StopGameCommand.RaiseCanExecuteChanged();
+                RefreshCanStates();
+            });
+        }
+
         try
         {
             p.EnableRaisingEvents = true;
-            p.Exited += (_, __) =>
-            {
-                try { mc.ClearLegendCoreSession(); } catch { }
-                CleanupLegacyGameAuthFiles(gameDir);
+            p.Exited += HandleExited;
 
-                if (_isClosing) return;
-
-                PostToUi(() =>
-                {
-                    if (_isClosing) return;
-
-                    AppendLog("Игра закрыта.");
-                    _runningProcess = null;
-                    _runningMinecraftService = null;
-                    _runningMinecraftGameDir = null;
-
-                    Raise(nameof(CanStop));
-                    StopGameCommand.RaiseCanExecuteChanged();
-                    RefreshCanStates();
-                });
-            };
+            // Exited can occur before/while the handler is registered. This second check closes
+            // that race. `handled` keeps cleanup idempotent if the event also fires concurrently.
+            if (p.HasExited)
+                HandleExited(p, EventArgs.Empty);
         }
         catch
         {
+            HandleExited(p, EventArgs.Empty);
         }
     }
 
@@ -494,6 +595,11 @@ public sealed partial class MainViewModel
 
     private void StopGame()
     {
+        var sessionRefreshCts = _runningLegendCoreSessionCts;
+        _runningLegendCoreSessionCts = null;
+        _runningLegendCoreSessionTask = null;
+        try { sessionRefreshCts?.Cancel(); } catch { }
+
         try
         {
             if (_runningProcess is null || _runningProcess.HasExited)
