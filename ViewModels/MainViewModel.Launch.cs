@@ -23,6 +23,8 @@ public sealed partial class MainViewModel
 
     private MinecraftService? _runningMinecraftService;
     private string? _runningMinecraftGameDir;
+    private CancellationTokenSource? _runningLegendCoreSessionCts;
+    private Task? _runningLegendCoreSessionTask;
 
     private static string NormalizePackMirror(string? value)
     {
@@ -330,6 +332,13 @@ public sealed partial class MainViewModel
                     return;
                 }
 
+                if (!string.Equals((jt.ServerId ?? string.Empty).Trim(), s.Id.Trim(), StringComparison.Ordinal))
+                {
+                    StatusText = "Сайт вернул игровую сессию не для выбранного сервера.";
+                    AppendLog("Сервер: serverId в join-ticket не совпал с выбранным сервером.");
+                    return;
+                }
+
                 gameSession = new MinecraftService.LegendCoreSession(
                     ServerId: s.Id.Trim(),
                     Ticket: jt.Ticket.Trim(),
@@ -341,9 +350,7 @@ public sealed partial class MainViewModel
                     LauncherVersion: LauncherIdentity.InformationalVersion);
 
                 AppendLog("Сервер: безопасный одноразовый join-ticket получен.");
-
-                if (!autoConnect)
-                    AppendLog("Автозаход выключен: join-ticket короткоживущий, подключайся к серверу сразу после запуска.");
+                AppendLog("LegendCore: игровая сессия будет автоматически обновляться, пока Minecraft запущен.");
             }
             else
             {
@@ -379,7 +386,36 @@ public sealed partial class MainViewModel
             _runningMinecraftGameDir = launchGameDir;
             launched = true;
 
-            HookProcessExited(_runningProcess, launchMc, launchGameDir);
+            CancellationTokenSource? sessionRefreshCts = null;
+            Task? sessionRefreshTask = null;
+
+            if (gameSession is not null && !string.IsNullOrWhiteSpace(s.Id))
+            {
+                sessionRefreshCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+                sessionRefreshTask = LegendCoreSessionRefreshService.RunAsync(
+                    site: _site,
+                    minecraft: launchMc,
+                    accessToken: token,
+                    serverId: s.Id.Trim(),
+                    minecraftUsername: username,
+                    seedSession: gameSession,
+                    log: line => PostToUi(() =>
+                    {
+                        if (!_isClosing)
+                            AppendLog(line);
+                    }),
+                    cancellationToken: sessionRefreshCts.Token);
+
+                _runningLegendCoreSessionCts = sessionRefreshCts;
+                _runningLegendCoreSessionTask = sessionRefreshTask;
+            }
+
+            HookProcessExited(
+                _runningProcess,
+                launchMc,
+                launchGameDir,
+                sessionRefreshCts,
+                sessionRefreshTask);
 
             Raise(nameof(CanStop));
             StopGameCommand.RaiseCanExecuteChanged();
@@ -416,15 +452,30 @@ public sealed partial class MainViewModel
         }
     }
 
-    private void HookProcessExited(Process p, MinecraftService mc, string gameDir)
+    private void HookProcessExited(
+        Process p,
+        MinecraftService mc,
+        string gameDir,
+        CancellationTokenSource? sessionRefreshCts,
+        Task? sessionRefreshTask)
     {
         try
         {
             p.EnableRaisingEvents = true;
-            p.Exited += (_, __) =>
+            p.Exited += async (_, __) =>
             {
+                try { sessionRefreshCts?.Cancel(); } catch { }
+
+                if (sessionRefreshTask is not null)
+                {
+                    try { await sessionRefreshTask.ConfigureAwait(false); }
+                    catch (OperationCanceledException) { }
+                    catch { }
+                }
+
                 try { mc.ClearLegendCoreSession(); } catch { }
                 CleanupLegacyGameAuthFiles(gameDir);
+                try { sessionRefreshCts?.Dispose(); } catch { }
 
                 if (_isClosing) return;
 
@@ -436,6 +487,12 @@ public sealed partial class MainViewModel
                     _runningProcess = null;
                     _runningMinecraftService = null;
                     _runningMinecraftGameDir = null;
+
+                    if (ReferenceEquals(_runningLegendCoreSessionCts, sessionRefreshCts))
+                    {
+                        _runningLegendCoreSessionCts = null;
+                        _runningLegendCoreSessionTask = null;
+                    }
 
                     Raise(nameof(CanStop));
                     StopGameCommand.RaiseCanExecuteChanged();
@@ -494,6 +551,11 @@ public sealed partial class MainViewModel
 
     private void StopGame()
     {
+        var sessionRefreshCts = _runningLegendCoreSessionCts;
+        _runningLegendCoreSessionCts = null;
+        _runningLegendCoreSessionTask = null;
+        try { sessionRefreshCts?.Cancel(); } catch { }
+
         try
         {
             if (_runningProcess is null || _runningProcess.HasExited)
