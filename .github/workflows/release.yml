@@ -11,6 +11,9 @@ on:
         description: "Build and publish even if tag already exists"
         required: false
         default: "false"
+  push:
+    branches:
+      - release/0.4.3-once
 
 permissions:
   contents: write
@@ -28,6 +31,7 @@ env:
   VPK_CHANNEL: win
   VPK_MIRROR_PREFIX: launcher/releases
   FORCE_RELEASE: ${{ inputs.force == 'true' }}
+  RELEASE_TARGET_SHA: b2d4b2af1e656a865f5fa854488cae13673d90a4
 
 jobs:
   build-and-release:
@@ -37,14 +41,37 @@ jobs:
       - name: Require explicit production confirmation
         shell: pwsh
         run: |
-          if ("${{ inputs.confirm }}" -cne "RELEASE") {
-            throw "Production release blocked. Re-run the workflow and type RELEASE in the confirmation field."
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            if ("${{ inputs.confirm }}" -cne "RELEASE") {
+              throw "Production release blocked. Re-run the workflow and type RELEASE in the confirmation field."
+            }
+          } elseif ("${{ github.event_name }}" -eq "push") {
+            if ("${{ github.ref }}" -cne "refs/heads/release/0.4.3-once") {
+              throw "One-time production release blocked: unexpected branch."
+            }
+            Write-Host "One-time production release explicitly authorized for 0.4.3."
+          } else {
+            throw "Production release blocked: unsupported event."
           }
 
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Verify one-time release source matches main target
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git cat-file -e "$env:RELEASE_TARGET_SHA^{commit}"
+          $changed = @(git diff --name-only "$env:RELEASE_TARGET_SHA..HEAD")
+          $unexpected = @($changed | Where-Object { $_ -ne ".github/workflows/release.yml" })
+          if ($unexpected.Count -gt 0) {
+            Write-Host "Unexpected files on one-time release branch:"
+            $unexpected | ForEach-Object { Write-Host "  $_" }
+            throw "One-time release branch differs from the approved main commit."
+          }
+          Write-Host "Release source verified against $env:RELEASE_TARGET_SHA"
 
       - name: Install .NET 10 + .NET 8
         uses: actions/setup-dotnet@v6
@@ -253,4 +280,4 @@ jobs:
             --publish `
             --releaseName "${{ env.PACK_TITLE }} ${{ steps.ver.outputs.version }}" `
             --tag "${{ steps.ver.outputs.tag }}" `
-            --targetCommitish "${{ github.sha }}"
+            --targetCommitish "${{ env.RELEASE_TARGET_SHA }}"
