@@ -175,6 +175,25 @@ public sealed partial class MainViewModel
             return;
         }
 
+        var existingProcess = _runningProcess;
+        if (existingProcess is not null)
+        {
+            try
+            {
+                if (!existingProcess.HasExited)
+                {
+                    StatusText = "Minecraft уже запущен.";
+                    AppendLog("Запуск: второй экземпляр Minecraft заблокирован, пока текущая игра работает.");
+                    return;
+                }
+            }
+            catch
+            {
+                StatusText = "Minecraft уже запущен.";
+                return;
+            }
+        }
+
         if (Interlocked.Exchange(ref _playGuard, 1) == 1)
             return;
 
@@ -389,16 +408,29 @@ public sealed partial class MainViewModel
             CancellationTokenSource? sessionRefreshCts = null;
             Task? sessionRefreshTask = null;
 
-            if (gameSession is not null && !string.IsNullOrWhiteSpace(s.Id))
-            {
+            // Arm process exit handling before any refresh loop can be started. The handler also
+            // performs a post-subscription HasExited check so an immediately terminating process
+            // cannot leave a background ticket renewal loop alive.
+            var startSessionRefresh = gameSession is not null && !string.IsNullOrWhiteSpace(s.Id);
+            if (startSessionRefresh)
                 sessionRefreshCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+
+            HookProcessExited(
+                _runningProcess,
+                launchMc,
+                launchGameDir,
+                sessionRefreshCts,
+                () => sessionRefreshTask);
+
+            if (startSessionRefresh && sessionRefreshCts is not null && !_runningProcess.HasExited)
+            {
                 sessionRefreshTask = LegendCoreSessionRefreshService.RunAsync(
                     site: _site,
                     minecraft: launchMc,
                     accessToken: token,
                     serverId: s.Id.Trim(),
                     minecraftUsername: username,
-                    seedSession: gameSession,
+                    seedSession: gameSession!,
                     log: line => PostToUi(() =>
                     {
                         if (!_isClosing)
@@ -409,13 +441,11 @@ public sealed partial class MainViewModel
                 _runningLegendCoreSessionCts = sessionRefreshCts;
                 _runningLegendCoreSessionTask = sessionRefreshTask;
             }
-
-            HookProcessExited(
-                _runningProcess,
-                launchMc,
-                launchGameDir,
-                sessionRefreshCts,
-                sessionRefreshTask);
+            else if (sessionRefreshCts is not null)
+            {
+                try { sessionRefreshCts.Cancel(); } catch { }
+                try { sessionRefreshCts.Dispose(); } catch { }
+            }
 
             Raise(nameof(CanStop));
             StopGameCommand.RaiseCanExecuteChanged();
@@ -457,51 +487,65 @@ public sealed partial class MainViewModel
         MinecraftService mc,
         string gameDir,
         CancellationTokenSource? sessionRefreshCts,
-        Task? sessionRefreshTask)
+        Func<Task?> sessionRefreshTaskProvider)
     {
+        var handled = 0;
+
+        async void HandleExited(object? _, EventArgs __)
+        {
+            if (Interlocked.Exchange(ref handled, 1) == 1)
+                return;
+
+            try { sessionRefreshCts?.Cancel(); } catch { }
+
+            var sessionRefreshTask = sessionRefreshTaskProvider();
+            if (sessionRefreshTask is not null)
+            {
+                try { await sessionRefreshTask.ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
+                catch { }
+            }
+
+            try { mc.ClearLegendCoreSession(); } catch { }
+            CleanupLegacyGameAuthFiles(gameDir);
+            try { sessionRefreshCts?.Dispose(); } catch { }
+
+            if (_isClosing) return;
+
+            PostToUi(() =>
+            {
+                if (_isClosing) return;
+
+                AppendLog("Игра закрыта.");
+                _runningProcess = null;
+                _runningMinecraftService = null;
+                _runningMinecraftGameDir = null;
+
+                if (ReferenceEquals(_runningLegendCoreSessionCts, sessionRefreshCts))
+                {
+                    _runningLegendCoreSessionCts = null;
+                    _runningLegendCoreSessionTask = null;
+                }
+
+                Raise(nameof(CanStop));
+                StopGameCommand.RaiseCanExecuteChanged();
+                RefreshCanStates();
+            });
+        }
+
         try
         {
             p.EnableRaisingEvents = true;
-            p.Exited += async (_, __) =>
-            {
-                try { sessionRefreshCts?.Cancel(); } catch { }
+            p.Exited += HandleExited;
 
-                if (sessionRefreshTask is not null)
-                {
-                    try { await sessionRefreshTask.ConfigureAwait(false); }
-                    catch (OperationCanceledException) { }
-                    catch { }
-                }
-
-                try { mc.ClearLegendCoreSession(); } catch { }
-                CleanupLegacyGameAuthFiles(gameDir);
-                try { sessionRefreshCts?.Dispose(); } catch { }
-
-                if (_isClosing) return;
-
-                PostToUi(() =>
-                {
-                    if (_isClosing) return;
-
-                    AppendLog("Игра закрыта.");
-                    _runningProcess = null;
-                    _runningMinecraftService = null;
-                    _runningMinecraftGameDir = null;
-
-                    if (ReferenceEquals(_runningLegendCoreSessionCts, sessionRefreshCts))
-                    {
-                        _runningLegendCoreSessionCts = null;
-                        _runningLegendCoreSessionTask = null;
-                    }
-
-                    Raise(nameof(CanStop));
-                    StopGameCommand.RaiseCanExecuteChanged();
-                    RefreshCanStates();
-                });
-            };
+            // Exited can occur before/while the handler is registered. This second check closes
+            // that race. `handled` keeps cleanup idempotent if the event also fires concurrently.
+            if (p.HasExited)
+                HandleExited(p, EventArgs.Empty);
         }
         catch
         {
+            HandleExited(p, EventArgs.Empty);
         }
     }
 
