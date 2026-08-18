@@ -36,8 +36,8 @@ internal static class Program
         var launcherInfoVersion = typeof(MainWindow).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
             .InformationalVersion ?? string.Empty;
-        if (!launcherInfoVersion.StartsWith("0.4.3", StringComparison.Ordinal))
-            throw new InvalidOperationException($"Launcher 0.4.3 smoke is running against {launcherInfoVersion}.");
+        if (!launcherInfoVersion.StartsWith("0.4.4", StringComparison.Ordinal))
+            throw new InvalidOperationException($"Launcher 0.4.4 smoke is running against {launcherInfoVersion}.");
 
         var app = new Application
         {
@@ -153,6 +153,22 @@ internal static class Program
 
             AssertSkinRenderer(skinPreview);
 
+            if (startView.FindName("ServerNickEditor") is not TextBox serverNickEditor)
+                throw new InvalidOperationException(
+                    "ServerNickEditor was not found in the production start dashboard.");
+
+            var serverNickBinding = BindingOperations.GetBinding(serverNickEditor, TextBox.TextProperty);
+            if (!string.Equals(serverNickBinding?.Path?.Path, nameof(MainViewModel.ServerNickDraft), StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    "ServerNickEditor is no longer bound to the authoritative server nickname draft.");
+
+            if (startView.FindName("SaveServerNickButton") is not Button saveServerNickButton ||
+                saveServerNickButton.Command is null)
+            {
+                throw new InvalidOperationException(
+                    "Server nickname save action was not materialized in the start dashboard.");
+            }
+
             if (startView.FindName("DashboardFriendsList") is not ItemsControl)
                 throw new InvalidOperationException(
                     "DashboardFriendsList was not found in the production start dashboard.");
@@ -199,8 +215,8 @@ internal static class Program
             var updateDialog = new LauncherUpdateDialog(
                 "Доступно обновление",
                 "Smoke",
-                "0.4.2",
                 "0.4.3",
+                "0.4.4",
                 "LegendBorn CDN",
                 progressMode: true);
             try
