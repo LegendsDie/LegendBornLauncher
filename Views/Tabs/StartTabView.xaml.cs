@@ -36,6 +36,7 @@ public partial class StartTabView : UserControl
         AttachDashboardVm();
         RefreshDashboardFriends();
         RefreshSkin3D();
+        RefreshServerNick();
         UpdateNewsPage();
 
         if (!_newsLoaded)
@@ -103,6 +104,14 @@ public partial class StartTabView : UserControl
     {
         var vm = _dashboardVm ?? GetVm();
         Skin3DPreview.SkinUrl = vm?.DashboardSkinUrl;
+    }
+
+    private void RefreshServerNick()
+    {
+        var vm = _dashboardVm ?? GetVm();
+        var command = vm?.RefreshServerNickCommand;
+        if (command?.CanExecute(null) == true)
+            command.Execute(null);
     }
 
     private void RefreshDashboardFriends()

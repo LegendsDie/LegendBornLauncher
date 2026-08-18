@@ -186,24 +186,69 @@
                             Style="{StaticResource DashboardPanel}">
                         <Grid>
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="175"/>
+                                <ColumnDefinition Width="230"/>
                                 <ColumnDefinition Width="14"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
 
                             <StackPanel VerticalAlignment="Center">
-                                <TextBlock Text="ТВОЙ НИК" Style="{StaticResource DashboardDim}"/>
-                                <TextBlock Margin="0,6,0,0"
-                                           Text="{Binding Username}"
-                                           Foreground="#F0EBFA"
-                                           FontSize="20"
-                                           FontWeight="Bold"
-                                           TextTrimming="CharacterEllipsis"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="ИГРОВОЙ НИК" Style="{StaticResource DashboardDim}"/>
+                                        <TextBlock Margin="0,3,0,0"
+                                                   Text="{Binding ServerNickDisplayName}"
+                                                   Foreground="#F0EBFA"
+                                                   FontSize="17"
+                                                   FontWeight="Bold"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                    </StackPanel>
+                                    <Button Grid.Column="1"
+                                            Style="{StaticResource GhostButton}"
+                                            Height="27"
+                                            Padding="8,0"
+                                            Content="Сброс"
+                                            ToolTip="Вернуть ник привязанного Minecraft-аккаунта"
+                                            Command="{Binding ResetServerNickCommand}"/>
+                                </Grid>
+
+                                <Grid Margin="0,6,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="7"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="ServerNickEditor"
+                                             Height="30"
+                                             MaxLength="24"
+                                             Padding="8,4"
+                                             Foreground="#F0EBFA"
+                                             CaretBrush="#F0EBFA"
+                                             Background="#A60A0D18"
+                                             BorderBrush="#45375D"
+                                             BorderThickness="1"
+                                             Text="{Binding ServerNickDraft, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="{Binding ServerNickRulesText}"/>
+                                    <Button x:Name="SaveServerNickButton"
+                                            Grid.Column="2"
+                                            Style="{StaticResource GhostButton}"
+                                            Height="30"
+                                            Padding="9,0"
+                                            Content="Сохранить"
+                                            Command="{Binding SaveServerNickCommand}"/>
+                                </Grid>
+
                                 <TextBlock Margin="0,5,0,0"
-                                           Text="{Binding SelectedServer.Name, StringFormat=сервер · {0}}"
-                                           Foreground="#747F96"
-                                           FontSize="9"
-                                           TextTrimming="CharacterEllipsis"/>
+                                           Text="{Binding ServerNickStatusText}"
+                                           Foreground="#78859C"
+                                           FontSize="8.5"
+                                           TextWrapping="Wrap"
+                                           TextTrimming="CharacterEllipsis"
+                                           MaxHeight="22"
+                                           ToolTip="{Binding ServerNickMinecraftAccountText}"/>
                             </StackPanel>
 
                             <Border Grid.Column="1" Width="1" Background="#2A3045"/>
