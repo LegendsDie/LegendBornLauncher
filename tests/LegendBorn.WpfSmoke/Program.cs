@@ -36,8 +36,8 @@ internal static class Program
         var launcherInfoVersion = typeof(MainWindow).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
             .InformationalVersion ?? string.Empty;
-        if (!launcherInfoVersion.StartsWith("0.4.4", StringComparison.Ordinal))
-            throw new InvalidOperationException($"Launcher 0.4.4 smoke is running against {launcherInfoVersion}.");
+        if (!launcherInfoVersion.StartsWith("0.4.5", StringComparison.Ordinal))
+            throw new InvalidOperationException($"Launcher 0.4.5 smoke is running against {launcherInfoVersion}.");
 
         var app = new Application
         {
