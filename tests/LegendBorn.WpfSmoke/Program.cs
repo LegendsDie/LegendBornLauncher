@@ -36,8 +36,8 @@ internal static class Program
         var launcherInfoVersion = typeof(MainWindow).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
             .InformationalVersion ?? string.Empty;
-        if (!launcherInfoVersion.StartsWith("0.4.5", StringComparison.Ordinal))
-            throw new InvalidOperationException($"Launcher 0.4.5 smoke is running against {launcherInfoVersion}.");
+        if (!launcherInfoVersion.StartsWith("0.4.6", StringComparison.Ordinal))
+            throw new InvalidOperationException($"Launcher 0.4.6 smoke is running against {launcherInfoVersion}.");
 
         var app = new Application
         {
@@ -97,7 +97,7 @@ internal static class Program
 
             if (profileView.FindName("ProfileSkin3DPreview") is not Skin3DView profileSkin)
                 throw new InvalidOperationException(
-                    "ProfileSkin3DPreview was not found in the profile Status tab.");
+                    "ProfileSkin3DPreview was not found in the production profile view namescope.");
 
             if (profileView.FindName("ProfileTabs") is not TabControl profileTabs || profileTabs.Items.Count != 2)
                 throw new InvalidOperationException(
