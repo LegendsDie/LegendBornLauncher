@@ -224,9 +224,25 @@ public sealed partial class MainViewModel
             CleanupLegacyGameAuthFiles(launchGameDir);
             launchMc.ClearLegendCoreSession();
 
-            var username = (Username ?? "Player").Trim();
-            if (string.IsNullOrWhiteSpace(username)) username = "Player";
-            username = MakeValidMcName(username);
+            var username = ResolveLaunchMinecraftUsername();
+            if (!string.Equals(Username, username, StringComparison.Ordinal))
+            {
+                var previousUsername = Username;
+
+                // Make the authoritative account value win over a stale LastUsername. Updating
+                // the config first also prevents the legacy Username setter guard from restoring
+                // the obsolete local value when the site already knows the corrected identity.
+                try { _config.Current.LastUsername = username; } catch { }
+                Username = username;
+
+                AppendLog(
+                    $"Minecraft identity: технический ник синхронизирован {previousUsername} -> {username}."
+                );
+            }
+            else
+            {
+                AppendLog($"Minecraft identity: launch username={username}.");
+            }
 
             var ram = NormalizeRamMb(RamMb);
             if (ram < 4096) ram = 4096;
