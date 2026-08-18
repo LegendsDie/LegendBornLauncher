@@ -1,0 +1,42 @@
+name: Hotfix version smoke patch
+
+on:
+  push:
+    branches:
+      - hotfix/0.4.5-servernick-session-refresh-final
+    paths:
+      - .hotfix-version-smoke-trigger
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: hotfix/0.4.5-servernick-session-refresh-final
+      - name: Update WPF smoke version assertion
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('tests/LegendBorn.WpfSmoke/Program.cs')
+          text = path.read_text(encoding='utf-8')
+          old1 = 'if (!launcherInfoVersion.StartsWith("0.4.4", StringComparison.Ordinal))'
+          new1 = 'if (!launcherInfoVersion.StartsWith("0.4.5", StringComparison.Ordinal))'
+          old2 = 'throw new InvalidOperationException($"Launcher 0.4.4 smoke is running against {launcherInfoVersion}.");'
+          new2 = 'throw new InvalidOperationException($"Launcher 0.4.5 smoke is running against {launcherInfoVersion}.");'
+          if old1 not in text or old2 not in text:
+              raise SystemExit('Expected 0.4.4 smoke assertion was not found')
+          text = text.replace(old1, new1, 1).replace(old2, new2, 1)
+          path.write_text(text, encoding='utf-8')
+      - name: Commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/LegendBorn.WpfSmoke/Program.cs
+          git commit -m "test: bump WPF smoke expectation to 0.4.5"
+          git push origin HEAD:hotfix/0.4.5-servernick-session-refresh-final
