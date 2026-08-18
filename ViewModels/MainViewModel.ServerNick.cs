@@ -222,12 +222,18 @@ public sealed partial class MainViewModel
             }
 
             ApplyServerNickResponse(response, resetDraft: true);
-            SetServerNickStatus("Ник сохранён. В игре он обновится через синхронизацию профиля.");
 
             // Refresh the regular launcher snapshot too, so every launcher screen continues to read
             // the same authoritative account state without inventing a parallel local nickname.
             await RefreshProfileSnapshotAsync(token).ConfigureAwait(false);
             RaiseServerNickPresentation();
+
+            // Hotfix 0.4.5: if this launcher owns a running Minecraft process, immediately issue a
+            // fresh one-time join-ticket and atomically rewrite .legendcore/session.json. This avoids
+            // LS-AUTH-002 when the player reconnects immediately after changing public serverNick.
+            var sessionOutcome = await RefreshRunningLegendCoreSessionAfterServerNickChangeAsync(token)
+                .ConfigureAwait(false);
+            SetServerNickStatus(ServerNickMutationStatus(sessionOutcome, reset: false));
         }
         catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
         {
@@ -261,10 +267,13 @@ public sealed partial class MainViewModel
             }
 
             ApplyServerNickResponse(response, resetDraft: true);
-            SetServerNickStatus("Свой ник сброшен. Используется ник привязанного Minecraft-аккаунта.");
 
             await RefreshProfileSnapshotAsync(token).ConfigureAwait(false);
             RaiseServerNickPresentation();
+
+            var sessionOutcome = await RefreshRunningLegendCoreSessionAfterServerNickChangeAsync(token)
+                .ConfigureAwait(false);
+            SetServerNickStatus(ServerNickMutationStatus(sessionOutcome, reset: true));
         }
         catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
         {
