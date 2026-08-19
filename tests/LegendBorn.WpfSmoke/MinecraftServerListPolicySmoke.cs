@@ -41,16 +41,19 @@ internal static class MinecraftServerListPolicySmoke
                 throw new InvalidOperationException("servers.dat does not match the canonical launcher-owned payload.");
 
             var parsed = ParseServersDat(actual);
-            if (parsed.Count != 1)
-                throw new InvalidOperationException($"servers.dat contains {parsed.Count} servers; expected exactly one.");
+            if (parsed.ServerCount != 1)
+            {
+                throw new InvalidOperationException(
+                    $"servers.dat contains {parsed.ServerCount} servers; expected exactly one.");
+            }
 
-            if (!parsed.TryGetValue("name", out var name) ||
+            if (!parsed.Fields.TryGetValue("name", out var name) ||
                 !string.Equals(name, MinecraftServerListPolicy.CanonicalServerName, StringComparison.Ordinal))
             {
                 throw new InvalidOperationException("servers.dat canonical server name is missing or incorrect.");
             }
 
-            if (!parsed.TryGetValue("ip", out var address) ||
+            if (!parsed.Fields.TryGetValue("ip", out var address) ||
                 !string.Equals(address, MinecraftServerListPolicy.CanonicalServerAddress, StringComparison.Ordinal))
             {
                 throw new InvalidOperationException("servers.dat canonical LegendBorn address is missing or incorrect.");
@@ -75,7 +78,7 @@ internal static class MinecraftServerListPolicySmoke
         }
     }
 
-    private static Dictionary<string, string> ParseServersDat(byte[] payload)
+    private static ParsedServersDat ParseServersDat(byte[] payload)
     {
         using var stream = new MemoryStream(payload, writable: false);
         using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
@@ -112,8 +115,7 @@ internal static class MinecraftServerListPolicySmoke
         if (stream.Position != stream.Length)
             throw new InvalidOperationException("servers.dat contains unexpected trailing bytes.");
 
-        fields["__count"] = count.ToString();
-        return new ParsedServerFields(fields, count);
+        return new ParsedServersDat(count, fields);
     }
 
     private static void RequireTag(BinaryReader reader, byte expected, string context)
@@ -143,15 +145,7 @@ internal static class MinecraftServerListPolicySmoke
         return BinaryPrimitives.ReadInt32BigEndian(bytes);
     }
 
-    private sealed class ParsedServerFields : Dictionary<string, string>
-    {
-        public ParsedServerFields(Dictionary<string, string> source, int count)
-            : base(source, StringComparer.Ordinal)
-        {
-            CountValue = count;
-        }
-
-        public int CountValue { get; }
-        public new int Count => CountValue;
-    }
+    private sealed record ParsedServersDat(
+        int ServerCount,
+        Dictionary<string, string> Fields);
 }
