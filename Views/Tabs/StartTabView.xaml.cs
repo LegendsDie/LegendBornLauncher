@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using LegendBorn.Services;
 using LegendBorn.ViewModels;
 
@@ -19,6 +20,7 @@ public partial class StartTabView : UserControl
     private const string SiteUrlPrimary = "https://legendborn.xyz/";
 
     private MainViewModel? _dashboardVm;
+    private Button? _playActionButton;
     private LauncherNewsService.NewsItem[] _news = Array.Empty<LauncherNewsService.NewsItem>();
     private int _newsPage;
     private CancellationTokenSource? _newsCts;
@@ -34,6 +36,8 @@ public partial class StartTabView : UserControl
     private void StartTabView_OnLoaded(object sender, RoutedEventArgs e)
     {
         AttachDashboardVm();
+        _playActionButton = FindPlayActionButton(this);
+        RefreshPlayActionButton();
         RefreshDashboardFriends();
         RefreshSkin3D();
         RefreshServerNick();
@@ -50,6 +54,7 @@ public partial class StartTabView : UserControl
     private void StartTabView_OnUnloaded(object sender, RoutedEventArgs e)
     {
         DetachDashboardVm();
+        _playActionButton = null;
         try { _newsCts?.Cancel(); } catch { }
         try { _newsCts?.Dispose(); } catch { }
         _newsCts = null;
@@ -90,6 +95,16 @@ public partial class StartTabView : UserControl
 
         if (e.PropertyName is nameof(MainViewModel.Profile) or nameof(MainViewModel.SkinPreviewUrl) or nameof(MainViewModel.SelectedSkinKey))
             RefreshSkin3D();
+
+        if (e.PropertyName is nameof(MainViewModel.IsLaunchInProgress)
+            or nameof(MainViewModel.IsLaunchCancellationRequested)
+            or nameof(MainViewModel.CanCancelLaunch)
+            or nameof(MainViewModel.CanPlay)
+            or nameof(MainViewModel.CanStop)
+            or nameof(MainViewModel.IsBusy))
+        {
+            RefreshPlayActionButton();
+        }
     }
 
     private void Friends_OnCollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
@@ -256,20 +271,86 @@ public partial class StartTabView : UserControl
             var vm = GetVm();
             if (vm is null) return;
 
+            if (sender is Button button)
+                _playActionButton = button;
+
             if (vm.CanStop)
             {
                 if (vm.StopGameCommand?.CanExecute(null) == true)
                     vm.StopGameCommand.Execute(null);
+                RefreshPlayActionButton();
                 return;
             }
 
-            if (vm.PlayCommand?.CanExecute(null) == true)
-                vm.PlayCommand.Execute(null);
+            if (vm.IsLaunchInProgress)
+            {
+                if (vm.CancelLaunchCommand.CanExecute(null))
+                    vm.CancelLaunchCommand.Execute(null);
+                RefreshPlayActionButton();
+                return;
+            }
+
+            if (vm.CancellablePlayCommand.CanExecute(null))
+                vm.CancellablePlayCommand.Execute(null);
+
+            RefreshPlayActionButton();
         }
         catch { }
     }
 
     // ===================== Helpers =====================
+
+    private void RefreshPlayActionButton()
+    {
+        var button = _playActionButton;
+        var vm = _dashboardVm ?? GetVm();
+        if (button is null || vm is null)
+            return;
+
+        if (vm.CanStop)
+        {
+            button.Content = "Остановить";
+            button.IsEnabled = true;
+            return;
+        }
+
+        if (vm.IsLaunchInProgress)
+        {
+            button.Content = vm.LaunchActionText;
+            button.IsEnabled = vm.CanCancelLaunch;
+            return;
+        }
+
+        button.Content = "Играть";
+        button.IsEnabled = vm.CanPlay;
+    }
+
+    private Button? FindPlayActionButton(DependencyObject root)
+    {
+        object? targetStyle = null;
+        try { targetStyle = TryFindResource("PlayOrStopButtonStyle"); } catch { }
+
+        return FindVisualDescendant<Button>(root, button =>
+            targetStyle is not null && ReferenceEquals(button.Style, targetStyle));
+    }
+
+    private static T? FindVisualDescendant<T>(DependencyObject root, Func<T, bool> predicate)
+        where T : DependencyObject
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var index = 0; index < count; index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            if (child is T typed && predicate(typed))
+                return typed;
+
+            var nested = FindVisualDescendant(child, predicate);
+            if (nested is not null)
+                return nested;
+        }
+
+        return null;
+    }
 
     private MainViewModel? GetVm()
         => DataContext as MainViewModel

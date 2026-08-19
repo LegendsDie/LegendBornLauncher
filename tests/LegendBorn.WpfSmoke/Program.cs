@@ -31,13 +31,14 @@ internal static class Program
 
         AssertCanonicalLegendBornOrigins();
         AssertManagedCleanupContract();
+        AssertCleanInstallContract();
         AssertPackStateFinalReconciliation();
 
         var launcherInfoVersion = typeof(MainWindow).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
             .InformationalVersion ?? string.Empty;
-        if (!launcherInfoVersion.StartsWith("0.4.6", StringComparison.Ordinal))
-            throw new InvalidOperationException($"Launcher 0.4.6 smoke is running against {launcherInfoVersion}.");
+        if (!launcherInfoVersion.StartsWith("0.4.7", StringComparison.Ordinal))
+            throw new InvalidOperationException($"Launcher 0.4.7 smoke is running against {launcherInfoVersion}.");
 
         var app = new Application
         {
@@ -74,6 +75,9 @@ internal static class Program
 
             if (host.DataContext is not MainViewModel vm)
                 throw new InvalidOperationException("Production MainWindow did not expose MainViewModel as DataContext.");
+
+            if (vm.CancellablePlayCommand is null || vm.CancelLaunchCommand is null)
+                throw new InvalidOperationException("Cancellable Minecraft launch commands were not initialized.");
 
             vm.SelectedMenuIndex = 2;
             host.UpdateLayout();
@@ -372,6 +376,87 @@ internal static class Program
             {
                 throw new InvalidOperationException("Stale managed file was not preserved in the SAFE .trash quarantine.");
             }
+        }
+        finally
+        {
+            try { Directory.Delete(temp, recursive: true); } catch { }
+        }
+    }
+
+    private static void AssertCleanInstallContract()
+    {
+        var temp = Path.Combine(Path.GetTempPath(), "legendborn-clean-install-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(temp);
+
+        var preserved = new[]
+        {
+            "resourcepacks",
+            "shaderpacks",
+            "screenshots",
+            "saves",
+            "logs"
+        };
+
+        try
+        {
+            foreach (var name in preserved)
+            {
+                var dir = Path.Combine(temp, name);
+                Directory.CreateDirectory(dir);
+                File.WriteAllText(Path.Combine(dir, "keep.txt"), name);
+            }
+
+            foreach (var name in new[] { "mods", "config", "defaultconfigs", "kubejs", "scripts", ".legendcore", "launcher" })
+            {
+                var dir = Path.Combine(temp, name);
+                Directory.CreateDirectory(dir);
+                File.WriteAllText(Path.Combine(dir, "old.txt"), name);
+            }
+
+            File.WriteAllText(Path.Combine(temp, "options.txt"), "old-options");
+            File.WriteAllText(Path.Combine(temp, "servers.dat"), "old-servers");
+
+            var snapshot = new PackCleanInstallService.ManifestSnapshot(
+                CleanInstall: true,
+                ManifestSha256: new string('a', 64),
+                PackId: "smoke",
+                Build: 47,
+                Version: "0.4.7-smoke",
+                SourceBaseUrl: "https://example.invalid/launcher/pack/");
+
+            if (PackCleanInstallService.IsApplied(temp, snapshot))
+                throw new InvalidOperationException("Fresh clean-install test directory unexpectedly has an applied marker.");
+
+            PackCleanInstallService.CleanInstanceAsync(
+                    temp,
+                    snapshot,
+                    log: null,
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+
+            foreach (var name in preserved)
+            {
+                if (!File.Exists(Path.Combine(temp, name, "keep.txt")))
+                    throw new InvalidOperationException($"Clean install removed preserved directory {name}/.");
+            }
+
+            foreach (var name in new[] { "mods", "config", "defaultconfigs", "kubejs", "scripts", ".legendcore", "launcher" })
+            {
+                if (Directory.Exists(Path.Combine(temp, name)))
+                    throw new InvalidOperationException($"Clean install left stale directory {name}/ active.");
+            }
+
+            if (File.Exists(Path.Combine(temp, "options.txt")) || File.Exists(Path.Combine(temp, "servers.dat")))
+                throw new InvalidOperationException("Clean install left stale root files in the instance.");
+
+            PackCleanInstallService.MarkApplied(temp, snapshot);
+            if (!PackCleanInstallService.IsApplied(temp, snapshot))
+                throw new InvalidOperationException("Clean-install manifest marker was not persisted outside the instance.");
+
+            var nextSnapshot = snapshot with { ManifestSha256 = new string('b', 64), Build = 48 };
+            if (PackCleanInstallService.IsApplied(temp, nextSnapshot))
+                throw new InvalidOperationException("Clean-install marker incorrectly matched a different manifest revision.");
         }
         finally
         {
