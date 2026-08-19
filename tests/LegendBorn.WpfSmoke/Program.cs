@@ -37,8 +37,8 @@ internal static class Program
         var launcherInfoVersion = typeof(MainWindow).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
             .InformationalVersion ?? string.Empty;
-        if (!launcherInfoVersion.StartsWith("0.4.7", StringComparison.Ordinal))
-            throw new InvalidOperationException($"Launcher 0.4.7 smoke is running against {launcherInfoVersion}.");
+        if (!launcherInfoVersion.StartsWith("0.4.8", StringComparison.Ordinal))
+            throw new InvalidOperationException($"Launcher 0.4.8 smoke is running against {launcherInfoVersion}.");
 
         var app = new Application
         {
@@ -388,7 +388,7 @@ internal static class Program
         var temp = Path.Combine(Path.GetTempPath(), "legendborn-clean-install-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(temp);
 
-        var preserved = new[]
+        var preservedUser = new[]
         {
             "resourcepacks",
             "shaderpacks",
@@ -397,14 +397,26 @@ internal static class Program
             "logs"
         };
 
+        var preservedRuntime = new[]
+        {
+            "assets",
+            "libraries",
+            "versions"
+        };
+
         try
         {
-            foreach (var name in preserved)
+            foreach (var name in preservedUser.Concat(preservedRuntime))
             {
                 var dir = Path.Combine(temp, name);
                 Directory.CreateDirectory(dir);
                 File.WriteAllText(Path.Combine(dir, "keep.txt"), name);
             }
+
+            // Mirror the exact failure that escaped in 0.4.7: CmlLib must keep the base version JSON.
+            var vanillaVersionDir = Path.Combine(temp, "versions", "1.21.1");
+            Directory.CreateDirectory(vanillaVersionDir);
+            File.WriteAllText(Path.Combine(vanillaVersionDir, "1.21.1.json"), "{}");
 
             foreach (var name in new[] { "mods", "config", "defaultconfigs", "kubejs", "scripts", ".legendcore", "launcher" })
             {
@@ -421,7 +433,7 @@ internal static class Program
                 ManifestSha256: new string('a', 64),
                 PackId: "smoke",
                 Build: 47,
-                Version: "0.4.7-smoke",
+                Version: "0.4.8-smoke",
                 SourceBaseUrl: "https://example.invalid/launcher/pack/");
 
             if (PackCleanInstallService.IsApplied(temp, snapshot))
@@ -435,11 +447,20 @@ internal static class Program
                 .GetAwaiter()
                 .GetResult();
 
-            foreach (var name in preserved)
+            foreach (var name in preservedUser)
             {
                 if (!File.Exists(Path.Combine(temp, name, "keep.txt")))
-                    throw new InvalidOperationException($"Clean install removed preserved directory {name}/.");
+                    throw new InvalidOperationException($"Clean install removed preserved user directory {name}/.");
             }
+
+            foreach (var name in preservedRuntime)
+            {
+                if (!File.Exists(Path.Combine(temp, name, "keep.txt")))
+                    throw new InvalidOperationException($"Clean install removed Minecraft runtime directory {name}/.");
+            }
+
+            if (!File.Exists(Path.Combine(vanillaVersionDir, "1.21.1.json")))
+                throw new InvalidOperationException("Clean install removed versions/1.21.1/1.21.1.json required by CmlLib.");
 
             foreach (var name in new[] { "mods", "config", "defaultconfigs", "kubejs", "scripts", ".legendcore", "launcher" })
             {
