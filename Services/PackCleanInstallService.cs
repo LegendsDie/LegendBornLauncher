@@ -19,6 +19,8 @@ namespace LegendBorn.Services;
 /// Implements the per-build clean-install contract published by legendbornweb.
 /// A build marked cleanInstall=true is applied exactly once per local game directory.
 /// The clean marker intentionally lives outside the game directory so it survives the reset itself.
+/// Clean install resets pack-owned/user-mutable game content but never deletes the shared Minecraft runtime
+/// directories used by CmlLib to resolve vanilla/NeoForge versions.
 /// </summary>
 public static class PackCleanInstallService
 {
@@ -39,6 +41,15 @@ public static class PackCleanInstallService
         },
         StringComparer.OrdinalIgnoreCase);
 
+    private static readonly HashSet<string> MinecraftRuntimeDirectorySet = new(
+        new[]
+        {
+            "assets",
+            "libraries",
+            "versions"
+        },
+        StringComparer.OrdinalIgnoreCase);
+
     public static IReadOnlyList<string> PreservedDirectoryNames { get; } =
         new[]
         {
@@ -47,6 +58,14 @@ public static class PackCleanInstallService
             "screenshots",
             "saves",
             "logs"
+        };
+
+    public static IReadOnlyList<string> MinecraftRuntimeDirectoryNames { get; } =
+        new[]
+        {
+            "assets",
+            "libraries",
+            "versions"
         };
 
     public sealed record ManifestSnapshot(
@@ -266,8 +285,10 @@ public static class PackCleanInstallService
     }
 
     /// <summary>
-    /// Testable filesystem primitive. It preserves only the five user-owned top-level directories
-    /// from the public launcher contract and removes everything else from the instance.
+    /// Testable filesystem primitive. It preserves the five user-owned top-level directories from
+    /// the public clean-install contract plus Minecraft runtime infrastructure required by CmlLib.
+    /// Everything else is treated as stale instance/pack state and removed before the current build
+    /// is synchronized.
     /// </summary>
     internal static Task CleanGameDirectoryAsync(
         string gameDir,
@@ -282,7 +303,7 @@ public static class PackCleanInstallService
             Directory.CreateDirectory(root);
 
             log?.Invoke(
-                "Чистая установка: сохраняю только resourcepacks/, shaderpacks/, screenshots/, saves/, logs/.");
+                "Чистая установка: сохраняю resourcepacks/, shaderpacks/, screenshots/, saves/, logs/ и Minecraft runtime assets/, libraries/, versions/.");
 
             foreach (var entry in Directory.EnumerateFileSystemEntries(root, "*", SearchOption.TopDirectoryOnly))
             {
@@ -304,7 +325,13 @@ public static class PackCleanInstallService
                 var isDirectory = (attributes & FileAttributes.Directory) != 0;
                 if (isDirectory && PreservedDirectorySet.Contains(name))
                 {
-                    log?.Invoke($"Чистая установка: сохранено {name}/");
+                    log?.Invoke($"Чистая установка: сохранено пользовательское {name}/");
+                    continue;
+                }
+
+                if (isDirectory && MinecraftRuntimeDirectorySet.Contains(name))
+                {
+                    log?.Invoke($"Чистая установка: сохранена инфраструктура Minecraft {name}/");
                     continue;
                 }
 
