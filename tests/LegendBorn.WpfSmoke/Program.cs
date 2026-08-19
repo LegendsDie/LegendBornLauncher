@@ -37,8 +37,8 @@ internal static class Program
         var launcherInfoVersion = typeof(MainWindow).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
             .InformationalVersion ?? string.Empty;
-        if (!launcherInfoVersion.StartsWith("0.4.8", StringComparison.Ordinal))
-            throw new InvalidOperationException($"Launcher 0.4.8 smoke is running against {launcherInfoVersion}.");
+        if (!launcherInfoVersion.StartsWith("0.4.9", StringComparison.Ordinal))
+            throw new InvalidOperationException($"Launcher 0.4.9 smoke is running against {launcherInfoVersion}.");
 
         var app = new Application
         {
@@ -433,7 +433,7 @@ internal static class Program
                 ManifestSha256: new string('a', 64),
                 PackId: "smoke",
                 Build: 47,
-                Version: "0.4.8-smoke",
+                Version: "0.4.9-smoke",
                 SourceBaseUrl: "https://example.invalid/launcher/pack/");
 
             if (PackCleanInstallService.IsApplied(temp, snapshot))
