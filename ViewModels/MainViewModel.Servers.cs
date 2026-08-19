@@ -13,6 +13,10 @@ public sealed partial class MainViewModel
     {
         try
         {
+            // The vanilla multiplayer list is launcher-owned. Keep exactly one canonical LegendBorn
+            // entry even if a clean install or Minecraft itself rewrites/deletes servers.dat later.
+            MinecraftServerListPolicy.StartEnforcement(_gameDir, AppendLog);
+
             await LoadServersAsync(ct);
 
             if (_config.Current.AutoLogin)
@@ -41,14 +45,12 @@ public sealed partial class MainViewModel
 
         try
         {
-            // The server catalog is authoritative for infrastructure data. Never let a stale
-            // LastServerIp from launcher.config.json survive a server migration and override it.
-            var addr = (value.Address ?? "").Trim();
-            if (!string.IsNullOrWhiteSpace(addr) &&
-                !string.Equals(ServerIp, addr, StringComparison.OrdinalIgnoreCase))
-            {
+            // Build/loader/pack metadata still comes from the signed/authoritative catalog, but the
+            // actual public game endpoint is deliberately pinned in the launcher. This prevents a
+            // stale catalog/cache or old LastServerIp from breaking Quick Play after a server move.
+            var addr = MinecraftServerListPolicy.ResolveLaunchAddress(value.Address, AppendLog);
+            if (!string.Equals(ServerIp, addr, StringComparison.OrdinalIgnoreCase))
                 ServerIp = addr;
-            }
         }
         catch { /* ignore */ }
 
@@ -62,7 +64,7 @@ public sealed partial class MainViewModel
         try
         {
             _config.Current.LastServerId = value.Id;
-            _config.Current.LastServerIp = (value.Address ?? "").Trim();
+            _config.Current.LastServerIp = MinecraftServerListPolicy.CanonicalServerAddress;
             ScheduleConfigSave();
         }
         catch { /* ignore */ }
@@ -100,7 +102,7 @@ public sealed partial class MainViewModel
                     {
                         Id = s.Id,
                         Name = s.Name,
-                        Address = s.Address,
+                        Address = MinecraftServerListPolicy.ResolveLaunchAddress(s.Address),
                         MinecraftVersion = s.MinecraftVersion,
 
                         LoaderName = loaderType,
@@ -128,7 +130,7 @@ public sealed partial class MainViewModel
                 OnSelectedServerChanged(SelectedServer);
             });
 
-            AppendLog($"Серверы: загружено {Servers.Count} шт.");
+            AppendLog($"Серверы: загружено {Servers.Count} шт.; игровой адрес {MinecraftServerListPolicy.CanonicalServerAddress}.");
         }
         catch (OperationCanceledException)
         {
@@ -136,7 +138,7 @@ public sealed partial class MainViewModel
         }
         catch (Exception ex)
         {
-            // Fail closed. A stale address is worse than temporarily disabling Play after an IP move.
+            // Fail closed. Missing build metadata is worse than launching an unknown distribution.
             InvokeOnUi(() =>
             {
                 Servers.Clear();
@@ -145,7 +147,7 @@ public sealed partial class MainViewModel
 
             AppendLog("Серверы: не удалось получить актуальный каталог; запуск отключён.");
             AppendLog(ex.Message);
-            StatusText = "Не удалось получить актуальный адрес игрового сервера.";
+            StatusText = "Не удалось получить актуальные данные игрового сервера.";
         }
         finally
         {
