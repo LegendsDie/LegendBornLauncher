@@ -59,8 +59,22 @@ public static class MinecraftServerListPolicy
         var root = NormalizeGameDir(gameDir);
         Directory.CreateDirectory(root);
 
+        // Make startup deterministic. If the file is briefly locked, the watcher below retries.
+        try
+        {
+            EnsureCanonicalServerList(root, log);
+        }
+        catch (IOException ex)
+        {
+            log?.Invoke($"Minecraft servers.dat: начальная синхронизация отложена — {ex.Message}");
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            log?.Invoke($"Minecraft servers.dat: начальная синхронизация отложена — {ex.Message}");
+        }
+
         var enforcement = Enforcements.GetOrAdd(root, path => new Enforcement(path, log));
-        enforcement.EnsureSoon(immediate: true);
+        enforcement.EnsureSoon();
     }
 
     /// <summary>
@@ -80,19 +94,8 @@ public static class MinecraftServerListPolicy
 
             if (File.Exists(target))
             {
-                try
-                {
-                    var current = File.ReadAllBytes(target);
-                    changed = !current.AsSpan().SequenceEqual(CanonicalPayload);
-                }
-                catch (IOException)
-                {
-                    throw;
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    throw;
-                }
+                var current = File.ReadAllBytes(target);
+                changed = !current.AsSpan().SequenceEqual(CanonicalPayload);
             }
 
             if (changed)
@@ -290,7 +293,8 @@ public static class MinecraftServerListPolicy
 
         private void OnWatcherError(object sender, ErrorEventArgs e)
         {
-            _log?.Invoke($"Minecraft servers.dat watcher: {e.GetException().Message}");
+            var error = e.GetException();
+            _log?.Invoke($"Minecraft servers.dat watcher: {error?.Message ?? "unknown watcher error"}");
             EnsureSoon();
         }
 
