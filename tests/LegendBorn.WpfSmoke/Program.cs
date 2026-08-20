@@ -37,8 +37,8 @@ internal static class Program
         var launcherInfoVersion = typeof(MainWindow).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
             .InformationalVersion ?? string.Empty;
-        if (!launcherInfoVersion.StartsWith("0.4.9", StringComparison.Ordinal))
-            throw new InvalidOperationException($"Launcher 0.4.9 smoke is running against {launcherInfoVersion}.");
+        if (!launcherInfoVersion.StartsWith("0.5.0", StringComparison.Ordinal))
+            throw new InvalidOperationException($"Launcher 0.5.0 smoke is running against {launcherInfoVersion}.");
 
         var app = new Application
         {
@@ -433,7 +433,7 @@ internal static class Program
                 ManifestSha256: new string('a', 64),
                 PackId: "smoke",
                 Build: 47,
-                Version: "0.4.9-smoke",
+                Version: "0.5.0-smoke",
                 SourceBaseUrl: "https://example.invalid/launcher/pack/");
 
             if (PackCleanInstallService.IsApplied(temp, snapshot))
@@ -546,6 +546,18 @@ internal static class Program
                 throw new InvalidOperationException(
                     $"MainViewModel.{name} must resolve to the canonical LegendBorn origin {canonicalOrigin}, got {value ?? "<null>"}.");
             }
+        }
+
+        var skinManagerField = typeof(MainViewModel).GetField(
+                                   "SkinManagerWebPath",
+                                   BindingFlags.Static | BindingFlags.NonPublic)
+                               ?? throw new InvalidOperationException(
+                                   "MainViewModel.SkinManagerWebPath route constant was not found.");
+        var skinManagerPath = skinManagerField.GetRawConstantValue() as string;
+        if (!string.Equals(skinManagerPath, "immersion", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Skin manager must open {canonicalOrigin}/immersion, got route {skinManagerPath ?? "<null>"}.");
         }
     }
 
