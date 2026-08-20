@@ -7,7 +7,6 @@
              mc:Ignorable="d"
              d:DesignHeight="680"
              d:DesignWidth="980">
-    <!-- Distribution contract marker for CI only. BMCLAPI remains an internal fallback and is intentionally not rendered to users. -->
     <UserControl.Resources>
         <Style x:Key="SettingsSection" TargetType="Border">
             <Setter Property="Background" Value="#10000000"/>
@@ -32,6 +31,16 @@
             <Setter Property="Margin" Value="0,4,0,0"/>
             <Setter Property="TextWrapping" Value="Wrap"/>
         </Style>
+
+        <Style x:Key="SettingsTextBox" TargetType="TextBox">
+            <Setter Property="Height" Value="40"/>
+            <Setter Property="Padding" Value="12,8"/>
+            <Setter Property="Foreground" Value="{StaticResource TextStrongLocal}"/>
+            <Setter Property="Background" Value="#12162A"/>
+            <Setter Property="BorderBrush" Value="#343B59"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
     </UserControl.Resources>
 
     <Grid>
@@ -50,15 +59,14 @@
                     </Grid.ColumnDefinitions>
 
                     <StackPanel>
-                        <TextBlock x:Name="SettingsTitle"
-                                   Text="Настройки"
+                        <TextBlock Text="Настройки"
                                    Foreground="{StaticResource TextStrongLocal}"
                                    FontSize="20"
                                    FontWeight="Bold"/>
                         <TextBlock Margin="0,4,0,0"
                                    Foreground="{StaticResource TextDimLocal}"
                                    FontSize="12"
-                                   Text="Настройте запуск игры, память, подключение и обслуживание сборки."/>
+                                   Text="Настройте игру и поведение лаунчера."/>
                     </StackPanel>
 
                     <Button Grid.Column="1"
@@ -84,17 +92,14 @@
                             <StackPanel Grid.Column="0">
                                 <Border Style="{StaticResource SettingsSection}">
                                     <StackPanel>
-                                        <TextBlock Text="Память Minecraft"
+                                        <TextBlock Text="Память для Minecraft"
                                                    Foreground="{StaticResource TextStrongLocal}"
                                                    FontWeight="SemiBold"
                                                    FontSize="14"/>
-                                        <TextBlock Style="{StaticResource SettingsCaption}"
-                                                   Text="Можно доверить выбор лаунчеру или задать объём вручную."/>
 
-                                        <CheckBox x:Name="AutomaticRamCheck"
-                                                  Margin="0,13,0,0"
+                                        <CheckBox Margin="0,13,0,0"
                                                   Foreground="{StaticResource TextStrongLocal}"
-                                                  Content="Подбирать автоматически (рекомендуется)"
+                                                  Content="Выбирать автоматически"
                                                   IsChecked="{Binding UseAutomaticRam, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
 
                                         <ComboBox x:Name="RamCombo"
@@ -113,26 +118,20 @@
                                                 <ColumnDefinition Width="10"/>
                                                 <ColumnDefinition Width="*"/>
                                             </Grid.ColumnDefinitions>
-
                                             <StackPanel>
-                                                <TextBlock Style="{StaticResource SettingsLabel}" Text="В СИСТЕМЕ"/>
-                                                <TextBlock Margin="0,4,0,0"
-                                                           Style="{StaticResource SettingsValue}"
+                                                <TextBlock Style="{StaticResource SettingsLabel}" Text="УСТАНОВЛЕНО"/>
+                                                <TextBlock Margin="0,4,0,0" Style="{StaticResource SettingsValue}"
                                                            Text="{Binding TotalSystemRamMb, StringFormat={}{0:N0} МБ}"/>
                                             </StackPanel>
-
                                             <StackPanel Grid.Column="2">
                                                 <TextBlock Style="{StaticResource SettingsLabel}" Text="РЕКОМЕНДУЕТСЯ"/>
-                                                <TextBlock Margin="0,4,0,0"
-                                                           Style="{StaticResource SettingsValue}"
+                                                <TextBlock Margin="0,4,0,0" Style="{StaticResource SettingsValue}"
                                                            Foreground="#CBB4FF"
                                                            Text="{Binding RecommendedRamMb, StringFormat={}{0:N0} МБ}"/>
                                             </StackPanel>
-
                                             <StackPanel Grid.Column="4">
-                                                <TextBlock Style="{StaticResource SettingsLabel}" Text="МАКСИМУМ"/>
-                                                <TextBlock Margin="0,4,0,0"
-                                                           Style="{StaticResource SettingsValue}"
+                                                <TextBlock Style="{StaticResource SettingsLabel}" Text="ДОСТУПНО"/>
+                                                <TextBlock Margin="0,4,0,0" Style="{StaticResource SettingsValue}"
                                                            Text="{Binding MaxAllowedRamMb, StringFormat={}{0:N0} МБ}"/>
                                             </StackPanel>
                                         </Grid>
@@ -141,29 +140,97 @@
 
                                 <Border Margin="0,14,0,0" Style="{StaticResource SettingsSection}">
                                     <StackPanel>
-                                        <TextBlock Text="Поведение при запуске"
+                                        <TextBlock Text="Java"
                                                    Foreground="{StaticResource TextStrongLocal}"
                                                    FontWeight="SemiBold"
                                                    FontSize="14"/>
                                         <TextBlock Margin="0,4,0,12"
-                                                   Style="{StaticResource SettingsLabel}"
-                                                   Text="Что делать с лаунчером, пока Minecraft запущен."/>
+                                                   Style="{StaticResource SettingsCaption}"
+                                                   Text="Для Minecraft 1.21.1 нужна Java 21 (64-bit)."/>
 
-                                        <RadioButton GroupName="GameUiMode"
+                                        <RadioButton GroupName="JavaMode"
                                                      Margin="0,4"
                                                      Foreground="{StaticResource TextStrongLocal}"
-                                                     Content="Скрывать лаунчер"
+                                                     Content="Автоматически"
+                                                     IsChecked="{Binding UseAutomaticJava, Mode=TwoWay}"/>
+                                        <TextBlock Margin="24,0,0,7"
+                                                   Style="{StaticResource SettingsLabel}"
+                                                   Text="Лаунчер сам найдёт или установит подходящую Java."/>
+
+                                        <RadioButton GroupName="JavaMode"
+                                                     Margin="0,4"
+                                                     Foreground="{StaticResource TextStrongLocal}"
+                                                     Content="Использовать установленную Java"
+                                                     IsChecked="{Binding UseSystemJava, Mode=TwoWay}"/>
+
+                                        <RadioButton GroupName="JavaMode"
+                                                     Margin="0,4"
+                                                     Foreground="{StaticResource TextStrongLocal}"
+                                                     Content="Выбрать Java вручную"
+                                                     IsChecked="{Binding UseCustomJava, Mode=TwoWay}"/>
+
+                                        <TextBox Margin="0,9,0,0"
+                                                 Style="{StaticResource SettingsTextBox}"
+                                                 IsEnabled="{Binding JavaCustomPathEnabled}"
+                                                 Text="{Binding JavaCustomPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                 ToolTip="Путь к javaw.exe или java.exe"/>
+
+                                        <Grid Margin="0,12,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock VerticalAlignment="Center"
+                                                       Style="{StaticResource SettingsCaption}"
+                                                       Text="{Binding JavaStatusText}"/>
+                                            <Button Grid.Column="1"
+                                                    Margin="12,0,0,0"
+                                                    Style="{StaticResource GhostButton}"
+                                                    Height="36"
+                                                    Padding="14,0"
+                                                    Content="Проверить"
+                                                    Command="{Binding CheckJavaCommand}"/>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Margin="0,14,0,0" Style="{StaticResource SettingsSection}">
+                                    <StackPanel>
+                                        <TextBlock Text="Когда игра запущена"
+                                                   Foreground="{StaticResource TextStrongLocal}"
+                                                   FontWeight="SemiBold"
+                                                   FontSize="14"/>
+                                        <RadioButton GroupName="GameUiMode" Margin="0,10,0,4"
+                                                     Foreground="{StaticResource TextStrongLocal}"
+                                                     Content="Скрыть лаунчер"
                                                      IsChecked="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=GameUiModeHide, Mode=TwoWay}"/>
-                                        <RadioButton GroupName="GameUiMode"
-                                                     Margin="0,4"
+                                        <RadioButton GroupName="GameUiMode" Margin="0,4"
                                                      Foreground="{StaticResource TextStrongLocal}"
-                                                     Content="Сворачивать лаунчер"
+                                                     Content="Свернуть лаунчер"
                                                      IsChecked="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=GameUiModeMinimize, Mode=TwoWay}"/>
-                                        <RadioButton GroupName="GameUiMode"
-                                                     Margin="0,4"
+                                        <RadioButton GroupName="GameUiMode" Margin="0,4"
                                                      Foreground="{StaticResource TextStrongLocal}"
-                                                     Content="Оставлять открытым"
+                                                     Content="Оставить открытым"
                                                      IsChecked="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=GameUiModeNone, Mode=TwoWay}"/>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="2">
+                                <Border Style="{StaticResource SettingsSection}">
+                                    <StackPanel>
+                                        <TextBlock Text="Вход и сервер"
+                                                   Foreground="{StaticResource TextStrongLocal}"
+                                                   FontWeight="SemiBold"
+                                                   FontSize="14"/>
+                                        <CheckBox Margin="0,14,0,0"
+                                                  Foreground="{StaticResource TextStrongLocal}"
+                                                  Content="Входить автоматически"
+                                                  IsChecked="{Binding AutoLogin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                                        <CheckBox Margin="0,13,0,0"
+                                                  Foreground="{StaticResource TextStrongLocal}"
+                                                  Content="Сразу подключаться к выбранному серверу"
+                                                  IsChecked="{Binding AutoConnect, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                                     </StackPanel>
                                 </Border>
 
@@ -174,80 +241,42 @@
                                             <ColumnDefinition Width="12"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-
                                         <StackPanel>
                                             <TextBlock Text="Папка игры"
                                                        Foreground="{StaticResource TextStrongLocal}"
                                                        FontWeight="SemiBold"
                                                        FontSize="14"/>
-                                            <TextBlock x:Name="GameDirectoryText"
-                                                       Margin="0,5,0,0"
-                                                       MaxWidth="430"
+                                            <TextBlock Margin="0,5,0,0"
+                                                       MaxWidth="360"
                                                        Style="{StaticResource SettingsLabel}"
                                                        Text="{Binding GameDirectoryPath}"
                                                        TextTrimming="CharacterEllipsis"
                                                        ToolTip="{Binding GameDirectoryPath}"/>
                                         </StackPanel>
-
-                                        <Button Grid.Column="2"
-                                                VerticalAlignment="Center"
+                                        <Button Grid.Column="2" VerticalAlignment="Center"
                                                 Style="{StaticResource GhostButton}"
-                                                Height="36"
-                                                Padding="14,0"
+                                                Height="36" Padding="14,0"
                                                 Content="Открыть"
                                                 Command="{Binding OpenGameDirCommand}"/>
                                     </Grid>
                                 </Border>
-                            </StackPanel>
-
-                            <StackPanel Grid.Column="2">
-                                <Border Style="{StaticResource SettingsSection}">
-                                    <StackPanel>
-                                        <TextBlock Text="Аккаунт и подключение"
-                                                   Foreground="{StaticResource TextStrongLocal}"
-                                                   FontWeight="SemiBold"
-                                                   FontSize="14"/>
-
-                                        <CheckBox Margin="0,14,0,0"
-                                                  Foreground="{StaticResource TextStrongLocal}"
-                                                  Content="Автоматически восстанавливать вход"
-                                                  IsChecked="{Binding AutoLogin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-
-                                        <CheckBox Margin="0,13,0,0"
-                                                  Foreground="{StaticResource TextStrongLocal}"
-                                                  Content="Автоподключение к выбранному серверу"
-                                                  IsChecked="{Binding AutoConnect, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-                                    </StackPanel>
-                                </Border>
 
                                 <Border Margin="0,14,0,0" Style="{StaticResource SettingsSection}">
                                     <StackPanel>
-                                        <TextBlock Text="Обновления и восстановление"
+                                        <TextBlock Text="Обновления"
                                                    Foreground="{StaticResource TextStrongLocal}"
                                                    FontWeight="SemiBold"
                                                    FontSize="14"/>
-                                        <TextBlock Style="{StaticResource SettingsCaption}"
-                                                   Text="Проверка сборки восстановит недостающие файлы и уберёт устаревшие файлы, которыми управляет лаунчер."/>
-
                                         <Button Margin="0,13,0,0"
                                                 Style="{StaticResource GhostButton}"
-                                                Height="42"
-                                                Padding="16,0"
-                                                Content="Проверить обновления лаунчера"
+                                                Height="42" Padding="16,0"
+                                                Content="Проверить обновление лаунчера"
                                                 Command="{Binding CheckLauncherUpdatesCommand}"/>
-
-                                        <Button x:Name="RepairPackButton"
-                                                Margin="0,9,0,0"
+                                        <Button Margin="0,9,0,0"
                                                 Style="{StaticResource GhostButton}"
-                                                Height="42"
-                                                Padding="16,0"
-                                                Content="Проверить и восстановить сборку"
+                                                Height="42" Padding="16,0"
+                                                Content="Проверить файлы игры"
                                                 Command="{Binding RefreshVersionsCommand}"/>
-
-                                        <TextBlock Margin="0,10,0,0"
-                                                   Style="{StaticResource SettingsLabel}"
-                                                   TextWrapping="Wrap"
-                                                   Text="Ваши личные настройки Minecraft при этом сохраняются."/>
                                     </StackPanel>
                                 </Border>
                             </StackPanel>
@@ -260,29 +289,23 @@
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
-
                                     <StackPanel>
-                                        <TextBlock Text="Диагностика и поддержка"
+                                        <TextBlock Text="Помощь и диагностика"
                                                    Foreground="{StaticResource TextStrongLocal}"
                                                    FontWeight="SemiBold"
                                                    FontSize="14"/>
                                         <TextBlock Style="{StaticResource SettingsCaption}"
-                                                   Text="Если игра не запускается или работает неправильно, соберите отчёт для поддержки."/>
+                                                   Text="Если игра не запускается, создайте отчёт для поддержки."/>
                                     </StackPanel>
-
-                                    <StackPanel Grid.Column="1"
-                                                Orientation="Horizontal"
-                                                VerticalAlignment="Center">
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                                         <Button Style="{StaticResource GhostButton}"
-                                                Content="Собрать отчёт"
+                                                Content="Создать отчёт"
                                                 Command="{Binding CollectDiagnosticsCommand}"
-                                                Height="36"
-                                                Padding="14,0"
-                                                Margin="0,0,12,0"/>
+                                                Height="36" Padding="14,0" Margin="0,0,12,0"/>
                                         <CheckBox x:Name="RootAutoScroll"
                                                   VerticalAlignment="Center"
                                                   Foreground="{StaticResource TextDimLocal}"
-                                                  Content="Автопрокрутка"
+                                                  Content="Следить за новыми строками"
                                                   IsChecked="True"/>
                                     </StackPanel>
                                 </Grid>
@@ -291,43 +314,25 @@
                                           Foreground="{StaticResource TextStrongLocal}"
                                           Header="Журнал запуска"
                                           IsExpanded="False">
-                                    <Border Margin="0,10,0,0"
-                                            Background="#101329"
+                                    <Border Margin="0,10,0,0" Background="#101329"
                                             BorderBrush="{StaticResource StrokeGlow}"
-                                            BorderThickness="1"
-                                            CornerRadius="14"
-                                            Padding="14"
-                                            ClipToBounds="True">
+                                            BorderThickness="1" CornerRadius="14" Padding="14" ClipToBounds="True">
                                         <Grid>
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto"/>
                                                 <RowDefinition Height="10"/>
                                                 <RowDefinition Height="220"/>
                                             </Grid.RowDefinitions>
-
-                                            <StackPanel Grid.Row="0"
-                                                        Orientation="Horizontal"
-                                                        HorizontalAlignment="Right">
-                                                <Button Style="{StaticResource GhostButton}"
-                                                        Content="Копировать"
-                                                        Height="34"
-                                                        Padding="14,0"
-                                                        Margin="0,0,8,0"
-                                                        Click="CopyLogs_OnClick"/>
-                                                <Button Style="{StaticResource GhostButton}"
-                                                        Content="Очистить"
-                                                        Height="34"
-                                                        Padding="14,0"
-                                                        Click="ClearLogs_OnClick"/>
+                                            <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Right">
+                                                <Button Style="{StaticResource GhostButton}" Content="Копировать"
+                                                        Height="34" Padding="14,0" Margin="0,0,8,0" Click="CopyLogs_OnClick"/>
+                                                <Button Style="{StaticResource GhostButton}" Content="Очистить"
+                                                        Height="34" Padding="14,0" Click="ClearLogs_OnClick"/>
                                             </StackPanel>
-
-                                            <ListBox x:Name="LogListBox"
-                                                     Grid.Row="2"
+                                            <ListBox x:Name="LogListBox" Grid.Row="2"
                                                      ItemsSource="{Binding LogLines}"
-                                                     Background="Transparent"
-                                                     BorderThickness="0"
-                                                     Foreground="{StaticResource TextDimLocal}"
-                                                     FontSize="12"
+                                                     Background="Transparent" BorderThickness="0"
+                                                     Foreground="{StaticResource TextDimLocal}" FontSize="12"
                                                      ScrollViewer.VerticalScrollBarVisibility="Auto"
                                                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                                      VirtualizingStackPanel.IsVirtualizing="True"
