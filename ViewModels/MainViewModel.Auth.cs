@@ -20,18 +20,15 @@ public sealed partial class MainViewModel
     {
         var cts = _loginCts;
         _loginCts = null;
-
         if (cts is null) return;
-
-        try { cts.Cancel(); } catch { /* ignore */ }
-        try { cts.Dispose(); } catch { /* ignore */ }
+        try { cts.Cancel(); } catch { }
+        try { cts.Dispose(); } catch { }
     }
 
     private static bool LooksLikeUnauthorized(Exception ex)
     {
         if (ex is HttpRequestException hre && hre.StatusCode is HttpStatusCode sc)
             return sc is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden;
-
         var msg = (ex.Message ?? "").ToLowerInvariant();
         return msg.Contains("401") || msg.Contains("403") || msg.Contains("unauthorized") || msg.Contains("forbidden");
     }
@@ -39,7 +36,6 @@ public sealed partial class MainViewModel
     private static string BuildConnectUrl(string deviceId, string connectUrl)
     {
         var path = string.IsNullOrWhiteSpace(connectUrl) ? "/launcher/connect" : connectUrl.Trim();
-
         var fullUrl = path.StartsWith("http", StringComparison.OrdinalIgnoreCase)
             ? path
             : SiteBaseUrl + (path.StartsWith("/") ? path : "/" + path);
@@ -48,7 +44,6 @@ public sealed partial class MainViewModel
         {
             var ub = new UriBuilder(fullUrl);
             var query = (ub.Query ?? "").TrimStart('?');
-
             if (query.IndexOf("deviceid=", StringComparison.OrdinalIgnoreCase) < 0 &&
                 query.IndexOf("deviceId=", StringComparison.OrdinalIgnoreCase) < 0)
             {
@@ -56,81 +51,95 @@ public sealed partial class MainViewModel
                 query += "deviceId=" + Uri.EscapeDataString(deviceId);
                 ub.Query = query;
             }
-
             return ub.Uri.ToString();
         }
         catch
         {
             if (!fullUrl.Contains("deviceId=", StringComparison.OrdinalIgnoreCase) &&
                 !fullUrl.Contains("deviceid=", StringComparison.OrdinalIgnoreCase))
-            {
                 fullUrl += (fullUrl.Contains("?") ? "&" : "?") + "deviceId=" + Uri.EscapeDataString(deviceId);
-            }
-
             return fullUrl;
         }
     }
 
     private static DateTimeOffset BuildDeadline(long expiresAtUnix)
     {
-        try
-        {
-            if (expiresAtUnix > 0)
-                return DateTimeOffset.FromUnixTimeSeconds(expiresAtUnix);
-        }
-        catch { /* ignore */ }
-
+        try { if (expiresAtUnix > 0) return DateTimeOffset.FromUnixTimeSeconds(expiresAtUnix); }
+        catch { }
         return DateTimeOffset.UtcNow.AddMinutes(10);
-    }
-
-    private bool HasConfigUsername(out string normalized)
-    {
-        normalized = "";
-        try
-        {
-            var raw = (_config.Current.LastUsername ?? "").Trim();
-
-            if (string.IsNullOrWhiteSpace(raw)) return false;
-            if (raw.Equals("Player", StringComparison.OrdinalIgnoreCase)) return false;
-
-            normalized = IsValidMcName(raw) ? raw : MakeValidMcName(raw);
-            return !string.IsNullOrWhiteSpace(normalized);
-        }
-        catch
-        {
-            return false;
-        }
     }
 
     private async Task ApplySuccessfulLoginAsync(AuthTokens tokens, CancellationToken ct)
     {
         _tokens = tokens;
-
-        // legendbornweb /api/launcher/me is the source of truth for profile,
-        // play access and RZN. Do not call legacy/phantom launcher economy/events APIs.
         var me = await _site.GetMeAsync(tokens.SafeAccessToken, ct);
         Profile = me;
-
         SiteUserName = string.IsNullOrWhiteSpace(me.UserName) ? "Пользователь" : me.UserName;
+
+        // The website allows selecting a skin before Minecraft is linked. Once Launcher auth
+        // succeeds, immediately make the account playable instead of waiting for the Play button.
+        var desiredMinecraftName = ResolveLaunchMinecraftUsername();
+        if (!IsValidMcName(desiredMinecraftName))
+            desiredMinecraftName = MakeValidMcName(me.MinecraftName ?? me.UserName ?? "Player");
+
+        SiteAuthService.MinecraftLinkResponse? link = null;
+        try
+        {
+            link = await _site.LinkMinecraftAsync(
+                tokens.SafeAccessToken,
+                desiredMinecraftName,
+                ct,
+                deviceId: null).ConfigureAwait(false);
+
+            if (link.Ok)
+            {
+                var linkedName = (link.Minecraft?.Username ?? desiredMinecraftName).Trim();
+                if (IsValidMcName(linkedName))
+                {
+                    try { _config.Current.LastUsername = linkedName; } catch { }
+                    Username = linkedName;
+                }
+
+                // Re-read the authoritative snapshot so IsLinked, serverNick and selected skin
+                // are visible everywhere immediately after authentication.
+                me = await _site.GetMeAsync(tokens.SafeAccessToken, ct).ConfigureAwait(false);
+                ApplyBuiltinSkinFallback(me, link.Minecraft?.SelectedSkinKey);
+                Profile = me;
+                SiteUserName = string.IsNullOrWhiteSpace(me.UserName) ? "Пользователь" : me.UserName;
+                AppendLog($"Minecraft: аккаунт привязан как {linkedName}.");
+            }
+            else
+            {
+                AppendLog("Minecraft: автоматическая привязка не выполнена: " +
+                          (link.Error ?? link.Message ?? "неизвестная ошибка"));
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Site login remains valid even if the secondary link endpoint is temporarily down.
+            AppendLog("Minecraft: автоматическая привязка временно недоступна: " + ex.Message);
+        }
+
+        if (link is null || !link.Ok)
+        {
+            var accountName = (me.Minecraft?.Username ?? me.MinecraftName ?? string.Empty).Trim();
+            if (!IsValidMcName(accountName)) accountName = MakeValidMcName(accountName.Length > 0 ? accountName : SiteUserName);
+            try { _config.Current.LastUsername = accountName; } catch { }
+            Username = accountName;
+            ApplyBuiltinSkinFallback(me, null);
+        }
+
         IsLoggedIn = true;
-
-        if (HasConfigUsername(out var local))
-        {
-            if (!string.Equals(Username, local, StringComparison.Ordinal))
-                Username = local;
-        }
-        else
-        {
-            var mcName = string.IsNullOrWhiteSpace(me.MinecraftName) ? SiteUserName : me.MinecraftName!;
-            Username = MakeValidMcName(mcName);
-        }
-
         try
         {
             _config.Current.LastSuccessfulLoginUtc = DateTimeOffset.UtcNow;
             ScheduleConfigSave();
         }
-        catch { /* ignore */ }
+        catch { }
 
         if (!me.CanPlay)
         {
@@ -139,64 +148,77 @@ public sealed partial class MainViewModel
         }
         else
         {
-            StatusText = "Вход выполнен.";
+            StatusText = link is { Ok: false }
+                ? "Вход выполнен. Minecraft пока не привязан."
+                : "Вход выполнен.";
             AppendLog($"Сайт: вошли как {SiteUserName}");
         }
+    }
+
+    private static void ApplyBuiltinSkinFallback(UserProfile profile, string? selectedKeyFromLink)
+    {
+        if (profile.Minecraft is null) return;
+        if (profile.Minecraft.SelectedSkin is not null) return;
+
+        var key = (profile.Minecraft.SelectedSkinKey ?? selectedKeyFromLink ?? string.Empty).Trim();
+        UserProfile.SkinSnapshot? fallback = key switch
+        {
+            "builtin_default" => new UserProfile.SkinSnapshot
+            {
+                Title = "Стандартный скин",
+                PreviewUrl = "/skins/default.png",
+                SkinUrl = "/skins/default.png",
+                IsEnabled = true
+            },
+            "builtin_example" => new UserProfile.SkinSnapshot
+            {
+                Title = "Стандартный скин 2",
+                PreviewUrl = "/skins/example.png",
+                SkinUrl = "/skins/example.png",
+                IsEnabled = true
+            },
+            _ => null
+        };
+
+        if (fallback is null) return;
+        profile.Minecraft.SelectedSkinKey = key;
+        profile.Minecraft.SelectedSkin = fallback;
     }
 
     private void ApplyLoggedOutUiState(string statusText)
     {
         _tokens = null;
-
         Profile = null;
         Rezonite = 0;
-
         IsLoggedIn = false;
         IsWaitingSiteConfirm = false;
         SiteUserName = "Не вошли";
-
         LoginUrl = null;
-
         StatusText = statusText;
     }
 
     private void ApplyOfflineAuthenticatedUiState(AuthTokens tokens, string statusText)
     {
         _tokens = tokens;
-
-        if (!IsLoggedIn)
-            IsLoggedIn = true;
-
-        if (string.IsNullOrWhiteSpace(SiteUserName) || SiteUserName == "Не вошли")
-            SiteUserName = "Пользователь";
-
+        if (!IsLoggedIn) IsLoggedIn = true;
+        if (string.IsNullOrWhiteSpace(SiteUserName) || SiteUserName == "Не вошли") SiteUserName = "Пользователь";
         StatusText = statusText;
     }
 
     private async Task TryAutoLoginAsync(CancellationToken ct)
     {
         if (_isClosing) return;
-
         var saved = _tokenStore.Load();
-        if (saved is null || !saved.HasAccessToken)
-            return;
-
-        if (saved.IsExpired())
-        {
-            _tokenStore.Clear();
-            return;
-        }
+        if (saved is null || !saved.HasAccessToken) return;
+        if (saved.IsExpired()) { _tokenStore.Clear(); return; }
 
         try
         {
             IsBusy = true;
-            StatusText = "Проверка входа на сайте...";
+            StatusText = "Проверяю вход…";
             await ApplySuccessfulLoginAsync(saved, ct);
         }
-        catch (OperationCanceledException)
-        {
-            StatusText = "Отменено.";
-        }
+        catch (OperationCanceledException) { StatusText = "Отменено."; }
         catch (Exception ex)
         {
             if (LooksLikeUnauthorized(ex))
@@ -206,17 +228,14 @@ public sealed partial class MainViewModel
             }
             else
             {
-                ApplyOfflineAuthenticatedUiState(saved, "Вход сохранён (нет связи с сайтом).");
+                ApplyOfflineAuthenticatedUiState(saved, "Вход сохранён. Нет связи с сайтом.");
                 AppendLog("Автовход: сайт/сеть недоступны — использую сохранённую авторизацию.");
             }
         }
         finally
         {
             IsBusy = false;
-
-            if (string.Equals(StatusText, "Проверка входа на сайте...", StringComparison.Ordinal))
-                StatusText = "Готово.";
-
+            if (string.Equals(StatusText, "Проверяю вход…", StringComparison.Ordinal)) StatusText = "Готово.";
             RefreshCanStates();
         }
     }
@@ -224,7 +243,6 @@ public sealed partial class MainViewModel
     private async Task LoginViaSiteAsync()
     {
         if (_isClosing) return;
-
         CancelLoginWait();
         _loginCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
         var auth = new LauncherAuthClient();
@@ -233,13 +251,12 @@ public sealed partial class MainViewModel
         {
             IsWaitingSiteConfirm = true;
             LoginUrl = null;
-            StatusText = "Запрос входа...";
+            StatusText = "Начинаю вход…";
             ProgressPercent = 0;
             IsBusy = true;
 
             var start = await auth.StartAsync(_loginCts.Token);
             IsBusy = false;
-
             var fullUrl = BuildConnectUrl(start.DeviceId, start.ConnectUrl);
             LoginUrl = fullUrl;
             AppendLog($"Ссылка для входа: {fullUrl}");
@@ -247,12 +264,9 @@ public sealed partial class MainViewModel
             if (!TryOpenUrlInBrowser(fullUrl, out var openError))
             {
                 AppendLog(openError);
-                StatusText = "Не удалось открыть браузер автоматически. Скопируй ссылку и открой вручную.";
+                StatusText = "Откройте ссылку входа вручную.";
             }
-            else
-            {
-                StatusText = "Подтверди вход на сайте.";
-            }
+            else StatusText = "Подтвердите вход на сайте.";
 
             var deadline = BuildDeadline(start.ExpiresAtUnix);
             var transientFailures = 0;
@@ -262,12 +276,11 @@ public sealed partial class MainViewModel
                 if (DateTimeOffset.UtcNow > deadline)
                 {
                     AppendLog("Auth: время ожидания подтверждения истекло.");
-                    StatusText = "Запрос входа истёк. Начни авторизацию заново.";
+                    StatusText = "Время входа истекло. Попробуйте снова.";
                     return;
                 }
 
                 await Task.Delay(1200, _loginCts.Token);
-
                 var poll = await auth.PollAsync(start.DeviceId, _loginCts.Token);
 
                 if (poll.State == LauncherAuthClient.PollState.Pending)
@@ -276,8 +289,7 @@ public sealed partial class MainViewModel
                     if (poll.ExpiresAtUnix > 0)
                     {
                         var serverDeadline = BuildDeadline(poll.ExpiresAtUnix);
-                        if (serverDeadline < deadline)
-                            deadline = serverDeadline;
+                        if (serverDeadline < deadline) deadline = serverDeadline;
                     }
                     continue;
                 }
@@ -286,16 +298,11 @@ public sealed partial class MainViewModel
                 {
                     transientFailures++;
                     if (transientFailures == 1 || transientFailures % 5 == 0)
-                    {
-                        AppendLog(
-                            $"Auth polling: временная ошибка HTTP {poll.HttpStatus}" +
-                            (string.IsNullOrWhiteSpace(poll.Code) ? "." : $" ({poll.Code})."));
-                    }
-
+                        AppendLog($"Auth polling: временная ошибка HTTP {poll.HttpStatus}" +
+                                  (string.IsNullOrWhiteSpace(poll.Code) ? "." : $" ({poll.Code})."));
                     StatusText = poll.HttpStatus == 429
-                        ? "Слишком много запросов. Продолжаю ожидание подтверждения..."
-                        : "Сайт временно недоступен. Продолжаю ожидание подтверждения...";
-
+                        ? "Слишком много запросов. Продолжаю ждать…"
+                        : "Сайт временно недоступен. Продолжаю ждать…";
                     var retry = poll.RetryAfter ?? TimeSpan.FromMilliseconds(Math.Min(5000, 1000 + transientFailures * 500));
                     await Task.Delay(retry, _loginCts.Token);
                     continue;
@@ -305,33 +312,24 @@ public sealed partial class MainViewModel
                 {
                     var code = string.IsNullOrWhiteSpace(poll.Code) ? "AUTH_FAILED" : poll.Code;
                     AppendLog($"Auth завершён: {code}, HTTP {poll.HttpStatus}.");
-                    StatusText = string.IsNullOrWhiteSpace(poll.Message)
-                        ? "Запрос авторизации больше недействителен. Начни вход заново."
-                        : poll.Message!;
+                    StatusText = string.IsNullOrWhiteSpace(poll.Message) ? "Запрос входа больше недействителен." : poll.Message!;
                     return;
                 }
 
                 var tokens = poll.Tokens;
                 if (tokens is null || !tokens.HasAccessToken)
                 {
-                    AppendLog("Auth: сервер сообщил OK без пригодного токена.");
-                    StatusText = "Сайт вернул некорректный ответ входа. Попробуй снова.";
+                    StatusText = "Сайт вернул некорректный ответ входа.";
                     return;
                 }
-
                 if (tokens.IsExpired())
                 {
-                    AppendLog("Auth: сайт вернул уже просроченный токен.");
-                    StatusText = "Сайт вернул просроченный токен. Попробуй снова.";
+                    StatusText = "Сайт вернул просроченную сессию. Попробуйте снова.";
                     return;
                 }
 
                 _tokenStore.Save(tokens);
-
-                try
-                {
-                    await ApplySuccessfulLoginAsync(tokens, _loginCts.Token);
-                }
+                try { await ApplySuccessfulLoginAsync(tokens, _loginCts.Token); }
                 catch (Exception ex)
                 {
                     if (LooksLikeUnauthorized(ex))
@@ -342,11 +340,10 @@ public sealed partial class MainViewModel
                     }
                     else
                     {
-                        ApplyOfflineAuthenticatedUiState(tokens, "Вход подтверждён (профиль временно недоступен).");
+                        ApplyOfflineAuthenticatedUiState(tokens, "Вход подтверждён. Профиль временно недоступен.");
                         AppendLog("Вход подтверждён, но /api/launcher/me временно недоступен.");
                     }
                 }
-
                 return;
             }
         }
@@ -364,14 +361,13 @@ public sealed partial class MainViewModel
         catch (Exception ex)
         {
             AppendLog($"Auth unexpected error: {ex.GetType().Name}: {ex.Message}");
-            StatusText = "Неожиданная ошибка входа. Подробности записаны в лог.";
+            StatusText = "Неожиданная ошибка входа. Подробности записаны в журнал.";
         }
         finally
         {
             IsBusy = false;
             IsWaitingSiteConfirm = false;
             LoginUrl = null;
-
             CancelLoginWait();
             RefreshCanStates();
         }
@@ -380,26 +376,19 @@ public sealed partial class MainViewModel
     private void OpenLoginUrl()
     {
         var url = LoginUrl;
-        if (string.IsNullOrWhiteSpace(url))
-            return;
-
+        if (string.IsNullOrWhiteSpace(url)) return;
         if (!TryOpenUrlInBrowser(url, out var err))
         {
             AppendLog(err);
-            StatusText = "Не удалось открыть ссылку. Скопируй и открой вручную.";
+            StatusText = "Не удалось открыть ссылку. Скопируйте её и откройте вручную.";
         }
-        else
-        {
-            StatusText = "Открыл ссылку в браузере.";
-        }
+        else StatusText = "Ссылка открыта в браузере.";
     }
 
     private void CopyLoginUrl()
     {
         var url = LoginUrl;
-        if (string.IsNullOrWhiteSpace(url))
-            return;
-
+        if (string.IsNullOrWhiteSpace(url)) return;
         try
         {
             InvokeOnUi(() => Clipboard.SetText(url));
@@ -446,81 +435,52 @@ public sealed partial class MainViewModel
                 }
                 catch (Exception ex3)
                 {
-                    error =
-                        "Не удалось открыть браузер автоматически.\n" +
-                        $"1) {ex1.Message}\n" +
-                        $"2) {ex2.Message}\n" +
-                        $"3) {ex3.Message}";
+                    error = "Не удалось открыть браузер автоматически.\n" +
+                            $"1) {ex1.Message}\n2) {ex2.Message}\n3) {ex3.Message}";
                     return false;
                 }
             }
         }
     }
 
-    // RelayCommand intentionally accepts this async-void UI command. All exceptions are
-    // handled inside the method; local logout happens immediately, server revocation is best-effort.
     private async void SiteLogout()
     {
         string tokenToRevoke = string.Empty;
-
         try
         {
             CancelLoginWait();
-
             tokenToRevoke = _tokens?.SafeAccessToken ?? string.Empty;
             _tokens = null;
             _tokenStore.Clear();
-
             try
             {
                 _config.Current.LastUsername = null;
                 ScheduleConfigSave();
             }
-            catch { /* ignore */ }
+            catch { }
 
             _username = "Player";
             Raise(nameof(Username));
-
             Profile = null;
             Rezonite = 0;
-
             IsLoggedIn = false;
             IsWaitingSiteConfirm = false;
             SiteUserName = "Не вошли";
             LoginUrl = null;
-
             StatusText = "Вы вышли.";
             AppendLog("Сайт: локальный выход выполнен.");
         }
-        finally
-        {
-            RefreshCanStates();
-        }
+        finally { RefreshCanStates(); }
 
-        if (string.IsNullOrWhiteSpace(tokenToRevoke))
-            return;
-
+        if (string.IsNullOrWhiteSpace(tokenToRevoke)) return;
         try
         {
             using var revokeCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
             revokeCts.CancelAfter(TimeSpan.FromSeconds(6));
-
             var revoked = await new LauncherAuthClient().RevokeAsync(tokenToRevoke, revokeCts.Token);
-            AppendLog(revoked
-                ? "Сайт: Launcher-токен отозван на сервере."
-                : "Сайт: локальный выход выполнен, но сервер не подтвердил отзыв токена.");
+            AppendLog(revoked ? "Сайт: Launcher-токен отозван на сервере." : "Сайт: сервер не подтвердил отзыв токена.");
         }
-        catch (OperationCanceledException)
-        {
-            AppendLog("Сайт: локальный выход выполнен; отзыв токена не подтверждён из-за отмены/таймаута.");
-        }
-        catch (Exception ex)
-        {
-            AppendLog($"Сайт: локальный выход выполнен; ошибка отзыва токена: {ex.GetType().Name}: {ex.Message}");
-        }
-        finally
-        {
-            tokenToRevoke = string.Empty;
-        }
+        catch (OperationCanceledException) { AppendLog("Сайт: отзыв токена не подтверждён из-за таймаута."); }
+        catch (Exception ex) { AppendLog($"Сайт: ошибка отзыва токена: {ex.GetType().Name}: {ex.Message}"); }
     }
 }

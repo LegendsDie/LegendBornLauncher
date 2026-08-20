@@ -21,6 +21,7 @@
         <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 
         <StartupObject>LegendBorn.App</StartupObject>
+        <ApplicationIcon>$(IntermediateOutputPath)logolauncher.ico</ApplicationIcon>
     </PropertyGroup>
 
     <ItemGroup>
@@ -51,5 +52,9 @@
         <Resource Include="Resources\Assets\legendcraft.png" />
         <Resource Include="Resources\Assets\logolauncher.png" />
     </ItemGroup>
+
+    <Target Name="GenerateLauncherApplicationIcon" BeforeTargets="CoreCompile">
+        <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\build\GenerateLauncherIcon.ps1&quot; -SourcePng &quot;$(MSBuildProjectDirectory)\Resources\Assets\logolauncher.png&quot; -DestinationIco &quot;$(MSBuildProjectDirectory)\$(ApplicationIcon)&quot;" />
+    </Target>
 
 </Project>

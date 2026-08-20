@@ -22,9 +22,6 @@ public sealed partial class MainViewModel
 
         var profile = Profile;
 
-        // serverNick is the account-authoritative in-game identity. When it is also a legal
-        // Minecraft profile name, use it for the actual offline GameProfile so returning to a
-        // previous serverNick restores that name's original offline UUID/playerdata.
         var candidate = Valid(profile?.Minecraft?.ServerNick);
         if (candidate.Length > 0) return candidate;
 
@@ -34,15 +31,20 @@ public sealed partial class MainViewModel
         candidate = Valid(profile?.Minecraft?.EffectiveServerNick);
         if (candidate.Length > 0) return candidate;
 
-        // Display-only serverNick values cannot be used in GameProfile. Fall back to the
-        // currently linked technical Minecraft account identity.
         candidate = Valid(profile?.Minecraft?.Username);
         if (candidate.Length > 0) return candidate;
 
         candidate = Valid(profile?.MinecraftName);
         if (candidate.Length > 0) return candidate;
 
-        // Local state is recovery-only and must never outrank the current account snapshot.
+        // During a fresh login the current site identity must outrank any local value left by
+        // another account/session. Local Username/LastUsername are recovery-only fallbacks.
+        candidate = Valid(profile?.UserName);
+        if (candidate.Length > 0) return candidate;
+
+        candidate = Valid(SiteUserName);
+        if (candidate.Length > 0) return candidate;
+
         candidate = Valid(Username);
         if (candidate.Length > 0) return candidate;
 
@@ -54,12 +56,6 @@ public sealed partial class MainViewModel
         catch
         {
         }
-
-        candidate = Valid(SiteUserName);
-        if (candidate.Length > 0) return candidate;
-
-        candidate = Valid(profile?.UserName);
-        if (candidate.Length > 0) return candidate;
 
         return "Player";
     }
