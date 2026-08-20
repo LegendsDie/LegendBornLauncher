@@ -19,11 +19,15 @@ if (-not [string]::IsNullOrWhiteSpace($directory)) {
 
 $sizes = @(16, 32, 48, 256)
 $image = [System.Drawing.Image]::FromFile($source)
-$frames = New-Object System.Collections.Generic.List[object]
+$frames = [System.Collections.Generic.List[object]]::new()
 
 try {
     foreach ($size in $sizes) {
-        $bitmap = New-Object System.Drawing.Bitmap($size, $size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        $bitmap = [System.Drawing.Bitmap]::new(
+            [int]$size,
+            [int]$size,
+            [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+        )
         try {
             $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
             try {
@@ -33,16 +37,16 @@ try {
                 $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
                 $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
                 $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-                $graphics.DrawImage($image, 0, 0, $size, $size)
+                $graphics.DrawImage($image, 0, 0, [int]$size, [int]$size)
             }
             finally {
                 $graphics.Dispose()
             }
 
-            $memory = New-Object System.IO.MemoryStream
+            $memory = [System.IO.MemoryStream]::new()
             try {
                 $bitmap.Save($memory, [System.Drawing.Imaging.ImageFormat]::Png)
-                $frames.Add([pscustomobject]@{ Size = $size; Bytes = $memory.ToArray() })
+                $frames.Add([pscustomobject]@{ Size = [int]$size; Bytes = $memory.ToArray() })
             }
             finally {
                 $memory.Dispose()
@@ -57,10 +61,14 @@ finally {
     $image.Dispose()
 }
 
-$file = New-Object System.IO.FileStream($destination, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-$writer = New-Object System.IO.BinaryWriter($file)
+$file = [System.IO.FileStream]::new(
+    $destination,
+    [System.IO.FileMode]::Create,
+    [System.IO.FileAccess]::Write,
+    [System.IO.FileShare]::None
+)
+$writer = [System.IO.BinaryWriter]::new($file)
 try {
-    # ICONDIR
     $writer.Write([UInt16]0)
     $writer.Write([UInt16]1)
     $writer.Write([UInt16]$frames.Count)
