@@ -15,16 +15,23 @@ using System.Windows.Media.Media3D;
 namespace LegendBorn.Controls;
 
 /// <summary>
-/// Native WPF Minecraft skin preview inspired by legendborn.xyz/immersion.
-/// Every Minecraft face is cropped into its own nearest-neighbour texture before it reaches WPF 3D.
-/// Modern skins render both the base layer and the complete outer layer (hat/jacket/sleeves/pants).
-/// Rotation is user-controlled by dragging; no browser/WebView is required.
+/// Native WPF Minecraft skin preview aligned with legendborn.xyz/immersion (skinview3d semantics).
+/// It normalizes legacy skins, fixes opaque outer layers, auto-detects slim arms and maps the
+/// Minecraft UV atlas to the correct world faces before WPF renders the model.
 /// </summary>
 public sealed class Skin3DView : UserControl
 {
     private const long MaxSkinBytes = 4L * 1024 * 1024;
     private const int TextureUpscale = 6;
     private const int MaxCachedSkinUrls = 32;
+
+    // Keep the native WPF preview framed like the website's SkinViewer: fov=55, zoom=0.9.
+    private const double PreviewFov = 55.0;
+    private const double PreviewZoom = 0.90;
+    private const double CameraPadding = 4.5;
+    private const double PlayerHalfHeight = 16.5;
+    private const double PlayerCenterY = 5.0;
+    private const double DefaultYaw = -18.0;
 
     private static readonly HttpClient Http = CreateHttp();
     private static readonly ConcurrentDictionary<string, WeakReference<BitmapSource>> SkinCache =
@@ -38,6 +45,16 @@ public sealed class Skin3DView : UserControl
     private Point _dragStart;
     private double _dragStartAngle;
     private bool _dragging;
+
+    private readonly record struct PreparedSkin(BitmapSource Texture, bool IsSlim, bool HasOuterLayer);
+
+    private readonly record struct CuboidUv(
+        Int32Rect Front,
+        Int32Rect Back,
+        Int32Rect Left,
+        Int32Rect Right,
+        Int32Rect Top,
+        Int32Rect Bottom);
 
     public static readonly DependencyProperty SkinUrlProperty = DependencyProperty.Register(
         nameof(SkinUrl),
@@ -97,13 +114,14 @@ public sealed class Skin3DView : UserControl
         root.Children.Add(_placeholder);
         Content = root;
 
+        var cameraDistance = ComputeCameraDistance(PreviewFov, PreviewZoom);
         _viewport.Camera = new PerspectiveCamera(
-            new Point3D(27, 8, 46),
-            new Vector3D(-27, -3, -46),
+            new Point3D(0, PlayerCenterY, cameraDistance),
+            new Vector3D(0, 0, -cameraDistance),
             new Vector3D(0, 1, 0),
-            53);
+            PreviewFov);
 
-        _scene.Children.Add(new AmbientLight(Color.FromRgb(202, 198, 214)));
+        _scene.Children.Add(new AmbientLight(Color.FromRgb(220, 216, 228)));
         _scene.Children.Add(new DirectionalLight(Color.FromRgb(255, 250, 255), new Vector3D(-1, -1, -2)));
         _scene.Children.Add(new DirectionalLight(Color.FromRgb(126, 91, 188), new Vector3D(1, 0, 1)));
         _viewport.Children.Add(new ModelVisual3D { Content = _scene });
@@ -121,6 +139,9 @@ public sealed class Skin3DView : UserControl
         };
         Unloaded += (_, _) => CancelLoad();
     }
+
+    private static double ComputeCameraDistance(double fov, double zoom)
+        => CameraPadding + PlayerHalfHeight / Math.Tan(fov * Math.PI / 360.0) / zoom;
 
     private static void OnSkinUrlChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
@@ -226,95 +247,378 @@ public sealed class Skin3DView : UserControl
         return skin.PixelHeight == 32 * scale || skin.PixelHeight == 64 * scale;
     }
 
-    private void BuildPlayer(BitmapSource skin)
+    private void BuildPlayer(BitmapSource sourceSkin)
     {
         ClearPlayer();
 
-        var modern = skin.PixelHeight == skin.PixelWidth;
+        var prepared = PrepareSkinForRendering(sourceSkin);
+        var skin = prepared.Texture;
+        var armWidth = prepared.IsSlim ? 3 : 4;
+        var armCenter = 4.0 + armWidth / 2.0;
         var player = new Model3DGroup();
 
-        // Base layer ---------------------------------------------------------
-        player.Children.Add(CreateCuboid(skin, 0, 17, 0, 8, 8, 8,
-            front: R(8, 8, 8, 8), back: R(24, 8, 8, 8),
-            left: R(16, 8, 8, 8), right: R(0, 8, 8, 8),
-            top: R(8, 0, 8, 8), bottom: R(16, 0, 8, 8)));
+        // Base layer. UV origins and dimensions intentionally mirror skinview3d's setSkinUVs calls.
+        AddCuboid(player, skin, 0, 17, 0, 8, 8, 8, Uv(0, 0, 8, 8, 8), doubleSided: false);
+        AddCuboid(player, skin, 0, 7, 0, 8, 12, 4, Uv(16, 16, 8, 12, 4), doubleSided: false);
+        AddCuboid(player, skin, -armCenter, 7, 0, armWidth, 12, 4, Uv(40, 16, armWidth, 12, 4), doubleSided: false);
+        AddCuboid(player, skin, armCenter, 7, 0, armWidth, 12, 4, Uv(32, 48, armWidth, 12, 4), doubleSided: false);
+        AddCuboid(player, skin, -1.9, -5, -0.1, 4, 12, 4, Uv(0, 16, 4, 12, 4), doubleSided: false);
+        AddCuboid(player, skin, 1.9, -5, -0.1, 4, 12, 4, Uv(16, 48, 4, 12, 4), doubleSided: false);
 
-        player.Children.Add(CreateCuboid(skin, 0, 7, 0, 8, 12, 4,
-            front: R(20, 20, 8, 12), back: R(32, 20, 8, 12),
-            left: R(28, 20, 4, 12), right: R(16, 20, 4, 12),
-            top: R(20, 16, 8, 4), bottom: R(28, 16, 8, 4)));
-
-        player.Children.Add(CreateCuboid(skin, -6, 7, 0, 4, 12, 4,
-            front: modern ? R(36, 52, 4, 12) : R(44, 20, 4, 12),
-            back: modern ? R(44, 52, 4, 12) : R(52, 20, 4, 12),
-            left: modern ? R(40, 52, 4, 12) : R(48, 20, 4, 12),
-            right: modern ? R(32, 52, 4, 12) : R(40, 20, 4, 12),
-            top: modern ? R(36, 48, 4, 4) : R(44, 16, 4, 4),
-            bottom: modern ? R(40, 48, 4, 4) : R(48, 16, 4, 4)));
-
-        player.Children.Add(CreateCuboid(skin, 6, 7, 0, 4, 12, 4,
-            front: R(44, 20, 4, 12), back: R(52, 20, 4, 12),
-            left: R(48, 20, 4, 12), right: R(40, 20, 4, 12),
-            top: R(44, 16, 4, 4), bottom: R(48, 16, 4, 4)));
-
-        player.Children.Add(CreateCuboid(skin, -2, -5, 0, 4, 12, 4,
-            front: modern ? R(20, 52, 4, 12) : R(4, 20, 4, 12),
-            back: modern ? R(28, 52, 4, 12) : R(12, 20, 4, 12),
-            left: modern ? R(24, 52, 4, 12) : R(8, 20, 4, 12),
-            right: modern ? R(16, 52, 4, 12) : R(0, 20, 4, 12),
-            top: modern ? R(20, 48, 4, 4) : R(4, 16, 4, 4),
-            bottom: modern ? R(24, 48, 4, 4) : R(8, 16, 4, 4)));
-
-        player.Children.Add(CreateCuboid(skin, 2, -5, 0, 4, 12, 4,
-            front: R(4, 20, 4, 12), back: R(12, 20, 4, 12),
-            left: R(8, 20, 4, 12), right: R(0, 20, 4, 12),
-            top: R(4, 16, 4, 4), bottom: R(8, 16, 4, 4)));
-
-        // Modern outer layer ------------------------------------------------
-        // Slightly larger cuboids prevent z-fighting and reproduce Minecraft's
-        // hat, jacket, sleeves and pants layers instead of flattening them into the base skin.
-        if (modern)
+        // Only native 1.8+ skins have authored overlay geometry. Legacy 64x32 skins are
+        // normalized for correct left-limb geometry but intentionally keep the six base cuboids.
+        if (prepared.HasOuterLayer)
         {
-            player.Children.Add(CreateCuboid(skin, 0, 17, 0, 9.0, 9.0, 9.0,
-                front: R(40, 8, 8, 8), back: R(56, 8, 8, 8),
-                left: R(48, 8, 8, 8), right: R(32, 8, 8, 8),
-                top: R(40, 0, 8, 8), bottom: R(48, 0, 8, 8)));
-
-            player.Children.Add(CreateCuboid(skin, 0, 7, 0, 8.5, 12.5, 4.5,
-                front: R(20, 36, 8, 12), back: R(32, 36, 8, 12),
-                left: R(28, 36, 4, 12), right: R(16, 36, 4, 12),
-                top: R(20, 32, 8, 4), bottom: R(28, 32, 8, 4)));
-
-            // Left sleeve.
-            player.Children.Add(CreateCuboid(skin, -6, 7, 0, 4.5, 12.5, 4.5,
-                front: R(52, 52, 4, 12), back: R(60, 52, 4, 12),
-                left: R(56, 52, 4, 12), right: R(48, 52, 4, 12),
-                top: R(52, 48, 4, 4), bottom: R(56, 48, 4, 4)));
-
-            // Right sleeve.
-            player.Children.Add(CreateCuboid(skin, 6, 7, 0, 4.5, 12.5, 4.5,
-                front: R(44, 36, 4, 12), back: R(52, 36, 4, 12),
-                left: R(48, 36, 4, 12), right: R(40, 36, 4, 12),
-                top: R(44, 32, 4, 4), bottom: R(48, 32, 4, 4)));
-
-            // Left pants leg.
-            player.Children.Add(CreateCuboid(skin, -2, -5, 0, 4.5, 12.5, 4.5,
-                front: R(4, 52, 4, 12), back: R(12, 52, 4, 12),
-                left: R(8, 52, 4, 12), right: R(0, 52, 4, 12),
-                top: R(4, 48, 4, 4), bottom: R(8, 48, 4, 4)));
-
-            // Right pants leg.
-            player.Children.Add(CreateCuboid(skin, 2, -5, 0, 4.5, 12.5, 4.5,
-                front: R(4, 36, 4, 12), back: R(12, 36, 4, 12),
-                left: R(8, 36, 4, 12), right: R(0, 36, 4, 12),
-                top: R(4, 32, 4, 4), bottom: R(8, 32, 4, 4)));
+            // Transparent pixels stay transparent, and opaque legacy-style garbage is cleared in
+            // PrepareSkinForRendering before these slightly enlarged cuboids are created.
+            AddCuboid(player, skin, 0, 17, 0, 9.0, 9.0, 9.0, Uv(32, 0, 8, 8, 8), doubleSided: true);
+            AddCuboid(player, skin, 0, 7, 0, 8.5, 12.5, 4.5, Uv(16, 32, 8, 12, 4), doubleSided: true);
+            AddCuboid(player, skin, -armCenter, 7, 0, armWidth + 0.5, 12.5, 4.5, Uv(40, 32, armWidth, 12, 4), doubleSided: true);
+            AddCuboid(player, skin, armCenter, 7, 0, armWidth + 0.5, 12.5, 4.5, Uv(48, 48, armWidth, 12, 4), doubleSided: true);
+            AddCuboid(player, skin, -1.9, -5, -0.1, 4.5, 12.5, 4.5, Uv(0, 32, 4, 12, 4), doubleSided: true);
+            AddCuboid(player, skin, 1.9, -5, -0.1, 4.5, 12.5, 4.5, Uv(0, 48, 4, 12, 4), doubleSided: true);
         }
 
-        _rotation = new AxisAngleRotation3D(new Vector3D(0, 1, 0), -18);
-        player.Transform = new RotateTransform3D(_rotation, new Point3D(0, 4, 0));
+        _rotation = new AxisAngleRotation3D(new Vector3D(0, 1, 0), DefaultYaw);
+        player.Transform = new RotateTransform3D(_rotation, new Point3D(0, PlayerCenterY, 0));
 
         _scene.Children.Add(player);
         _placeholder.Visibility = Visibility.Collapsed;
+    }
+
+    private static void AddCuboid(
+        Model3DGroup player,
+        BitmapSource skin,
+        double cx,
+        double cy,
+        double cz,
+        double width,
+        double height,
+        double depth,
+        CuboidUv uv,
+        bool doubleSided)
+    {
+        player.Children.Add(CreateCuboid(
+            skin,
+            cx,
+            cy,
+            cz,
+            width,
+            height,
+            depth,
+            uv.Front,
+            uv.Back,
+            uv.Left,
+            uv.Right,
+            uv.Top,
+            uv.Bottom,
+            doubleSided));
+    }
+
+    /// <summary>
+    /// Minecraft's skin atlas is a wrapped cuboid net. This is the same logical mapping used by
+    /// skinview3d: -X receives the first side strip, +X the second side strip, while front/back
+    /// keep their natural orientation. Using one generic mapper prevents left/right limb swaps.
+    /// </summary>
+    private static CuboidUv Uv(int u, int v, int width, int height, int depth)
+        => new(
+            Front: R(u + depth, v + depth, width, height),
+            Back: R(u + width + depth * 2, v + depth, width, height),
+            Left: R(u, v + depth, depth, height),
+            Right: R(u + width + depth, v + depth, depth, height),
+            Top: R(u + depth, v, width, depth),
+            Bottom: R(u + width + depth, v, width, depth));
+
+    private static PreparedSkin PrepareSkinForRendering(BitmapSource source)
+    {
+        var scale = Math.Max(1, source.PixelWidth / 64);
+        var sourceWidth = source.PixelWidth;
+        var sourceHeight = source.PixelHeight;
+        var sourcePixels = CopyBgra32(source, out var sourceStride);
+        var modern = sourceHeight == sourceWidth;
+
+        byte[] pixels;
+        int stride;
+
+        if (modern)
+        {
+            pixels = sourcePixels;
+            stride = sourceStride;
+
+            // skinview-utils fixes completely opaque 1.8+ skins by clearing every layer-2 area.
+            // Without this, WPF renders opaque garbage as a giant hat/jacket/sleeves over the model.
+            if (!HasTransparency(pixels, stride, 0, 0, sourceWidth, sourceHeight))
+                ClearModernOuterLayer(pixels, stride, scale);
+        }
+        else
+        {
+            var targetHeight = sourceWidth;
+            stride = checked(sourceWidth * 4);
+            pixels = new byte[checked(stride * targetHeight)];
+
+            for (var y = 0; y < sourceHeight; y++)
+            {
+                Buffer.BlockCopy(sourcePixels, y * sourceStride, pixels, y * stride, Math.Min(sourceStride, stride));
+            }
+
+            // Legacy 64x32 skins only contain right limbs. skinview3d mirrors them into the 1.8
+            // left-limb slots before rendering, so do the same here.
+            ConvertLegacyLimbsToModern(pixels, stride, scale);
+
+            if (!HasTransparency(sourcePixels, sourceStride, 0, 0, sourceWidth, sourceHeight))
+                ClearHeadOuterLayer(pixels, stride, scale);
+        }
+
+        var texture = BitmapSource.Create(
+            sourceWidth,
+            sourceWidth,
+            source.DpiX > 0 ? source.DpiX : 96,
+            source.DpiY > 0 ? source.DpiY : 96,
+            PixelFormats.Bgra32,
+            null,
+            pixels,
+            stride);
+        RenderOptions.SetBitmapScalingMode(texture, BitmapScalingMode.NearestNeighbor);
+        texture.Freeze();
+
+        var slim = modern && InferSlimModel(pixels, stride, scale);
+        return new PreparedSkin(texture, slim, modern);
+    }
+
+    private static byte[] CopyBgra32(BitmapSource source, out int stride)
+    {
+        BitmapSource converted = source.Format == PixelFormats.Bgra32
+            ? source
+            : new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
+
+        stride = checked(converted.PixelWidth * 4);
+        var pixels = new byte[checked(stride * converted.PixelHeight)];
+        converted.CopyPixels(pixels, stride, 0);
+        return pixels;
+    }
+
+    private static void ConvertLegacyLimbsToModern(byte[] pixels, int stride, int scale)
+    {
+        // Left leg base.
+        CopyLogicalRegionMirrored(pixels, stride, scale, 4, 16, 4, 4, 20, 48);
+        CopyLogicalRegionMirrored(pixels, stride, scale, 8, 16, 4, 4, 24, 48);
+        CopyLogicalRegionMirrored(pixels, stride, scale, 0, 20, 4, 12, 24, 52);
+        CopyLogicalRegionMirrored(pixels, stride, scale, 4, 20, 4, 12, 20, 52);
+        CopyLogicalRegionMirrored(pixels, stride, scale, 8, 20, 4, 12, 16, 52);
+        CopyLogicalRegionMirrored(pixels, stride, scale, 12, 20, 4, 12, 28, 52);
+
+        // Left arm base.
+        CopyLogicalRegionMirrored(pixels, stride, scale, 44, 16, 4, 4, 36, 48);
+        CopyLogicalRegionMirrored(pixels, stride, scale, 48, 16, 4, 4, 40, 48);
+        CopyLogicalRegionMirrored(pixels, stride, scale, 40, 20, 4, 12, 40, 52);
+        CopyLogicalRegionMirrored(pixels, stride, scale, 44, 20, 4, 12, 36, 52);
+        CopyLogicalRegionMirrored(pixels, stride, scale, 48, 20, 4, 12, 32, 52);
+        CopyLogicalRegionMirrored(pixels, stride, scale, 52, 20, 4, 12, 44, 52);
+    }
+
+    private static void CopyLogicalRegionMirrored(
+        byte[] pixels,
+        int stride,
+        int scale,
+        int sourceX,
+        int sourceY,
+        int width,
+        int height,
+        int destinationX,
+        int destinationY)
+    {
+        var sx = sourceX * scale;
+        var sy = sourceY * scale;
+        var w = width * scale;
+        var h = height * scale;
+        var dx = destinationX * scale;
+        var dy = destinationY * scale;
+        var temp = new byte[checked(w * h * 4)];
+
+        for (var y = 0; y < h; y++)
+        {
+            for (var x = 0; x < w; x++)
+            {
+                var sourceOffset = (sy + y) * stride + (sx + x) * 4;
+                var tempOffset = (y * w + (w - 1 - x)) * 4;
+                Buffer.BlockCopy(pixels, sourceOffset, temp, tempOffset, 4);
+            }
+        }
+
+        for (var y = 0; y < h; y++)
+        {
+            Buffer.BlockCopy(temp, y * w * 4, pixels, (dy + y) * stride + dx * 4, w * 4);
+        }
+    }
+
+    private static void ClearModernOuterLayer(byte[] pixels, int stride, int scale)
+    {
+        // Head layer 2.
+        ClearLogicalArea(pixels, stride, scale, 40, 0, 8, 8);
+        ClearLogicalArea(pixels, stride, scale, 48, 0, 8, 8);
+        ClearLogicalArea(pixels, stride, scale, 32, 8, 8, 8);
+        ClearLogicalArea(pixels, stride, scale, 40, 8, 8, 8);
+        ClearLogicalArea(pixels, stride, scale, 48, 8, 8, 8);
+        ClearLogicalArea(pixels, stride, scale, 56, 8, 8, 8);
+
+        // Right leg layer 2.
+        ClearLogicalArea(pixels, stride, scale, 4, 32, 4, 4);
+        ClearLogicalArea(pixels, stride, scale, 8, 32, 4, 4);
+        ClearLogicalArea(pixels, stride, scale, 0, 36, 4, 12);
+        ClearLogicalArea(pixels, stride, scale, 4, 36, 4, 12);
+        ClearLogicalArea(pixels, stride, scale, 8, 36, 4, 12);
+        ClearLogicalArea(pixels, stride, scale, 12, 36, 4, 12);
+
+        // Body layer 2.
+        ClearLogicalArea(pixels, stride, scale, 20, 32, 8, 4);
+        ClearLogicalArea(pixels, stride, scale, 28, 32, 8, 4);
+        ClearLogicalArea(pixels, stride, scale, 16, 36, 4, 12);
+        ClearLogicalArea(pixels, stride, scale, 20, 36, 8, 12);
+        ClearLogicalArea(pixels, stride, scale, 28, 36, 4, 12);
+        ClearLogicalArea(pixels, stride, scale, 32, 36, 8, 12);
+
+        // Right arm layer 2. Clear the trailing unused strip too, matching skinview-utils.
+        ClearLogicalArea(pixels, stride, scale, 44, 32, 4, 4);
+        ClearLogicalArea(pixels, stride, scale, 48, 32, 4, 4);
+        ClearLogicalArea(pixels, stride, scale, 40, 36, 4, 12);
+        ClearLogicalArea(pixels, stride, scale, 44, 36, 4, 12);
+        ClearLogicalArea(pixels, stride, scale, 48, 36, 4, 12);
+        ClearLogicalArea(pixels, stride, scale, 52, 36, 12, 12);
+
+        // Left leg layer 2.
+        ClearLogicalArea(pixels, stride, scale, 4, 48, 4, 4);
+        ClearLogicalArea(pixels, stride, scale, 8, 48, 4, 4);
+        ClearLogicalArea(pixels, stride, scale, 0, 52, 4, 12);
+        ClearLogicalArea(pixels, stride, scale, 4, 52, 4, 12);
+        ClearLogicalArea(pixels, stride, scale, 8, 52, 4, 12);
+        ClearLogicalArea(pixels, stride, scale, 12, 52, 4, 12);
+
+        // Left arm layer 2.
+        ClearLogicalArea(pixels, stride, scale, 52, 48, 4, 4);
+        ClearLogicalArea(pixels, stride, scale, 56, 48, 4, 4);
+        ClearLogicalArea(pixels, stride, scale, 48, 52, 4, 12);
+        ClearLogicalArea(pixels, stride, scale, 52, 52, 4, 12);
+        ClearLogicalArea(pixels, stride, scale, 56, 52, 4, 12);
+        ClearLogicalArea(pixels, stride, scale, 60, 52, 4, 12);
+    }
+
+    private static void ClearHeadOuterLayer(byte[] pixels, int stride, int scale)
+    {
+        ClearLogicalArea(pixels, stride, scale, 40, 0, 8, 8);
+        ClearLogicalArea(pixels, stride, scale, 48, 0, 8, 8);
+        ClearLogicalArea(pixels, stride, scale, 32, 8, 8, 8);
+        ClearLogicalArea(pixels, stride, scale, 40, 8, 8, 8);
+        ClearLogicalArea(pixels, stride, scale, 48, 8, 8, 8);
+        ClearLogicalArea(pixels, stride, scale, 56, 8, 8, 8);
+    }
+
+    private static void ClearLogicalArea(
+        byte[] pixels,
+        int stride,
+        int scale,
+        int x,
+        int y,
+        int width,
+        int height)
+    {
+        var x0 = x * scale;
+        var y0 = y * scale;
+        var w = width * scale;
+        var h = height * scale;
+
+        for (var py = y0; py < y0 + h; py++)
+        {
+            for (var px = x0; px < x0 + w; px++)
+            {
+                var offset = py * stride + px * 4;
+                pixels[offset] = 0;
+                pixels[offset + 1] = 0;
+                pixels[offset + 2] = 0;
+                pixels[offset + 3] = 0;
+            }
+        }
+    }
+
+    private static bool InferSlimModel(byte[] pixels, int stride, int scale)
+    {
+        var areas = new[]
+        {
+            (X: 50, Y: 16, W: 2, H: 4),
+            (X: 54, Y: 20, W: 2, H: 12),
+            (X: 42, Y: 48, W: 2, H: 4),
+            (X: 46, Y: 52, W: 2, H: 12)
+        };
+
+        foreach (var area in areas)
+        {
+            if (HasTransparency(
+                    pixels,
+                    stride,
+                    area.X * scale,
+                    area.Y * scale,
+                    area.W * scale,
+                    area.H * scale))
+            {
+                return true;
+            }
+        }
+
+        var allBlack = true;
+        var allWhite = true;
+        foreach (var area in areas)
+        {
+            allBlack &= IsSolidArea(pixels, stride, scale, area.X, area.Y, area.W, area.H, 0x00);
+            allWhite &= IsSolidArea(pixels, stride, scale, area.X, area.Y, area.W, area.H, 0xff);
+        }
+
+        return allBlack || allWhite;
+    }
+
+    private static bool IsSolidArea(
+        byte[] pixels,
+        int stride,
+        int scale,
+        int x,
+        int y,
+        int width,
+        int height,
+        byte value)
+    {
+        var x0 = x * scale;
+        var y0 = y * scale;
+        var w = width * scale;
+        var h = height * scale;
+
+        for (var py = y0; py < y0 + h; py++)
+        {
+            for (var px = x0; px < x0 + w; px++)
+            {
+                var offset = py * stride + px * 4;
+                if (pixels[offset] != value ||
+                    pixels[offset + 1] != value ||
+                    pixels[offset + 2] != value ||
+                    pixels[offset + 3] != 0xff)
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    private static bool HasTransparency(byte[] pixels, int stride, int x, int y, int width, int height)
+    {
+        for (var py = y; py < y + height; py++)
+        {
+            for (var px = x; px < x + width; px++)
+            {
+                if (pixels[py * stride + px * 4 + 3] != 0xff)
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     private void Viewport_OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -356,9 +660,19 @@ public sealed class Skin3DView : UserControl
 
     private static Model3DGroup CreateCuboid(
         BitmapSource skin,
-        double cx, double cy, double cz,
-        double width, double height, double depth,
-        Int32Rect front, Int32Rect back, Int32Rect left, Int32Rect right, Int32Rect top, Int32Rect bottom)
+        double cx,
+        double cy,
+        double cz,
+        double width,
+        double height,
+        double depth,
+        Int32Rect front,
+        Int32Rect back,
+        Int32Rect left,
+        Int32Rect right,
+        Int32Rect top,
+        Int32Rect bottom,
+        bool doubleSided)
     {
         var x0 = cx - width / 2.0;
         var x1 = cx + width / 2.0;
@@ -369,24 +683,34 @@ public sealed class Skin3DView : UserControl
 
         var group = new Model3DGroup();
         group.Children.Add(CreateFace(skin, front,
-            new Point3D(x0, y0, z1), new Point3D(x1, y0, z1), new Point3D(x1, y1, z1), new Point3D(x0, y1, z1)));
+            new Point3D(x0, y0, z1), new Point3D(x1, y0, z1), new Point3D(x1, y1, z1), new Point3D(x0, y1, z1),
+            doubleSided));
         group.Children.Add(CreateFace(skin, back,
-            new Point3D(x1, y0, z0), new Point3D(x0, y0, z0), new Point3D(x0, y1, z0), new Point3D(x1, y1, z0)));
+            new Point3D(x1, y0, z0), new Point3D(x0, y0, z0), new Point3D(x0, y1, z0), new Point3D(x1, y1, z0),
+            doubleSided));
         group.Children.Add(CreateFace(skin, left,
-            new Point3D(x0, y0, z0), new Point3D(x0, y0, z1), new Point3D(x0, y1, z1), new Point3D(x0, y1, z0)));
+            new Point3D(x0, y0, z0), new Point3D(x0, y0, z1), new Point3D(x0, y1, z1), new Point3D(x0, y1, z0),
+            doubleSided));
         group.Children.Add(CreateFace(skin, right,
-            new Point3D(x1, y0, z1), new Point3D(x1, y0, z0), new Point3D(x1, y1, z0), new Point3D(x1, y1, z1)));
+            new Point3D(x1, y0, z1), new Point3D(x1, y0, z0), new Point3D(x1, y1, z0), new Point3D(x1, y1, z1),
+            doubleSided));
         group.Children.Add(CreateFace(skin, top,
-            new Point3D(x0, y1, z1), new Point3D(x1, y1, z1), new Point3D(x1, y1, z0), new Point3D(x0, y1, z0)));
+            new Point3D(x0, y1, z1), new Point3D(x1, y1, z1), new Point3D(x1, y1, z0), new Point3D(x0, y1, z0),
+            doubleSided));
         group.Children.Add(CreateFace(skin, bottom,
-            new Point3D(x0, y0, z0), new Point3D(x1, y0, z0), new Point3D(x1, y0, z1), new Point3D(x0, y0, z1)));
+            new Point3D(x0, y0, z0), new Point3D(x1, y0, z0), new Point3D(x1, y0, z1), new Point3D(x0, y0, z1),
+            doubleSided));
         return group;
     }
 
     private static GeometryModel3D CreateFace(
         BitmapSource skin,
         Int32Rect logicalRegion,
-        Point3D p0, Point3D p1, Point3D p2, Point3D p3)
+        Point3D p0,
+        Point3D p1,
+        Point3D p2,
+        Point3D p3,
+        bool doubleSided)
     {
         var material = CreateFaceMaterial(skin, logicalRegion);
         var mesh = new MeshGeometry3D
@@ -402,7 +726,10 @@ public sealed class Skin3DView : UserControl
             TriangleIndices = new Int32Collection { 0, 1, 2, 0, 2, 3 }
         };
         mesh.Freeze();
-        return new GeometryModel3D(mesh, material) { BackMaterial = material };
+        return new GeometryModel3D(mesh, material)
+        {
+            BackMaterial = doubleSided ? material : null
+        };
     }
 
     private static Material CreateFaceMaterial(BitmapSource skin, Int32Rect logicalRegion)
