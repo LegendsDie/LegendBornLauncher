@@ -30,7 +30,9 @@ public partial class SettingsTabView
             catch { }
         }
 
-        if (dialog.ShowDialog(Window.GetWindow(this)) != true)
+        var owner = Window.GetWindow(this);
+        var accepted = owner is null ? dialog.ShowDialog() : dialog.ShowDialog(owner);
+        if (accepted != true)
             return;
 
         vm.UseCustomJava = true;
