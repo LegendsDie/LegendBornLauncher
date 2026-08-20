@@ -56,67 +56,35 @@ public sealed partial class MainViewModel
         if (catalogMirrors.Length > 0)
             return catalogMirrors;
 
-        // Fail closed to one first-party emergency source for legacy cached entries instead of
-        // silently re-introducing mirrors that the live catalog intentionally stopped advertising.
         return new[] { NormalizePackMirror(DefaultPackBaseUrl) }
             .Where(static url => !string.IsNullOrWhiteSpace(url))
             .ToArray();
     }
 
-    // =========================
-    // Legacy auth cleanup
-    // =========================
-
-    /// <summary>
-    /// Older launcher builds wrote the long-lived site access token into the game directory.
-    /// The current flow uses only a short-lived one-time join-ticket via .legendcore/session.json.
-    /// Remove only the known legacy credential files; never delete the whole mod directory.
-    /// </summary>
     private void CleanupLegacyGameAuthFiles(string? gameDir = null)
     {
         try
         {
             var dir = Path.Combine(gameDir ?? _gameDir, "legendborn");
-            var names = new[]
-            {
-                "auth.token",
-                "auth.json",
-                "auth.token.tmp",
-                "auth.json.tmp"
-            };
-
+            var names = new[] { "auth.token", "auth.json", "auth.token.tmp", "auth.json.tmp" };
             foreach (var name in names)
             {
                 try
                 {
                     var path = Path.Combine(dir, name);
-                    if (File.Exists(path))
-                        File.Delete(path);
+                    if (File.Exists(path)) File.Delete(path);
                 }
-                catch
-                {
-                }
+                catch { }
             }
         }
-        catch
-        {
-        }
+        catch { }
     }
-
-    // =========================
-    // Pack / Launch
-    // =========================
 
     private async Task CheckPackAsync()
     {
         if (_isClosing) return;
-
         var s = SelectedServer;
-        if (s is null)
-        {
-            StatusText = "Сервер не выбран.";
-            return;
-        }
+        if (s is null) { StatusText = "Сервер не выбран."; return; }
 
         try
         {
@@ -124,33 +92,19 @@ public sealed partial class MainViewModel
             StatusText = "Проверяю CDN и сборку…";
             ProgressPercent = 0;
             _mc.MaxParallelDownloads = PreferredPackParallelism;
-
-            var mirrors = await PackMirrorPreflightService.OrderByFreshnessAsync(
-                BuildPackMirrors(s),
-                log: AppendLog,
-                ct: _lifetimeCts.Token);
+            var mirrors = await PackMirrorPreflightService.OrderByFreshnessAsync(BuildPackMirrors(s), log: AppendLog, ct: _lifetimeCts.Token);
 
             if (s.SyncPack)
             {
                 StatusText = "Проверяю и докачиваю изменения…";
                 await _mc.SyncPackAsync(mirrors, _lifetimeCts.Token);
-
-                // MinecraftService has now written pack_state.json from the exact manifest used by
-                // this sync. Reconcile managed roots from that local state instead of downloading a
-                // second manifest, then fail closed if a .pending file means an old revision is active.
                 StatusText = "Финальная сверка файлов сборки…";
-                await ManagedPackStateVerifier.ReconcileAsync(
-                    _gameDir,
-                    log: AppendLog,
-                    ct: _lifetimeCts.Token).ConfigureAwait(false);
+                await ManagedPackStateVerifier.ReconcileAsync(_gameDir, log: AppendLog, ct: _lifetimeCts.Token).ConfigureAwait(false);
             }
 
             StatusText = "Сборка актуальна.";
         }
-        catch (OperationCanceledException)
-        {
-            StatusText = "Отменено.";
-        }
+        catch (OperationCanceledException) { StatusText = "Отменено."; }
         catch (Exception ex)
         {
             StatusText = "Не удалось проверить сборку.";
@@ -167,13 +121,8 @@ public sealed partial class MainViewModel
     private async Task PlayAsync()
     {
         if (_isClosing) return;
-
         var s = SelectedServer;
-        if (s is null)
-        {
-            StatusText = "Сервер не выбран.";
-            return;
-        }
+        if (s is null) { StatusText = "Сервер не выбран."; return; }
 
         var existingProcess = _runningProcess;
         if (existingProcess is not null)
@@ -187,15 +136,10 @@ public sealed partial class MainViewModel
                     return;
                 }
             }
-            catch
-            {
-                StatusText = "Minecraft уже запущен.";
-                return;
-            }
+            catch { StatusText = "Minecraft уже запущен."; return; }
         }
 
-        if (Interlocked.Exchange(ref _playGuard, 1) == 1)
-            return;
+        if (Interlocked.Exchange(ref _playGuard, 1) == 1) return;
 
         var launched = false;
         var launchMc = _mc;
@@ -204,14 +148,11 @@ public sealed partial class MainViewModel
 #if DEBUG
         if (LocalPackDebugService.IsEnabled)
         {
-            launchGameDir = LocalPackDebugService.ResolveGameDirOverride()
-                ?? Path.Combine(LauncherPaths.LocalDir, "dev-pack-test");
+            launchGameDir = LocalPackDebugService.ResolveGameDirOverride() ?? Path.Combine(LauncherPaths.LocalDir, "dev-pack-test");
             Directory.CreateDirectory(launchGameDir);
-
             launchMc = new MinecraftService(launchGameDir);
             launchMc.Log += (_, line) => AppendLog(line);
             launchMc.ProgressPercent += (_, p) => OnMinecraftProgress(p);
-
             AppendLog("DEV pack: Debug-only local manifest mode enabled.");
             AppendLog($"DEV pack: production game dir is untouched; using {launchGameDir}");
         }
@@ -228,16 +169,9 @@ public sealed partial class MainViewModel
             if (!string.Equals(Username, username, StringComparison.Ordinal))
             {
                 var previousUsername = Username;
-
-                // Make the authoritative account value win over a stale LastUsername. Updating
-                // the config first also prevents the legacy Username setter guard from restoring
-                // the obsolete local value when the site already knows the corrected identity.
                 try { _config.Current.LastUsername = username; } catch { }
                 Username = username;
-
-                AppendLog(
-                    $"Minecraft identity: технический ник синхронизирован {previousUsername} -> {username}."
-                );
+                AppendLog($"Minecraft identity: технический ник синхронизирован {previousUsername} -> {username}.");
             }
             else
             {
@@ -248,14 +182,11 @@ public sealed partial class MainViewModel
             if (ram < 4096) ram = 4096;
 
             var ip = (ServerIp ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(ip))
-                ip = (s.Address ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(ip))
-                ip = null;
+            if (string.IsNullOrWhiteSpace(ip)) ip = (s.Address ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(ip)) ip = null;
 
             var autoConnect = false;
             try { autoConnect = _config.Current.AutoConnect; } catch { }
-
             var ipForAutoJoin = autoConnect ? ip : null;
 
             if (!TryGetAccessToken(out var token) || string.IsNullOrWhiteSpace(token))
@@ -266,9 +197,12 @@ public sealed partial class MainViewModel
             }
 
             IsBusy = true;
-            StatusText = $"Подготовка {BuildDisplayName}…";
+            StatusText = "Проверяю Java…";
             ProgressPercent = 0;
+            var javaPath = await EnsureJavaForLaunchAsync().ConfigureAwait(false);
+            AppendLog("Java: выбран совместимый runtime для Minecraft.");
 
+            StatusText = $"Подготовка {BuildDisplayName}…";
             var configuredMirrors = BuildPackMirrors(s);
             string[] mirrors;
             var syncProductionPack = s.SyncPack;
@@ -278,26 +212,18 @@ public sealed partial class MainViewModel
             {
                 mirrors = configuredMirrors;
                 StatusText = "Применяем локальный manifest одного мода…";
-                await LocalPackDebugService.ApplyAsync(
-                    launchGameDir,
-                    mirrors,
-                    log: AppendLog,
-                    ct: _lifetimeCts.Token).ConfigureAwait(false);
+                await LocalPackDebugService.ApplyAsync(launchGameDir, mirrors, log: AppendLog, ct: _lifetimeCts.Token).ConfigureAwait(false);
                 syncProductionPack = false;
             }
             else
 #endif
             {
                 StatusText = "Выбираю ближайший доступный CDN…";
-                mirrors = await PackMirrorPreflightService.OrderByFreshnessAsync(
-                    configuredMirrors,
-                    log: AppendLog,
-                    ct: _lifetimeCts.Token);
+                mirrors = await PackMirrorPreflightService.OrderByFreshnessAsync(configuredMirrors, log: AppendLog, ct: _lifetimeCts.Token);
             }
 
             var loader = CreateLoaderSpecFromServer(s);
             StatusText = "Проверяю файлы и загружаю изменения…";
-
             var launchVersionId = await launchMc.PrepareAsync(
                 minecraftVersion: s.MinecraftVersion,
                 loader: loader,
@@ -307,14 +233,8 @@ public sealed partial class MainViewModel
 
             if (syncProductionPack)
             {
-                // This final pass is based on the exact pack_state produced by Prepare/Sync. It
-                // catches stale mods/kubejs/scripts that legacy prune code could not delete and
-                // refuses to start while a replacement is still only present as .pending.
                 StatusText = "Финальная сверка файлов сборки…";
-                await ManagedPackStateVerifier.ReconcileAsync(
-                    launchGameDir,
-                    log: AppendLog,
-                    ct: _lifetimeCts.Token).ConfigureAwait(false);
+                await ManagedPackStateVerifier.ReconcileAsync(launchGameDir, log: AppendLog, ct: _lifetimeCts.Token).ConfigureAwait(false);
             }
 
             InvokeOnUi(() =>
@@ -325,17 +245,10 @@ public sealed partial class MainViewModel
             });
 
             MinecraftService.LegendCoreSession? gameSession = null;
-
             if (!string.IsNullOrWhiteSpace(s.Id))
             {
                 StatusText = "Подготовка безопасной игровой сессии…";
-
-                var link = await _site.LinkMinecraftAsync(
-                    accessToken: token,
-                    username: username,
-                    ct: _lifetimeCts.Token,
-                    deviceId: null);
-
+                var link = await _site.LinkMinecraftAsync(token, username, _lifetimeCts.Token, deviceId: null);
                 if (!link.Ok)
                 {
                     var error = link.Error ?? link.Message ?? "Не удалось связать Minecraft-профиль.";
@@ -344,13 +257,7 @@ public sealed partial class MainViewModel
                     return;
                 }
 
-                var jt = await _site.CreateMinecraftJoinTicketAsync(
-                    accessToken: token,
-                    serverId: s.Id,
-                    mcName: username,
-                    ct: _lifetimeCts.Token,
-                    deviceId: null);
-
+                var jt = await _site.CreateMinecraftJoinTicketAsync(token, s.Id, username, _lifetimeCts.Token, deviceId: null);
                 if (!jt.Ok || string.IsNullOrWhiteSpace(jt.Ticket))
                 {
                     var error = jt.Error ?? jt.Message ?? "Сайт не выдал join-ticket.";
@@ -366,7 +273,6 @@ public sealed partial class MainViewModel
                     AppendLog("Сервер: получен слишком короткий/просроченный join-ticket.");
                     return;
                 }
-
                 if (!string.Equals((jt.ServerId ?? string.Empty).Trim(), s.Id.Trim(), StringComparison.Ordinal))
                 {
                     StatusText = "Сайт вернул игровую сессию не для выбранного сервера.";
@@ -381,7 +287,7 @@ public sealed partial class MainViewModel
                     LegendUuid: jt.LegendUuid,
                     MinecraftUuid: jt.Minecraft?.Uuid ?? link.Minecraft?.Uuid,
                     MinecraftUsername: jt.Minecraft?.Username ?? link.Minecraft?.Username ?? username,
-                    SkinUrl: jt.Minecraft?.SkinUrl,
+                    SkinUrl: NormalizePublicUrl(jt.Minecraft?.SkinUrl),
                     LauncherVersion: LauncherIdentity.InformationalVersion);
 
                 AppendLog("Сервер: безопасный одноразовый join-ticket получен.");
@@ -396,24 +302,20 @@ public sealed partial class MainViewModel
             {
                 _config.Current.RamMb = ram;
                 _config.Current.LastServerId = s.Id;
-
                 var ipToSave = (ServerIp ?? "").Trim();
-                if (string.IsNullOrWhiteSpace(ipToSave))
-                    ipToSave = (s.Address ?? "").Trim();
-
+                if (string.IsNullOrWhiteSpace(ipToSave)) ipToSave = (s.Address ?? "").Trim();
                 _config.Current.LastServerIp = ipToSave;
                 ScheduleConfigSave();
             }
-            catch
-            {
-            }
+            catch { }
 
             StatusText = "Запуск игры…";
-
-            _runningProcess = await launchMc.BuildAndLaunchAsync(
+            _runningProcess = await MinecraftJavaLauncher.BuildAndLaunchAsync(
+                minecraft: launchMc,
                 version: launchVersionId,
                 username: username,
                 ramMb: ram,
+                javaPath: javaPath,
                 serverIp: ipForAutoJoin,
                 session: gameSession);
 
@@ -423,20 +325,10 @@ public sealed partial class MainViewModel
 
             CancellationTokenSource? sessionRefreshCts = null;
             Task? sessionRefreshTask = null;
-
-            // Arm process exit handling before any refresh loop can be started. The handler also
-            // performs a post-subscription HasExited check so an immediately terminating process
-            // cannot leave a background ticket renewal loop alive.
             var startSessionRefresh = gameSession is not null && !string.IsNullOrWhiteSpace(s.Id);
-            if (startSessionRefresh)
-                sessionRefreshCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+            if (startSessionRefresh) sessionRefreshCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
 
-            HookProcessExited(
-                _runningProcess,
-                launchMc,
-                launchGameDir,
-                sessionRefreshCts,
-                () => sessionRefreshTask);
+            HookProcessExited(_runningProcess, launchMc, launchGameDir, sessionRefreshCts, () => sessionRefreshTask);
 
             if (startSessionRefresh && sessionRefreshCts is not null && !_runningProcess.HasExited)
             {
@@ -447,11 +339,7 @@ public sealed partial class MainViewModel
                     serverId: s.Id.Trim(),
                     minecraftUsername: username,
                     seedSession: gameSession!,
-                    log: line => PostToUi(() =>
-                    {
-                        if (!_isClosing)
-                            AppendLog(line);
-                    }),
+                    log: line => PostToUi(() => { if (!_isClosing) AppendLog(line); }),
                     cancellationToken: sessionRefreshCts.Token);
 
                 _runningLegendCoreSessionCts = sessionRefreshCts;
@@ -465,11 +353,7 @@ public sealed partial class MainViewModel
 
             Raise(nameof(CanStop));
             StopGameCommand.RaiseCanExecuteChanged();
-
-            AppendLog(autoConnect
-                ? "Игра запущена (автозаход ВКЛ)."
-                : "Игра запущена (автозаход ВЫКЛ, откроется меню).");
-
+            AppendLog(autoConnect ? "Игра запущена (автозаход ВКЛ)." : "Игра запущена (автозаход ВЫКЛ, откроется меню).");
             StatusText = "Игра запущена.";
         }
         catch (OperationCanceledException)
@@ -487,13 +371,11 @@ public sealed partial class MainViewModel
         {
             IsBusy = false;
             Interlocked.Exchange(ref _playGuard, 0);
-
             if (!launched)
             {
                 launchMc.ClearLegendCoreSession();
                 CleanupLegacyGameAuthFiles(launchGameDir);
             }
-
             RefreshCanStates();
         }
     }
@@ -506,14 +388,10 @@ public sealed partial class MainViewModel
         Func<Task?> sessionRefreshTaskProvider)
     {
         var handled = 0;
-
         async void HandleExited(object? _, EventArgs __)
         {
-            if (Interlocked.Exchange(ref handled, 1) == 1)
-                return;
-
+            if (Interlocked.Exchange(ref handled, 1) == 1) return;
             try { sessionRefreshCts?.Cancel(); } catch { }
-
             var sessionRefreshTask = sessionRefreshTaskProvider();
             if (sessionRefreshTask is not null)
             {
@@ -521,28 +399,23 @@ public sealed partial class MainViewModel
                 catch (OperationCanceledException) { }
                 catch { }
             }
-
             try { mc.ClearLegendCoreSession(); } catch { }
             CleanupLegacyGameAuthFiles(gameDir);
             try { sessionRefreshCts?.Dispose(); } catch { }
-
             if (_isClosing) return;
 
             PostToUi(() =>
             {
                 if (_isClosing) return;
-
                 AppendLog("Игра закрыта.");
                 _runningProcess = null;
                 _runningMinecraftService = null;
                 _runningMinecraftGameDir = null;
-
                 if (ReferenceEquals(_runningLegendCoreSessionCts, sessionRefreshCts))
                 {
                     _runningLegendCoreSessionCts = null;
                     _runningLegendCoreSessionTask = null;
                 }
-
                 Raise(nameof(CanStop));
                 StopGameCommand.RaiseCanExecuteChanged();
                 RefreshCanStates();
@@ -553,16 +426,9 @@ public sealed partial class MainViewModel
         {
             p.EnableRaisingEvents = true;
             p.Exited += HandleExited;
-
-            // Exited can occur before/while the handler is registered. This second check closes
-            // that race. `handled` keeps cleanup idempotent if the event also fires concurrently.
-            if (p.HasExited)
-                HandleExited(p, EventArgs.Empty);
+            if (p.HasExited) HandleExited(p, EventArgs.Empty);
         }
-        catch
-        {
-            HandleExited(p, EventArgs.Empty);
-        }
+        catch { HandleExited(p, EventArgs.Empty); }
     }
 
     private MinecraftService.LoaderSpec CreateLoaderSpecFromServer(ServerEntry s)
@@ -570,28 +436,16 @@ public sealed partial class MainViewModel
         var loaderType = (s.LoaderName ?? "vanilla").Trim().ToLowerInvariant();
         var loaderVer = (s.LoaderVersion ?? "").Trim();
         var installerUrl = (s.LoaderInstallerUrl ?? "").Trim();
-
-        if (loaderType == "vanilla" || string.IsNullOrWhiteSpace(loaderType))
-            return new MinecraftService.LoaderSpec("vanilla", "", "");
-
-        if (loaderType != "neoforge")
-            throw new InvalidOperationException($"Loader '{loaderType}' не поддерживается этой сборкой лаунчера.");
-
-        if (string.IsNullOrWhiteSpace(loaderVer))
-            throw new InvalidOperationException("NeoForge требует loader.version.");
+        if (loaderType == "vanilla" || string.IsNullOrWhiteSpace(loaderType)) return new MinecraftService.LoaderSpec("vanilla", "", "");
+        if (loaderType != "neoforge") throw new InvalidOperationException($"Loader '{loaderType}' не поддерживается этой сборкой лаунчера.");
+        if (string.IsNullOrWhiteSpace(loaderVer)) throw new InvalidOperationException("NeoForge требует loader.version.");
 
         if (string.IsNullOrWhiteSpace(installerUrl))
         {
-            if (!NeoForgeDistributionBootstrap.TryResolve(loaderVer, out var distribution) ||
-                string.IsNullOrWhiteSpace(distribution.InstallerUrl))
-            {
-                throw new InvalidOperationException(
-                    $"Для NeoForge {loaderVer} отсутствует доверенный installer URL из server catalog.");
-            }
-
+            if (!NeoForgeDistributionBootstrap.TryResolve(loaderVer, out var distribution) || string.IsNullOrWhiteSpace(distribution.InstallerUrl))
+                throw new InvalidOperationException($"Для NeoForge {loaderVer} отсутствует доверенный installer URL из server catalog.");
             installerUrl = distribution.InstallerUrl;
         }
-
         return new MinecraftService.LoaderSpec(loaderType, loaderVer, installerUrl);
     }
 
@@ -618,9 +472,7 @@ public sealed partial class MainViewModel
 
         try
         {
-            if (_runningProcess is null || _runningProcess.HasExited)
-                return;
-
+            if (_runningProcess is null || _runningProcess.HasExited) return;
             _runningProcess.Kill(entireProcessTree: true);
             AppendLog("Процесс игры остановлен.");
         }
@@ -632,14 +484,12 @@ public sealed partial class MainViewModel
         finally
         {
             _runningProcess = null;
-
             var mc = _runningMinecraftService ?? _mc;
             var gameDir = _runningMinecraftGameDir ?? _gameDir;
             try { mc.ClearLegendCoreSession(); } catch { }
             CleanupLegacyGameAuthFiles(gameDir);
             _runningMinecraftService = null;
             _runningMinecraftGameDir = null;
-
             Raise(nameof(CanStop));
             StopGameCommand.RaiseCanExecuteChanged();
             RefreshCanStates();
