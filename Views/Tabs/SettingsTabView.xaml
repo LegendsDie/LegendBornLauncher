@@ -77,7 +77,8 @@
                                 <Border Style="{StaticResource SettingsSection}">
                                     <StackPanel>
                                         <TextBlock Text="Память для Minecraft" Foreground="{StaticResource TextStrongLocal}" FontWeight="SemiBold" FontSize="14"/>
-                                        <CheckBox Margin="0,13,0,0" Foreground="{StaticResource TextStrongLocal}"
+                                        <CheckBox x:Name="AutomaticRamCheck"
+                                                  Margin="0,13,0,0" Foreground="{StaticResource TextStrongLocal}"
                                                   Content="Выбирать автоматически"
                                                   IsChecked="{Binding UseAutomaticRam, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                                         <ComboBox x:Name="RamCombo" Margin="0,12,0,0" Height="44"
@@ -190,7 +191,8 @@
                                         </Grid.ColumnDefinitions>
                                         <StackPanel>
                                             <TextBlock Text="Папка игры" Foreground="{StaticResource TextStrongLocal}" FontWeight="SemiBold" FontSize="14"/>
-                                            <TextBlock Margin="0,5,0,0" MaxWidth="360" Style="{StaticResource SettingsLabel}"
+                                            <TextBlock x:Name="GameDirectoryText"
+                                                       Margin="0,5,0,0" MaxWidth="360" Style="{StaticResource SettingsLabel}"
                                                        Text="{Binding GameDirectoryPath}" TextTrimming="CharacterEllipsis" ToolTip="{Binding GameDirectoryPath}"/>
                                         </StackPanel>
                                         <Button Grid.Column="2" VerticalAlignment="Center" Style="{StaticResource GhostButton}"
@@ -203,7 +205,8 @@
                                         <TextBlock Text="Обновления" Foreground="{StaticResource TextStrongLocal}" FontWeight="SemiBold" FontSize="14"/>
                                         <Button Margin="0,13,0,0" Style="{StaticResource GhostButton}" Height="42" Padding="16,0"
                                                 Content="Проверить обновление лаунчера" Command="{Binding CheckLauncherUpdatesCommand}"/>
-                                        <Button Margin="0,9,0,0" Style="{StaticResource GhostButton}" Height="42" Padding="16,0"
+                                        <Button x:Name="RepairPackButton"
+                                                Margin="0,9,0,0" Style="{StaticResource GhostButton}" Height="42" Padding="16,0"
                                                 Content="Проверить файлы игры" Command="{Binding RefreshVersionsCommand}"/>
                                     </StackPanel>
                                 </Border>
