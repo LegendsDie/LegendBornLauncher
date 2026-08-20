@@ -41,7 +41,7 @@ public sealed partial class MainViewModel
                 var current = (_config.Current.JavaPath ?? string.Empty).Trim();
                 if (JavaRuntimeService.ModeFromConfig(current) == JavaRuntimeService.ModeCustom &&
                     !current.Equals(JavaCustomSentinel, StringComparison.OrdinalIgnoreCase))
-                    _lastCustomJavaPath = current;
+                    _lastCustomJavaPath = NormalizeCustomJavaPath(current);
 
                 _config.Current.JavaPath = mode switch
                 {
@@ -99,7 +99,7 @@ public sealed partial class MainViewModel
         }
         set
         {
-            var path = (value ?? string.Empty).Trim().Trim('"');
+            var path = NormalizeCustomJavaPath(value);
             if (string.Equals(_lastCustomJavaPath, path, StringComparison.Ordinal)) return;
             _lastCustomJavaPath = path;
             if (UseCustomJava)
@@ -185,6 +185,22 @@ public sealed partial class MainViewModel
         _resolvedJavaPath = info.JavaExe;
         PostToUi(() => JavaStatusText = $"Готово: {info.DisplayName}");
         return info.JavaExe;
+    }
+
+    private static string NormalizeCustomJavaPath(string? value)
+    {
+        var path = (value ?? string.Empty).Trim().Trim('"');
+        if (!path.EndsWith("javaw.exe", StringComparison.OrdinalIgnoreCase))
+            return path;
+
+        try
+        {
+            var directory = Path.GetDirectoryName(path);
+            if (string.IsNullOrWhiteSpace(directory)) return path;
+            var consoleJava = Path.Combine(directory, "java.exe");
+            return File.Exists(consoleJava) ? consoleJava : path;
+        }
+        catch { return path; }
     }
 
     private static void ActivateJavaForLauncher(string javaExe)
