@@ -27,28 +27,21 @@ public sealed partial class MainViewModel
                     return JavaRuntimeService.ModeCustom;
                 return JavaRuntimeService.ModeFromConfig(raw);
             }
-            catch
-            {
-                return JavaRuntimeService.ModeAutomatic;
-            }
+            catch { return JavaRuntimeService.ModeAutomatic; }
         }
         set
         {
             var mode = (value ?? string.Empty).Trim().ToLowerInvariant();
             if (mode is not (JavaRuntimeService.ModeAutomatic or JavaRuntimeService.ModeSystem or JavaRuntimeService.ModeCustom))
                 mode = JavaRuntimeService.ModeAutomatic;
-
-            if (string.Equals(JavaMode, mode, StringComparison.OrdinalIgnoreCase))
-                return;
+            if (string.Equals(JavaMode, mode, StringComparison.OrdinalIgnoreCase)) return;
 
             try
             {
                 var current = (_config.Current.JavaPath ?? string.Empty).Trim();
                 if (JavaRuntimeService.ModeFromConfig(current) == JavaRuntimeService.ModeCustom &&
                     !current.Equals(JavaCustomSentinel, StringComparison.OrdinalIgnoreCase))
-                {
                     _lastCustomJavaPath = current;
-                }
 
                 _config.Current.JavaPath = mode switch
                 {
@@ -67,15 +60,29 @@ public sealed partial class MainViewModel
                 JavaRuntimeService.ModeCustom => "Выберите Java 21 (64-bit).",
                 _ => "LegendBorn сам выберет или установит Java 21."
             };
-            Raise(nameof(JavaMode));
-            Raise(nameof(JavaCustomPath));
-            Raise(nameof(JavaCustomPathEnabled));
-            Raise(nameof(JavaModeDescription));
-            _checkJavaCommand?.RaiseCanExecuteChanged();
+            RaiseJavaPresentation();
         }
     }
 
-    public bool JavaCustomPathEnabled => JavaMode == JavaRuntimeService.ModeCustom;
+    public bool UseAutomaticJava
+    {
+        get => JavaMode == JavaRuntimeService.ModeAutomatic;
+        set { if (value) JavaMode = JavaRuntimeService.ModeAutomatic; }
+    }
+
+    public bool UseSystemJava
+    {
+        get => JavaMode == JavaRuntimeService.ModeSystem;
+        set { if (value) JavaMode = JavaRuntimeService.ModeSystem; }
+    }
+
+    public bool UseCustomJava
+    {
+        get => JavaMode == JavaRuntimeService.ModeCustom;
+        set { if (value) JavaMode = JavaRuntimeService.ModeCustom; }
+    }
+
+    public bool JavaCustomPathEnabled => UseCustomJava;
 
     public string JavaCustomPath
     {
@@ -84,7 +91,7 @@ public sealed partial class MainViewModel
             try
             {
                 var value = (_config.Current.JavaPath ?? string.Empty).Trim();
-                if (JavaMode != JavaRuntimeService.ModeCustom || value.Equals(JavaCustomSentinel, StringComparison.OrdinalIgnoreCase))
+                if (!UseCustomJava || value.Equals(JavaCustomSentinel, StringComparison.OrdinalIgnoreCase))
                     return _lastCustomJavaPath;
                 return value;
             }
@@ -93,11 +100,9 @@ public sealed partial class MainViewModel
         set
         {
             var path = (value ?? string.Empty).Trim().Trim('"');
-            if (string.Equals(_lastCustomJavaPath, path, StringComparison.Ordinal))
-                return;
-
+            if (string.Equals(_lastCustomJavaPath, path, StringComparison.Ordinal)) return;
             _lastCustomJavaPath = path;
-            if (JavaMode == JavaRuntimeService.ModeCustom)
+            if (UseCustomJava)
             {
                 try
                 {
@@ -106,7 +111,6 @@ public sealed partial class MainViewModel
                 }
                 catch { }
             }
-
             _resolvedJavaPath = null;
             Raise(nameof(JavaCustomPath));
             _checkJavaCommand?.RaiseCanExecuteChanged();
@@ -114,36 +118,27 @@ public sealed partial class MainViewModel
     }
 
     public bool IsJavaBusy => _isJavaBusy;
+
     public string JavaStatusText
     {
         get => _javaStatusText;
         private set => Set(ref _javaStatusText, value);
     }
 
-    public string JavaModeDescription => JavaMode switch
-    {
-        JavaRuntimeService.ModeSystem => "Использовать Java, уже установленную на компьютере.",
-        JavaRuntimeService.ModeCustom => "Использовать выбранную вами Java.",
-        _ => "Рекомендуется. Лаунчер сам найдёт Java 21 или установит её."
-    };
-
     public AsyncRelayCommand CheckJavaCommand => _checkJavaCommand ??= new AsyncRelayCommand(
         CheckJavaAsync,
-        () => !_isClosing && !_isJavaBusy && (JavaMode != JavaRuntimeService.ModeCustom || !string.IsNullOrWhiteSpace(JavaCustomPath)));
+        () => !_isClosing && !_isJavaBusy && (!UseCustomJava || !string.IsNullOrWhiteSpace(JavaCustomPath)));
 
     private async Task CheckJavaAsync()
     {
         SetJavaBusy(true);
         try
         {
-            JavaStatusText = JavaMode == JavaRuntimeService.ModeAutomatic
-                ? "Проверяю Java…"
-                : "Проверяю выбранную Java…";
-
+            JavaStatusText = "Проверяю Java…";
             var info = await _javaRuntime.ResolveAsync(
                 _config.Current,
                 _gameDir,
-                installIfMissing: JavaMode == JavaRuntimeService.ModeAutomatic,
+                installIfMissing: UseAutomaticJava,
                 downloadProgress: p => PostToUi(() => JavaStatusText = $"Устанавливаю Java… {p}%"),
                 _lifetimeCts.Token).ConfigureAwait(false);
 
@@ -158,10 +153,7 @@ public sealed partial class MainViewModel
             AppendLog("Java: " + ex.Message);
             PostToUi(() => JavaStatusText = ex.Message);
         }
-        finally
-        {
-            SetJavaBusy(false);
-        }
+        finally { SetJavaBusy(false); }
     }
 
     private async Task<string> EnsureJavaForLaunchAsync()
@@ -181,7 +173,7 @@ public sealed partial class MainViewModel
         var info = await _javaRuntime.ResolveAsync(
             _config.Current,
             _gameDir,
-            installIfMissing: JavaMode == JavaRuntimeService.ModeAutomatic,
+            installIfMissing: UseAutomaticJava,
             downloadProgress: p => PostToUi(() =>
             {
                 JavaStatusText = $"Устанавливаю Java… {p}%";
@@ -205,6 +197,17 @@ public sealed partial class MainViewModel
                 Environment.SetEnvironmentVariable("JAVA_HOME", home, EnvironmentVariableTarget.Process);
         }
         catch { }
+    }
+
+    private void RaiseJavaPresentation()
+    {
+        Raise(nameof(JavaMode));
+        Raise(nameof(UseAutomaticJava));
+        Raise(nameof(UseSystemJava));
+        Raise(nameof(UseCustomJava));
+        Raise(nameof(JavaCustomPath));
+        Raise(nameof(JavaCustomPathEnabled));
+        _checkJavaCommand?.RaiseCanExecuteChanged();
     }
 
     private void SetJavaBusy(bool value)
