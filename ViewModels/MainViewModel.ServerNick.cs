@@ -19,18 +19,10 @@ public sealed partial class MainViewModel
 
     private static readonly HashSet<string> ReservedServerNicks = new(StringComparer.OrdinalIgnoreCase)
     {
-        "admin",
-        "administrator",
-        "console",
-        "mod",
-        "moderator",
-        "owner",
-        "server",
-        "system"
+        "admin", "administrator", "console", "mod", "moderator", "owner", "server", "system"
     };
 
     private readonly LauncherServerNickService _serverNickApi = new();
-
     private bool _isServerNickBusy;
     private string _serverNickDraft = string.Empty;
     private string? _configuredServerNick;
@@ -46,19 +38,12 @@ public sealed partial class MainViewModel
 
     public bool IsServerNickBusy => _isServerNickBusy;
 
-    /// <summary>
-    /// Editable server display name. This is intentionally separate from Username:
-    /// Username is the technical Minecraft launch/link identity while serverNick is the
-    /// authoritative LegendBorn in-game display name and may contain Unicode/spaces.
-    /// </summary>
     public string ServerNickDraft
     {
         get => _serverNickDraft;
         set
         {
-            if (!Set(ref _serverNickDraft, value ?? string.Empty))
-                return;
-
+            if (!Set(ref _serverNickDraft, value ?? string.Empty)) return;
             Raise(nameof(ServerNickValidationText));
             RaiseServerNickCanExecute();
         }
@@ -70,19 +55,14 @@ public sealed partial class MainViewModel
         {
             var effective = Clean(_effectiveServerNick);
             if (effective.Length > 0) return effective;
-
             effective = Clean(Profile?.Minecraft?.EffectiveServerNick);
             if (effective.Length > 0) return effective;
-
             effective = Clean(Profile?.ServerNick);
             if (effective.Length > 0) return effective;
-
             effective = Clean(Profile?.Minecraft?.ServerNick);
             if (effective.Length > 0) return effective;
-
             var minecraft = Clean(Profile?.Minecraft?.Username ?? Profile?.MinecraftName);
             if (minecraft.Length > 0) return minecraft;
-
             var local = Clean(Username);
             return local.Length > 0 ? local : "Player";
         }
@@ -93,11 +73,8 @@ public sealed partial class MainViewModel
         get
         {
             var minecraft = Clean(_serverNickMinecraftUsername);
-            if (minecraft.Length == 0)
-                minecraft = Clean(Profile?.Minecraft?.Username ?? Profile?.MinecraftName);
-            if (minecraft.Length == 0)
-                minecraft = Clean(Username);
-
+            if (minecraft.Length == 0) minecraft = Clean(Profile?.Minecraft?.Username ?? Profile?.MinecraftName);
+            if (minecraft.Length == 0) minecraft = Clean(Username);
             return minecraft.Length > 0 ? $"Minecraft · {minecraft}" : "Minecraft · не привязан";
         }
     }
@@ -115,9 +92,7 @@ public sealed partial class MainViewModel
     {
         get
         {
-            if (string.IsNullOrWhiteSpace(ServerNickDraft))
-                return "Введите игровой ник.";
-
+            if (string.IsNullOrWhiteSpace(ServerNickDraft)) return "Введите игровой ник.";
             var normalized = NormalizeServerNick(ServerNickDraft);
             return TryValidateServerNick(normalized, out var error) ? string.Empty : error;
         }
@@ -147,167 +122,136 @@ public sealed partial class MainViewModel
 
     private bool CanSaveServerNick()
     {
-        if (_isClosing || !IsLoggedIn || !HasSiteToken || _isServerNickBusy)
-            return false;
-
+        if (_isClosing || !IsLoggedIn || !HasSiteToken || _isServerNickBusy) return false;
         var normalized = NormalizeServerNick(ServerNickDraft);
-        if (!TryValidateServerNick(normalized, out _))
-            return false;
-
+        if (!TryValidateServerNick(normalized, out _)) return false;
         var configured = Clean(_configuredServerNick);
-        if (configured.Length == 0)
-            configured = Clean(Profile?.Minecraft?.ServerNick ?? Profile?.ServerNick);
-
+        if (configured.Length == 0) configured = Clean(Profile?.Minecraft?.ServerNick ?? Profile?.ServerNick);
         return !string.Equals(configured, normalized, StringComparison.Ordinal);
     }
 
     private async Task RefreshServerNickAsync()
     {
-        if (!TryGetAccessToken(out var token))
-            return;
-
+        if (!TryGetAccessToken(out var token)) return;
         SetServerNickBusy(true);
         SetServerNickStatus("Загружаю игровой ник…");
-
         try
         {
             var response = await _serverNickApi.GetAsync(token, _lifetimeCts.Token).ConfigureAwait(false);
-            if (!response.Ok)
-            {
-                SetServerNickStatus(MapServerNickError(response));
-                return;
-            }
-
+            if (!response.Ok) { SetServerNickStatus(MapServerNickError(response)); return; }
             ApplyServerNickResponse(response, resetDraft: true);
             SetServerNickStatus(response.ServerNick is null
-                ? "Используется ник привязанного Minecraft-аккаунта."
-                : "Игровой ник синхронизирован с аккаунтом.");
+                ? "Используется ник Minecraft-аккаунта."
+                : "Игровой ник синхронизирован.");
         }
-        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
-        {
-        }
+        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested) { }
         catch (Exception ex)
         {
             AppendLog("Игровой ник: ошибка загрузки: " + ex.Message);
             SetServerNickStatus("Не удалось загрузить игровой ник.");
         }
-        finally
-        {
-            SetServerNickBusy(false);
-        }
+        finally { SetServerNickBusy(false); }
     }
 
     private async Task SaveServerNickAsync()
     {
-        if (!TryGetAccessToken(out var token))
-            return;
-
+        if (!TryGetAccessToken(out var token)) return;
         var normalized = NormalizeServerNick(ServerNickDraft);
-        if (!TryValidateServerNick(normalized, out var validationError))
-        {
-            SetServerNickStatus(validationError);
-            return;
-        }
+        if (!TryValidateServerNick(normalized, out var validationError)) { SetServerNickStatus(validationError); return; }
 
         SetServerNickBusy(true);
         SetServerNickStatus("Сохраняю игровой ник…");
-
         try
         {
             var response = await _serverNickApi.PutAsync(token, normalized, _lifetimeCts.Token).ConfigureAwait(false);
-            if (!response.Ok)
-            {
-                SetServerNickStatus(MapServerNickError(response));
-                return;
-            }
+            if (!response.Ok) { SetServerNickStatus(MapServerNickError(response)); return; }
 
             ApplyServerNickResponse(response, resetDraft: true);
-
-            // Refresh the regular launcher snapshot too, so every launcher screen continues to read
-            // the same authoritative account state without inventing a parallel local nickname.
             await RefreshProfileSnapshotAsync(token).ConfigureAwait(false);
+            await SynchronizeMinecraftLinkAfterNickChangeAsync(token).ConfigureAwait(false);
             RaiseServerNickPresentation();
 
-            // Hotfix 0.4.5: if this launcher owns a running Minecraft process, immediately issue a
-            // fresh one-time join-ticket and atomically rewrite .legendcore/session.json. This avoids
-            // LS-AUTH-002 when the player reconnects immediately after changing public serverNick.
-            var sessionOutcome = await RefreshRunningLegendCoreSessionAfterServerNickChangeAsync(token)
-                .ConfigureAwait(false);
+            var sessionOutcome = await RefreshRunningLegendCoreSessionAfterServerNickChangeAsync(token).ConfigureAwait(false);
             SetServerNickStatus(ServerNickMutationStatus(sessionOutcome, reset: false));
         }
-        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
-        {
-        }
+        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested) { }
         catch (Exception ex)
         {
             AppendLog("Игровой ник: ошибка сохранения: " + ex.Message);
             SetServerNickStatus("Не удалось сохранить игровой ник.");
         }
-        finally
-        {
-            SetServerNickBusy(false);
-        }
+        finally { SetServerNickBusy(false); }
     }
 
     private async Task ResetServerNickAsync()
     {
-        if (!TryGetAccessToken(out var token))
-            return;
-
+        if (!TryGetAccessToken(out var token)) return;
         SetServerNickBusy(true);
-        SetServerNickStatus("Возвращаю ник Minecraft-аккаунта…");
-
+        SetServerNickStatus("Возвращаю ник Minecraft…");
         try
         {
             var response = await _serverNickApi.PutAsync(token, serverNick: null, _lifetimeCts.Token).ConfigureAwait(false);
-            if (!response.Ok)
-            {
-                SetServerNickStatus(MapServerNickError(response));
-                return;
-            }
+            if (!response.Ok) { SetServerNickStatus(MapServerNickError(response)); return; }
 
             ApplyServerNickResponse(response, resetDraft: true);
-
             await RefreshProfileSnapshotAsync(token).ConfigureAwait(false);
+            await SynchronizeMinecraftLinkAfterNickChangeAsync(token).ConfigureAwait(false);
             RaiseServerNickPresentation();
 
-            var sessionOutcome = await RefreshRunningLegendCoreSessionAfterServerNickChangeAsync(token)
-                .ConfigureAwait(false);
+            var sessionOutcome = await RefreshRunningLegendCoreSessionAfterServerNickChangeAsync(token).ConfigureAwait(false);
             SetServerNickStatus(ServerNickMutationStatus(sessionOutcome, reset: true));
         }
-        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
-        {
-        }
+        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested) { }
         catch (Exception ex)
         {
             AppendLog("Игровой ник: ошибка сброса: " + ex.Message);
-            SetServerNickStatus("Не удалось сбросить игровой ник.");
+            SetServerNickStatus("Не удалось вернуть ник Minecraft.");
         }
-        finally
-        {
-            SetServerNickBusy(false);
-        }
+        finally { SetServerNickBusy(false); }
     }
 
-    private void ApplyServerNickResponse(
-        LauncherServerNickService.ServerNickResponse response,
-        bool resetDraft)
+    private async Task SynchronizeMinecraftLinkAfterNickChangeAsync(string token)
+    {
+        var desired = ResolveLaunchMinecraftUsername();
+        if (!IsValidMcName(desired)) return;
+
+        var link = await _site.LinkMinecraftAsync(token, desired, _lifetimeCts.Token, deviceId: null).ConfigureAwait(false);
+        if (!link.Ok)
+        {
+            AppendLog("Minecraft: не удалось обновить привязку после смены ника: " +
+                      (link.Error ?? link.Message ?? "неизвестная ошибка"));
+            return;
+        }
+
+        var linkedName = Clean(link.Minecraft?.Username);
+        if (IsValidMcName(linkedName))
+        {
+            try
+            {
+                _config.Current.LastUsername = linkedName;
+                ScheduleConfigSave();
+            }
+            catch { }
+            PostToUi(() => Username = linkedName);
+        }
+
+        await RefreshProfileSnapshotAsync(token).ConfigureAwait(false);
+        AppendLog("Minecraft: привязка обновлена после смены игрового ника.");
+    }
+
+    private void ApplyServerNickResponse(LauncherServerNickService.ServerNickResponse response, bool resetDraft)
     {
         PostToUi(() =>
         {
             _configuredServerNick = NullIfBlank(response.ServerNick);
             _effectiveServerNick = NullIfBlank(response.EffectiveServerNick);
-
             var minecraftUsername = NullIfBlank(response.MinecraftUsername);
-            if (minecraftUsername is not null)
-                _serverNickMinecraftUsername = minecraftUsername;
+            if (minecraftUsername is not null) _serverNickMinecraftUsername = minecraftUsername;
 
             if (response.Rules is { } rules)
             {
-                if (rules.MinLength > 0)
-                    _serverNickMinLength = rules.MinLength;
-                if (rules.MaxLength >= _serverNickMinLength)
-                    _serverNickMaxLength = rules.MaxLength;
+                if (rules.MinLength > 0) _serverNickMinLength = rules.MinLength;
+                if (rules.MaxLength >= _serverNickMinLength) _serverNickMaxLength = rules.MaxLength;
             }
 
             if (Profile is { } profile)
@@ -328,7 +272,6 @@ public sealed partial class MainViewModel
                                    ?? Clean(Profile?.Minecraft?.Username ?? Profile?.MinecraftName)
                                    ?? Clean(Username);
             }
-
             RaiseServerNickPresentation();
         });
     }
@@ -343,8 +286,7 @@ public sealed partial class MainViewModel
         });
     }
 
-    private void SetServerNickStatus(string value)
-        => PostToUi(() => ServerNickStatusText = value);
+    private void SetServerNickStatus(string value) => PostToUi(() => ServerNickStatusText = value);
 
     private void RaiseServerNickPresentation()
     {
@@ -368,30 +310,14 @@ public sealed partial class MainViewModel
     private bool TryValidateServerNick(string normalized, out string error)
     {
         var length = CountRunes(normalized);
-        if (length < _serverNickMinLength)
-        {
-            error = $"Минимум {_serverNickMinLength} символа.";
-            return false;
-        }
-
-        if (length > _serverNickMaxLength)
-        {
-            error = $"Максимум {_serverNickMaxLength} символов.";
-            return false;
-        }
-
+        if (length < _serverNickMinLength) { error = $"Минимум {_serverNickMinLength} символа."; return false; }
+        if (length > _serverNickMaxLength) { error = $"Максимум {_serverNickMaxLength} символов."; return false; }
         if (!ServerNickPattern.IsMatch(normalized))
         {
             error = "Разрешены буквы, цифры, пробел, _, . и -. Ник должен начинаться и заканчиваться буквой, цифрой или _.";
             return false;
         }
-
-        if (ReservedServerNicks.Contains(normalized))
-        {
-            error = "Этот ник зарезервирован системой.";
-            return false;
-        }
-
+        if (ReservedServerNicks.Contains(normalized)) { error = "Этот ник зарезервирован системой."; return false; }
         error = string.Empty;
         return true;
     }
@@ -406,8 +332,7 @@ public sealed partial class MainViewModel
     private static int CountRunes(string value)
     {
         var count = 0;
-        foreach (var _ in value.EnumerateRunes())
-            count++;
+        foreach (var _ in value.EnumerateRunes()) count++;
         return count;
     }
 
@@ -423,24 +348,18 @@ public sealed partial class MainViewModel
                 "invalid_chars" => "В нике есть недопустимые символы.",
                 "reserved" => "Этот ник зарезервирован системой.",
                 "already_used" => "Этот игровой ник уже занят.",
-                _ => Clean(response.Error ?? response.Message) is { Length: > 0 } message
-                    ? message
-                    : "Не удалось изменить игровой ник."
+                _ => Clean(response.Error ?? response.Message) is { Length: > 0 } message ? message : "Не удалось изменить игровой ник."
             };
         }
 
         var raw = Clean(response.Error ?? response.Message);
-        if (raw.Contains("not linked", StringComparison.OrdinalIgnoreCase))
-            return "Сначала привяжите Minecraft-аккаунт.";
-        if (raw.Contains("unauthorized", StringComparison.OrdinalIgnoreCase) ||
-            raw.Contains("EMPTY_TOKEN", StringComparison.OrdinalIgnoreCase))
+        if (raw.Contains("not linked", StringComparison.OrdinalIgnoreCase)) return "Minecraft-аккаунт ещё не привязан.";
+        if (raw.Contains("unauthorized", StringComparison.OrdinalIgnoreCase) || raw.Contains("EMPTY_TOKEN", StringComparison.OrdinalIgnoreCase))
             return "Сессия истекла. Войдите в аккаунт снова.";
-
         return raw.Length > 0 ? raw : "Не удалось изменить игровой ник.";
     }
 
-    private static string Clean(string? value)
-        => (value ?? string.Empty).Trim();
+    private static string Clean(string? value) => (value ?? string.Empty).Trim();
 
     private static string? NullIfBlank(string? value)
     {
