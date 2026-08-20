@@ -20,14 +20,17 @@ public sealed class JavaRuntimeService
     public const string ModeAutomatic = "automatic";
     public const string ModeSystem = "system";
     public const string ModeCustom = "custom";
+    public const string SystemSentinel = "@system";
 
     private const long MaxArchiveBytes = 300L * 1024 * 1024;
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan DownloadTimeout = TimeSpan.FromMinutes(10);
     private static readonly SemaphoreSlim InstallGate = new(1, 1);
     private static readonly Regex VersionQuoted = new("version \\\"(?<version>[^\\\"]+)\\\"", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
     private static readonly HttpClient Http = CreateHttp();
+
+    private static string JavaRuntimeDir => Path.Combine(LauncherPaths.LocalDir, "runtime", "java");
+    private static string ManagedJava21Dir => Path.Combine(JavaRuntimeDir, "temurin-21");
 
     public sealed record RuntimeInfo(
         string JavaExe,
@@ -49,6 +52,16 @@ public sealed class JavaRuntimeService
         }
     }
 
+    public static string ModeFromConfig(string? javaPath)
+    {
+        var value = (javaPath ?? string.Empty).Trim();
+        if (value.Length == 0 || value.Equals(ModeAutomatic, StringComparison.OrdinalIgnoreCase))
+            return ModeAutomatic;
+        if (value.Equals(SystemSentinel, StringComparison.OrdinalIgnoreCase) || value.Equals(ModeSystem, StringComparison.OrdinalIgnoreCase))
+            return ModeSystem;
+        return ModeCustom;
+    }
+
     public async Task<RuntimeInfo> ResolveAsync(
         LauncherConfig config,
         string gameDir,
@@ -57,8 +70,8 @@ public sealed class JavaRuntimeService
         CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(config);
+        var mode = ModeFromConfig(config.JavaPath);
 
-        var mode = NormalizeMode(config.JavaMode);
         if (mode == ModeCustom)
         {
             var custom = NormalizeJavaExecutable(config.JavaPath);
@@ -72,13 +85,11 @@ public sealed class JavaRuntimeService
         if (mode == ModeAutomatic)
         {
             var managed = await ProbeFirstAsync(ManagedCandidates(), "Java LegendBorn", managed: true, ct).ConfigureAwait(false);
-            if (IsCompatible(managed))
-                return managed!;
+            if (IsCompatible(managed)) return managed!;
         }
 
         var system = await ProbeFirstAsync(SystemCandidates(gameDir), "Установлена в системе", managed: false, ct).ConfigureAwait(false);
-        if (IsCompatible(system))
-            return system!;
+        if (IsCompatible(system)) return system!;
 
         if (mode == ModeSystem)
             throw new InvalidOperationException("Java 21 (64-bit) не найдена. Выберите автоматическую установку или укажите Java вручную.");
@@ -101,20 +112,11 @@ public sealed class JavaRuntimeService
         }
     }
 
-    public static string NormalizeMode(string? value)
-    {
-        var mode = (value ?? string.Empty).Trim().ToLowerInvariant();
-        return mode is ModeAutomatic or ModeSystem or ModeCustom ? mode : ModeAutomatic;
-    }
-
     private static RuntimeInfo RequireCompatible(RuntimeInfo? info, string label)
     {
-        if (info is null)
-            throw new InvalidOperationException($"{label} не запускается.");
-        if (info.Major < RequiredMajor)
-            throw new InvalidOperationException($"{label}: требуется Java {RequiredMajor} или новее.");
-        if (!info.Is64Bit)
-            throw new InvalidOperationException($"{label}: требуется 64-битная Java.");
+        if (info is null) throw new InvalidOperationException($"{label} не запускается.");
+        if (info.Major < RequiredMajor) throw new InvalidOperationException($"{label}: требуется Java {RequiredMajor} или новее.");
+        if (!info.Is64Bit) throw new InvalidOperationException($"{label}: требуется 64-битная Java.");
         return info;
     }
 
@@ -127,17 +129,16 @@ public sealed class JavaRuntimeService
         try
         {
             var existing = await ProbeFirstAsync(ManagedCandidates(), "Java LegendBorn", managed: true, ct).ConfigureAwait(false);
-            if (IsCompatible(existing))
-                return existing!;
+            if (IsCompatible(existing)) return existing!;
 
             if (!OperatingSystem.IsWindows() || !Environment.Is64BitOperatingSystem)
-                throw new PlatformNotSupportedException("Автоматическая установка Java сейчас поддерживается для Windows 64-bit.");
+                throw new PlatformNotSupportedException("Автоматическая установка Java поддерживается для Windows 64-bit.");
 
-            Directory.CreateDirectory(LauncherPaths.JavaRuntimeDir);
+            Directory.CreateDirectory(JavaRuntimeDir);
             Directory.CreateDirectory(LauncherPaths.CacheDir);
 
             var archivePath = Path.Combine(LauncherPaths.CacheDir, "temurin-21-jre-x64.zip");
-            var staging = Path.Combine(LauncherPaths.JavaRuntimeDir, ".install-" + Guid.NewGuid().ToString("N"));
+            var staging = Path.Combine(JavaRuntimeDir, ".install-" + Guid.NewGuid().ToString("N"));
             TryDeleteFile(archivePath);
             TryDeleteDirectory(staging);
 
@@ -161,10 +162,10 @@ public sealed class JavaRuntimeService
                 var probe = await ProbeAsync(javaExe, "Java LegendBorn", managed: true, ct).ConfigureAwait(false);
                 RequireCompatible(probe, "Загруженная Java");
 
-                TryDeleteDirectory(LauncherPaths.ManagedJava21Dir);
-                Directory.Move(runtimeRoot, LauncherPaths.ManagedJava21Dir);
+                TryDeleteDirectory(ManagedJava21Dir);
+                Directory.Move(runtimeRoot, ManagedJava21Dir);
 
-                var installedJava = Path.Combine(LauncherPaths.ManagedJava21Dir, "bin", "java.exe");
+                var installedJava = Path.Combine(ManagedJava21Dir, "bin", "java.exe");
                 var installed = await ProbeAsync(installedJava, "Java LegendBorn", managed: true, ct).ConfigureAwait(false);
                 progress?.Invoke(100);
                 return RequireCompatible(installed, "Установленная Java");
@@ -190,12 +191,10 @@ public sealed class JavaRuntimeService
         response.EnsureSuccessStatusCode();
 
         var length = response.Content.Headers.ContentLength;
-        if (length is > MaxArchiveBytes)
-            throw new InvalidOperationException("Архив Java слишком большой.");
+        if (length is > MaxArchiveBytes) throw new InvalidOperationException("Архив Java слишком большой.");
 
         await using var input = await response.Content.ReadAsStreamAsync(linked.Token).ConfigureAwait(false);
         await using var output = new FileStream(archivePath, FileMode.Create, FileAccess.Write, FileShare.None, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-
         var buffer = new byte[128 * 1024];
         long total = 0;
         int last = -1;
@@ -204,22 +203,16 @@ public sealed class JavaRuntimeService
             var read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), linked.Token).ConfigureAwait(false);
             if (read <= 0) break;
             total += read;
-            if (total > MaxArchiveBytes)
-                throw new InvalidOperationException("Архив Java превышает безопасный размер.");
+            if (total > MaxArchiveBytes) throw new InvalidOperationException("Архив Java превышает безопасный размер.");
             await output.WriteAsync(buffer.AsMemory(0, read), linked.Token).ConfigureAwait(false);
 
             if (length is > 0)
             {
                 var p = Math.Clamp((int)Math.Round(total * 100.0 / length.Value), 0, 99);
-                if (p != last)
-                {
-                    last = p;
-                    progress?.Invoke(p);
-                }
+                if (p != last) { last = p; progress?.Invoke(p); }
             }
         }
         await output.FlushAsync(linked.Token).ConfigureAwait(false);
-
         return response.RequestMessage?.RequestUri ?? endpoint;
     }
 
@@ -248,13 +241,7 @@ public sealed class JavaRuntimeService
             var target = Path.GetFullPath(Path.Combine(destination, entry.FullName.Replace('/', Path.DirectorySeparatorChar)));
             if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("Архив Java содержит небезопасный путь.");
-
-            if (string.IsNullOrEmpty(entry.Name))
-            {
-                Directory.CreateDirectory(target);
-                continue;
-            }
-
+            if (string.IsNullOrEmpty(entry.Name)) { Directory.CreateDirectory(target); continue; }
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             entry.ExtractToFile(target, overwrite: true);
         }
@@ -262,55 +249,43 @@ public sealed class JavaRuntimeService
 
     private static IEnumerable<string> ManagedCandidates()
     {
-        yield return Path.Combine(LauncherPaths.ManagedJava21Dir, "bin", "java.exe");
-        yield return Path.Combine(LauncherPaths.ManagedJava21Dir, "bin", "javaw.exe");
+        yield return Path.Combine(ManagedJava21Dir, "bin", "java.exe");
+        yield return Path.Combine(ManagedJava21Dir, "bin", "javaw.exe");
     }
 
     private static IEnumerable<string> SystemCandidates(string gameDir)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        void Add(List<string> list, string? path)
+        var list = new List<string>();
+        void Add(string? path)
         {
             path = NormalizeJavaExecutable(path);
             if (path.Length > 0 && seen.Add(path)) list.Add(path);
         }
 
-        var list = new List<string>();
         try
         {
             var runtime = Path.Combine(gameDir ?? string.Empty, "runtime");
             if (Directory.Exists(runtime))
-            {
-                foreach (var path in Directory.EnumerateFiles(runtime, "java.exe", SearchOption.AllDirectories).Take(16))
-                    Add(list, path);
-            }
+                foreach (var path in Directory.EnumerateFiles(runtime, "java.exe", SearchOption.AllDirectories).Take(16)) Add(path);
         }
         catch { }
 
         var javaHome = Environment.GetEnvironmentVariable("JAVA_HOME");
-        if (!string.IsNullOrWhiteSpace(javaHome))
-            Add(list, Path.Combine(javaHome, "bin", "java.exe"));
+        if (!string.IsNullOrWhiteSpace(javaHome)) Add(Path.Combine(javaHome, "bin", "java.exe"));
 
-        foreach (var baseDir in new[]
-        {
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86)
-        }.Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var baseDir in new[] { Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86) }
+                     .Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase))
         {
             foreach (var vendorDir in new[] { "Eclipse Adoptium", "Java", "Microsoft", "Zulu" })
             {
                 var root = Path.Combine(baseDir, vendorDir);
                 if (!Directory.Exists(root)) continue;
-                try
-                {
-                    foreach (var child in Directory.EnumerateDirectories(root).Take(20))
-                        Add(list, Path.Combine(child, "bin", "java.exe"));
-                }
-                catch { }
+                try { foreach (var child in Directory.EnumerateDirectories(root).Take(20)) Add(Path.Combine(child, "bin", "java.exe")); } catch { }
             }
         }
 
-        Add(list, "java.exe");
+        Add("java.exe");
         return list;
     }
 
@@ -329,21 +304,13 @@ public sealed class JavaRuntimeService
     {
         javaPath = NormalizeJavaExecutable(javaPath);
         if (javaPath.Length == 0) return null;
-
         try
         {
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
             linked.CancelAfter(ProbeTimeout);
-            var psi = new ProcessStartInfo(javaPath)
-            {
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
+            var psi = new ProcessStartInfo(javaPath) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
             psi.ArgumentList.Add("-XshowSettings:properties");
             psi.ArgumentList.Add("-version");
-
             using var process = Process.Start(psi);
             if (process is null) return null;
             var stdoutTask = process.StandardOutput.ReadToEndAsync(linked.Token);
@@ -361,17 +328,10 @@ public sealed class JavaRuntimeService
                       || arch.Contains("x86_64", StringComparison.OrdinalIgnoreCase)
                       || arch.Contains("aarch64", StringComparison.OrdinalIgnoreCase)
                       || text.Contains("64-Bit Server VM", StringComparison.OrdinalIgnoreCase);
-
             return major > 0 ? new RuntimeInfo(javaPath, major, x64, version, vendor, source, managed) : null;
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch
-        {
-            return null;
-        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch { return null; }
     }
 
     private static string? ReadProperty(string text, string property)
@@ -380,8 +340,7 @@ public sealed class JavaRuntimeService
         foreach (var line in text.Split('\n'))
         {
             var value = line.Trim();
-            if (value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                return value[prefix.Length..].Trim();
+            if (value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return value[prefix.Length..].Trim();
         }
         return null;
     }
@@ -399,9 +358,8 @@ public sealed class JavaRuntimeService
     public static string NormalizeJavaExecutable(string? path)
     {
         var value = (path ?? string.Empty).Trim().Trim('"');
-        if (value.Length == 0) return string.Empty;
-        if (value.EndsWith("javaw.exe", StringComparison.OrdinalIgnoreCase) || value.EndsWith("java.exe", StringComparison.OrdinalIgnoreCase))
-            return value;
+        if (value.Length == 0 || value.Equals(SystemSentinel, StringComparison.OrdinalIgnoreCase)) return string.Empty;
+        if (value.EndsWith("javaw.exe", StringComparison.OrdinalIgnoreCase) || value.EndsWith("java.exe", StringComparison.OrdinalIgnoreCase)) return value;
         if (Directory.Exists(value))
         {
             var javaw = Path.Combine(value, "bin", "javaw.exe");
@@ -414,8 +372,7 @@ public sealed class JavaRuntimeService
 
     private static bool IsManagedPath(string path)
     {
-        try { return IsInside(path, LauncherPaths.JavaRuntimeDir); }
-        catch { return false; }
+        try { return IsInside(path, JavaRuntimeDir); } catch { return false; }
     }
 
     private static bool IsInside(string path, string root)
@@ -440,13 +397,6 @@ public sealed class JavaRuntimeService
         return http;
     }
 
-    private static void TryDeleteFile(string path)
-    {
-        try { if (File.Exists(path)) File.Delete(path); } catch { }
-    }
-
-    private static void TryDeleteDirectory(string path)
-    {
-        try { if (Directory.Exists(path)) Directory.Delete(path, recursive: true); } catch { }
-    }
+    private static void TryDeleteFile(string path) { try { if (File.Exists(path)) File.Delete(path); } catch { } }
+    private static void TryDeleteDirectory(string path) { try { if (Directory.Exists(path)) Directory.Delete(path, recursive: true); } catch { } }
 }
