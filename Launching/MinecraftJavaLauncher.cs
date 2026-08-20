@@ -53,6 +53,7 @@ public static class MinecraftJavaLauncher
 
         var process = await launcher.BuildProcessAsync(version, options).ConfigureAwait(false);
         process.StartInfo.UseShellExecute = false;
+        process.StartInfo.CreateNoWindow = true;
         SanitizeJavaEnvironment(process);
         process.EnableRaisingEvents = true;
 
