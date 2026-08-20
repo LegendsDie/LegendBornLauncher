@@ -13,6 +13,8 @@ namespace LegendBorn.ViewModels;
 
 public sealed partial class MainViewModel
 {
+    private const string SkinManagerWebPath = "immersion";
+
     private readonly LauncherProfileService _profileApi = new();
     private int _profileExperienceHooksInitialized;
     private bool _isProfileExperienceBusy;
@@ -163,7 +165,7 @@ public sealed partial class MainViewModel
     public string? SkinPreviewUrl => NormalizePublicUrl(Profile?.Minecraft?.SelectedSkin?.PreviewUrl ?? Profile?.Minecraft?.SelectedSkin?.SkinUrl);
     public bool HasSelectedSkin => Profile?.Minecraft?.SelectedSkin is not null;
     public string SkinStatusText => Profile?.Minecraft?.IsLinked == true
-        ? HasSelectedSkin ? "Активный образ синхронизирован с аккаунтом." : "Minecraft привязан. Образ можно выбрать на странице Minecraft."
+        ? HasSelectedSkin ? "Активный образ синхронизирован с аккаунтом." : "Minecraft привязан. Образ можно выбрать на странице «Погружение»."
         : "Сначала привяжите Minecraft-аккаунт.";
 
     private AsyncRelayCommand? _refreshProfileExperienceCommand;
@@ -209,7 +211,7 @@ public sealed partial class MainViewModel
         () => !_isClosing && IsLoggedIn && HasSiteToken && !_isClanBusy && CanLeaveClan);
 
     public RelayCommand OpenSkinManagerCommand => _openSkinManagerCommand ??= new RelayCommand(
-        () => OpenProfileWebPath("minecraft"),
+        () => OpenProfileWebPath(SkinManagerWebPath),
         () => !_isClosing && IsLoggedIn);
 
     private void EnsureProfileExperienceHooks()
