@@ -1,15 +1,22 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Net;
+using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
 using CmlLib.Core;
 using CmlLib.Core.Auth;
 using CmlLib.Core.ProcessBuilder;
+using CmlLib.Core.VersionLoader;
+using LegendBorn.Services;
 
 namespace LegendBorn.Launching;
 
 public static class MinecraftJavaLauncher
 {
+    private static readonly HttpClient Http = CreateHttp();
+
     public static async Task<Process> BuildAndLaunchAsync(
         MinecraftService minecraft,
         string version,
@@ -30,9 +37,12 @@ public static class MinecraftJavaLauncher
         minecraft.ClearLegendCoreSession();
         if (session is not null) minecraft.WriteLegendCoreSession(session);
 
-        // Use a fresh CmlLib launcher over the same instance. MLaunchOption.JavaPath is the
-        // public CmlLib override and wins over Mojang's bundled Java resolver for this process.
-        var launcher = new MinecraftLauncher(new MinecraftPath(minecraft.GameDir));
+        var path = new MinecraftPath(minecraft.GameDir);
+        var parameters = MinecraftLauncherParameters.CreateDefault(path, Http);
+        if (parameters.VersionLoader is MojangJsonVersionLoaderV2 versionLoader)
+            versionLoader.UseLocalManifestWhenError = true;
+
+        var launcher = new MinecraftLauncher(parameters);
         var options = new MLaunchOption
         {
             Session = MSession.CreateOfflineSession(username.Trim()),
@@ -59,6 +69,25 @@ public static class MinecraftJavaLauncher
         catch { }
 
         return process;
+    }
+
+    private static HttpClient CreateHttp()
+    {
+        var handler = new SocketsHttpHandler
+        {
+            AutomaticDecompression = DecompressionMethods.All,
+            AllowAutoRedirect = true,
+            MaxAutomaticRedirections = 8,
+            ConnectTimeout = TimeSpan.FromSeconds(20),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+            MaxConnectionsPerServer = 8
+        };
+        var http = new HttpClient(new MinecraftDistributionHttpHandler(handler))
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("LegendBornLauncher-CmlLib/1.0");
+        return http;
     }
 
     private static void SanitizeJavaEnvironment(Process process)
